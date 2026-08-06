@@ -1,0 +1,22 @@
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Runtime state — never commit a validator's working directory
+.validator-state/
+*.sqlite
+*.sqlite-*
+
+# Local config carrying real values
+*.local.toml
+.env
+.local/

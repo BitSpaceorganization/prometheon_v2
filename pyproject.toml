@@ -1,0 +1,147 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "prometheon"
+version = "2.0.0"
+description = "Prometheon Phase 2 — a Bittensor subnet for open moderation models"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "BitSpace" }]
+requires-python = ">=3.10,<3.15"
+classifiers = [
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "License :: OSI Approved :: MIT License",
+]
+dependencies = [
+    # Pinned below 11 deliberately. The 11.x client is a different library, not
+    # a compatible upgrade: `Subtensor` exposes only `read`/`execute`, and none
+    # of `set_weights`, `metagraph`, `get_commitment`, `set_commitment` or
+    # `get_subnet_owner_hotkey` exist on it. 11.x also ships no intent that
+    # writes a metadata commitment, so a miner running it could not submit at
+    # all. Raising this ceiling means porting `prometheon.chain` and re-pinning
+    # tests/contract/test_bittensor_sdk_shape.py against the new shapes.
+    "bittensor>=10.5.0,<11",
+    "bittensor-wallet>=4.0.0",
+    "httpx>=0.28.0",
+    "pydantic>=2.9.0",
+    "tomli>=2.0.0; python_version < '3.11'",
+]
+
+[project.optional-dependencies]
+# Only the deployed chute needs these; validators and the CLI do not.
+wrapper = [
+    "transformers>=4.44,<4.47",
+    "torch>=2.4,<2.6",
+    "huggingface-hub>=0.25.0",
+]
+
+[project.scripts]
+prometheon = "prometheon.cli.main:main"
+
+[project.urls]
+Repository = "https://github.com/BitSpaceorganization/prometheon_v2"
+Issues = "https://github.com/BitSpaceorganization/prometheon_v2/issues"
+
+[dependency-groups]
+dev = [
+    "mypy>=1.13.0",
+    "pytest>=8.3.0",
+    "pytest-cov>=6.0.0",
+    "ruff>=0.8.0",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/prometheon"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/prometheon",
+    "tests",
+    "docs",
+    "configs",
+    "content_policy.md",
+    "README.md",
+    "CONTRIBUTING.md",
+    "LICENSE",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "C4",   # comprehensions
+    "UP",   # pyupgrade
+    "N",    # pep8-naming
+    "S",    # bandit
+    "RUF",  # ruff-specific
+]
+ignore = [
+    "S101",  # assert is fine in this codebase's invariant checks
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101", "S105", "S106", "SLF001"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_unreachable = true
+disallow_any_generics = true
+files = ["src/prometheon"]
+
+[[tool.mypy.overrides]]
+module = [
+    "bittensor",
+    "bittensor.*",
+    "bittensor_wallet",
+    "bittensor_wallet.*",
+    "substrateinterface.*",
+    "tomli",
+]
+ignore_missing_imports = true
+# Not followed into. Two reasons, and the bare module name is listed alongside
+# the wildcard because `bittensor.*` does not match `bittensor` itself.
+#
+# 1. `prometheon.chain.subtensor` types the SDK as `Any` on purpose — the SDK's
+#    own types are dynamic and pinning them here would be a fiction that breaks
+#    on the next release. Following them buys nothing.
+# 2. Following reaches numpy, whose stubs use `type` statements (3.12 syntax)
+#    and cannot be parsed under `python_version = "3.10"`. That is a parse
+#    error in a dependency, not a finding about this package.
+#
+# 3.10 compatibility is still enforced, by `ruff target-version = "py310"` and
+# by the CI test matrix running 3.10, 3.11 and 3.12.
+follow_imports = "skip"
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+    "--import-mode=importlib",
+]
+markers = [
+    "unit: fast, no network, no chain",
+    "contract: pins a wire or scoring contract against fixtures",
+    "integration: exercises a real socket or a real chain read",
+]

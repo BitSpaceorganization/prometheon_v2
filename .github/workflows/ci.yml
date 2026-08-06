@@ -1,0 +1,153 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: ruff (check + format)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv python install 3.11
+      - run: uv sync --group dev
+      - run: uv run ruff check src tests
+      - run: uv run ruff format --check src tests
+
+  typecheck:
+    name: mypy (strict)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv python install 3.11
+      - run: uv sync --group dev
+      - run: uv run mypy src/prometheon
+
+  test:
+    name: pytest (py${{ matrix.python }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv python install ${{ matrix.python }}
+      - run: uv sync --group dev
+      # Every test, not a marker subset. An earlier version ran `-m unit` and
+      # `-m contract` only, which silently excluded the end-to-end cycle tests —
+      # the ones that check the modules actually compose, and the only place a
+      # field renamed in one module and read by another is caught. Nothing here
+      # touches the network: the DB layer, the chain, the labeller and every
+      # miner model are fakes.
+      #
+      # `--strict-markers` is on, so an unmarked test fails rather than being
+      # quietly skipped by a marker filter.
+      - run: uv run pytest -ra
+      - name: Every test carries a marker
+        run: |
+          uv run pytest --collect-only -q \
+            -m "not unit and not contract and not integration" 2>&1 | tee /tmp/unmarked.txt
+          grep -q "no tests collected" /tmp/unmarked.txt
+
+  canonical:
+    name: canonical artifacts are self-consistent
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv python install 3.11
+      - run: uv sync --group dev
+      # The engine hash and wrapper hash are what every miner's deployment is
+      # verified against. If a change to either asset lands without the
+      # migration set being updated, every deployed model becomes invalid at
+      # once — so the hashes are asserted in CI rather than discovered in
+      # production.
+      - name: Engine and wrapper hashes resolve
+        run: |
+          uv run python - <<'EOF'
+          from prometheon.canonical.integrity import (
+              canonical_engine_sha256,
+              canonical_wrapper_hash,
+              render_wrapper,
+              wrapper_hash,
+          )
+          engine = canonical_engine_sha256()
+          canonical = canonical_wrapper_hash()
+          rendered = wrapper_hash(
+              render_wrapper(
+                  hf_repo="example/model",
+                  hf_revision="0" * 40,
+                  chutes_user="example",
+                  chute_id="example-chute",
+              )
+          )
+          assert rendered == canonical, "a rendered wrapper must hash to the canonical value"
+          print(f"engine  {engine}")
+          print(f"wrapper {canonical}")
+          EOF
+
+  security:
+    name: bandit (static analysis)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv python install 3.11
+      - run: uv sync --group dev
+      - run: uv run --with bandit bandit -r src/prometheon -ll -q
+
+  audit:
+    name: pip-audit (dependency vulnerabilities)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v3
+      - run: uv python install 3.11
+      - run: uv sync --group dev
+      - run: uv run --with pip-audit pip-audit --skip-editable
+
+  signatures:
+    name: verify pushed commits are signed
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # Asks GitHub rather than git: verifying an SSH signature locally needs
+      # the signer's key in an allowed_signers file, which a runner does not
+      # have, so `git log --pretty=%G?` reports "N" for correctly signed
+      # commits and the check can never pass.
+      - name: Fail on unverified commits in PR range
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          unverified=""
+          for sha in $(git rev-list "$BASE..$HEAD"); do
+            verdict="$(gh api "repos/$REPO/commits/$sha" \
+              --jq '.commit.verification.verified, .commit.verification.reason' | paste -sd' ')"
+            echo "$sha $verdict"
+            case "$verdict" in
+              true*) ;;
+              *) unverified="$unverified$sha $verdict"$'\n' ;;
+            esac
+          done
+          if [[ -n "$unverified" ]]; then
+            echo "::error::Unverified commits in this PR:"
+            printf '%s' "$unverified"
+            exit 1
+          fi
