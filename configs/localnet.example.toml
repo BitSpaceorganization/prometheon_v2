@@ -1,0 +1,56 @@
+# Prometheon V2 — localnet, for development against a local chain and the
+# in-memory DB fake. Nothing here reaches a real service.
+
+[chain]
+network = "local"
+netuid = 1
+version_key = 0
+# Off for localnet only: a dev chain will not match a deployed version key.
+fail_on_weights_version_mismatch = false
+# Also localnet only. A dev chain may be running an SDK build whose set_weights
+# takes no mechid; on a live network that means the weights land on whatever
+# mechanism the chain defaults to, silently, so this stays false anywhere real.
+allow_missing_mechid = true
+
+[wallet]
+name = "validator"
+hotkey = "default"
+
+[db]
+base_url = "http://127.0.0.1:8600"
+request_timeout_seconds = 10.0
+max_retries = 0
+
+[labelling]
+model = "gpt-5.6-sol"
+base_url = "http://127.0.0.1:8601/v1"
+api_key_env = "OPENAI_API_KEY"
+batch_size = 10
+
+[evaluation]
+batch_size = 10
+request_timeout_seconds = 30.0
+chutes_api_key_env = "CHUTES_API_KEY"
+
+[scoring]
+dataset_share_bp = 5000
+dataset_top_n = 10
+model_rank_shares_bp = [3000, 1500, 500]
+# A model scored on fewer items than this is not ranked at all. Accuracy over a
+# handful of items is noise, and a miner can shrink its own corpus by supplying
+# most of a day's test content — its own items are excluded from what it is
+# scored on.
+model_min_scored_items = 100
+efficiency_lambda_bp = 1500
+efficiency_min_cv_bp = 1000
+
+[validator]
+state_directory = ".validator-state"
+submit_weights = false
+dry_run = true
+submit_results = false
+
+[miner]
+chutes_user = ""
+chute_id = ""
+hf_repo = ""
