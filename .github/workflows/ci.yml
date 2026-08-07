@@ -14,8 +14,8 @@ jobs:
     name: ruff (check + format)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v5
       - run: uv python install 3.11
       - run: uv sync --group dev
       - run: uv run ruff check src tests
@@ -25,8 +25,8 @@ jobs:
     name: mypy (strict)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v5
       - run: uv python install 3.11
       - run: uv sync --group dev
       - run: uv run mypy src/prometheon
@@ -39,8 +39,8 @@ jobs:
       matrix:
         python: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v5
       - run: uv python install ${{ matrix.python }}
       - run: uv sync --group dev
       # Every test, not a marker subset. An earlier version ran `-m unit` and
@@ -63,8 +63,8 @@ jobs:
     name: canonical artifacts are self-consistent
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v5
       - run: uv python install 3.11
       - run: uv sync --group dev
       # The engine hash and wrapper hash are what every miner's deployment is
@@ -100,8 +100,8 @@ jobs:
     name: bandit (static analysis)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v5
       - run: uv python install 3.11
       - run: uv sync --group dev
       - run: uv run --with bandit bandit -r src/prometheon -ll -q
@@ -110,8 +110,8 @@ jobs:
     name: pip-audit (dependency vulnerabilities)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v3
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v5
       - run: uv python install 3.11
       - run: uv sync --group dev
       - run: uv run --with pip-audit pip-audit --skip-editable
@@ -121,7 +121,7 @@ jobs:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           fetch-depth: 0
       # Asks GitHub rather than git: verifying an SSH signature locally needs
