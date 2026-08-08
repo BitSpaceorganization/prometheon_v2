@@ -16,7 +16,30 @@ accounts that have cleared the platform's anti-farming checks.
 
 ---
 
-## 1. Build a model
+## 1. Register your Fan Group on bitfan.ai
+
+Everything else depends on this, and it happens on the platform rather than
+through any subnet command.
+
+1. Sign in at **[bitfan.ai](https://bitfan.ai)**.
+2. Create a Fan Group and grow it to **at least 500 qualified users**. Qualified
+   means active real accounts that have cleared the platform's anti-farming
+   checks, not raw signups.
+3. Open **[bitfan.ai/me/prometheon](https://bitfan.ai/me/prometheon)** and link
+   your Fan Group leader account to the hotkey you will mine with.
+
+The link is what makes your users' test content attributable to your hotkey. Until
+it exists the platform has no way to credit you, so your submissions count toward
+nobody and you earn nothing from either stream.
+
+Your users then write posts and replies they believe violate
+[`content_policy.md`](../content_policy.md), marked as **test content**. Those
+are recorded and never published. They become the evaluation corpus every miner's
+model is measured against, which is what the dataset half of the reward pays for.
+
+---
+
+## 2. Build a model
 
 Any open-source model that fits on the GPU you are willing to pay for. It is
 judged on one task: given the policy and one piece of content, answer `YES` or
@@ -50,7 +73,7 @@ The engine file ships inside the package at
 
 ---
 
-## 2. Deploy behind the canonical wrapper
+## 3. Deploy behind the canonical wrapper
 
 Render the wrapper for your deployment:
 
@@ -97,7 +120,7 @@ is exchanged in either direction.
 
 ---
 
-## 3. Commit on chain
+## 4. Commit on chain
 
 This is the submission. Until it lands, you are not scored on a model.
 
@@ -123,7 +146,7 @@ model or the deployment actually changed, not otherwise.
 
 ---
 
-## 4. Check what a validator will see
+## 5. Check what a validator will see
 
 ```bash
 uv run prometheon model verify --config ~/prometheon-testnet.toml
@@ -156,7 +179,7 @@ commit loses.
 
 ---
 
-## 5. Train against released data
+## 6. Train against released data
 
 ```bash
 uv run prometheon dataset pull --config ~/prometheon-testnet.toml --date 2026-08-05
