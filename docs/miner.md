@@ -7,12 +7,15 @@ You earn from two independent streams, in equal measure:
 | Dataset contribution | 50% | test content your Fan Group users write |
 | Model performance | 50% | how well your model judges everyone else's |
 
-They are separate gates. A miner with 500 qualified users and no model earns
-from the dataset half. A miner with a deployed model and no contributors earns
-from the model half. Doing both is how you earn the most.
+**One entry gate, two streams behind it.** A Fan Group with **at least 500
+active members** — real accounts that have cleared the platform's anti-farming
+checks — is what makes you a miner at all. It is not a condition on one stream
+or the other; below it you are not on the eligible list, and a validator never
+looks at you.
 
-Both require a Fan Group with **at least 500 qualified users**: active real
-accounts that have cleared the platform's anti-farming checks.
+Above it, the two streams are independent. Contribute data and deploy no model
+and you earn the dataset half; deploy a model and your users submit nothing that
+day and you earn the model half. Doing both is how you earn the most.
 
 ---
 

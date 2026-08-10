@@ -164,9 +164,15 @@ the full miner emission is distributed.
 | No model met the measurement floor | the 50% model pool burns |
 | Neither half has a claimant | the whole miner emission burns |
 
-The two gates are separate. A miner with 500 qualified users but no deployed
-model earns from the dataset pool; a miner with a deployed model contributing
-no data earns from the model pool.
+**Everything above happens behind one entry gate.** A hotkey is scored at all
+only if it is on the day's eligible-miner list, which the subnet data layer
+derives from Fan Group active-member counts. Not on the list, and neither half
+pays: no commitment is read, no model is evaluated, and any test content its
+users wrote is not counted towards the dataset half.
+
+Past that gate the two streams are independent. A miner whose users contributed
+that day but who has deployed no model earns from the dataset pool; a miner with
+a deployed model whose users contributed nothing earns from the model pool.
 
 ---
 
