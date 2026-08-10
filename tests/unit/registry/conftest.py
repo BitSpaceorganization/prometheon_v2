@@ -13,7 +13,13 @@ from collections.abc import Callable
 import httpx
 import pytest
 
-from prometheon.canonical.integrity import canonical_engine_source, render_wrapper
+from prometheon.canonical.hashes import (
+    IMAGE_NAME,
+    IMAGE_TAG,
+    IMAGE_USERNAME,
+    image_id_for,
+)
+from prometheon.canonical.integrity import render_wrapper
 
 Handler = Callable[[httpx.Request], httpx.Response]
 
@@ -24,12 +30,12 @@ CHUTE_ID = "b4e8a2f1-6c3d-4e5a-9b7f-1d2c3e4f5a6b"
 SLUG = "moderation-guard"
 
 #: A repository that satisfies the manifest, including sharded weights.
+#: Weights, config and tokenizer. No executable code: the engine is in the
+#: deploy script now, so a repository is only ever read for model files.
 CONFORMING_FILES = (
     ".gitattributes",
     "README.md",
-    "chute_config.yml",
     "config.json",
-    "miner.py",
     "model-00001-of-00002.safetensors",
     "model-00002-of-00002.safetensors",
     "model.safetensors.index.json",
@@ -51,22 +57,25 @@ class Calls:
         return len(self.requests)
 
 
-def engine_bytes() -> bytes:
-    return canonical_engine_source().encode("utf-8")
+#: The account whose chute the fixtures describe, and the hotkey that names it.
+CHUTES_USER = "miner-one"
+MINER_HOTKEY = "5MinerOne"
 
 
 def wrapper_source(
     *,
     hf_repo: str = REPO,
     hf_revision: str = REVISION,
-    chutes_user: str = "miner-one",
-    chute_id: str = "moderation-guard",
+    chutes_user: str = CHUTES_USER,
+    hotkey: str = MINER_HOTKEY,
+    image_id: str | None = None,
 ) -> str:
     return render_wrapper(
         hf_repo=hf_repo,
         hf_revision=hf_revision,
         chutes_user=chutes_user,
-        chute_id=chute_id,
+        hotkey=hotkey,
+        image_id=image_id or image_id_for(IMAGE_USERNAME, IMAGE_NAME, IMAGE_TAG),
     )
 
 
@@ -89,7 +98,7 @@ def hf_handler(
     calls: Calls | None = None,
 ) -> Handler:
     """A Hugging Face stand-in serving one repository at one revision."""
-    body = engine_bytes() if engine is None else engine
+    body = engine or b""
 
     def handle(request: httpx.Request) -> httpx.Response:
         if calls is not None:
@@ -112,6 +121,8 @@ def chutes_handler(
     inline_code: bool = False,
     calls: Calls | None = None,
     extra_info: dict[str, object] | None = None,
+    image_id: str | None = None,
+    image_username: str = IMAGE_USERNAME,
 ) -> Handler:
     """A Chutes stand-in serving one chute and its deployed source."""
     deployed = wrapper_source() if source is None else source
@@ -128,6 +139,16 @@ def chutes_handler(
                 "name": "moderation-guard",
                 "slug": slug,
                 "hot": hot,
+                # Shaped like the live API: the image is a nested object whose
+                # owner is under `user.username`.
+                "image": {
+                    "image_id": (
+                        image_id
+                        if image_id is not None
+                        else image_id_for(IMAGE_USERNAME, IMAGE_NAME, IMAGE_TAG)
+                    ),
+                    "user": {"username": image_username},
+                },
             }
             if inline_code:
                 info["code"] = deployed

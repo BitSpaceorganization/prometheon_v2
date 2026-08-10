@@ -34,7 +34,7 @@ Code in this repository enforces each of these. There is no rule anyone has to r
 
 Miners also cannot see the corpus they are measured on. A day's test content is released to miners two days later, after the evaluation that used it has finished. Memorisation is not a strategy.
 
-Every model runs identical code. Miners supply weights. The inference path is a canonical engine, hash-pinned, published inside their own repository and verified before the model serves a single request. A score difference is a model difference.
+Every model runs identical code. Miners supply weights and nothing else. The inference path is one subnet-authored script, hash-pinned, running inside one subnet-built container image — and validators check both from outside, against the deployment itself. A hash proves which bytes are on disk; pinning the image is what makes them run somewhere the miner did not assemble. A score difference is a model difference.
 
 **Verdicts cannot be malformed, and a model cannot refuse.** Decoding is forced-choice: the engine compares probability mass on `YES` against `NO` and takes the larger. Nothing is generated freely, so there is no output to parse and no refusal to interpret.
 
@@ -98,7 +98,7 @@ uv run prometheon model verify --config ~/prometheon-testnet.toml
 uv run prometheon dataset pull --config ~/prometheon-testnet.toml --date 2026-08-05
 ```
 
-Your Hugging Face repository holds **weights and the canonical `miner.py`, nothing else**. Any extra file and your deployment will not start. See [`docs/miner.md`](./docs/miner.md).
+Your Hugging Face repository holds **weights, config and tokenizer — no executable code at all**. Any other file and your deployment is not scored. See [`docs/miner.md`](./docs/miner.md).
 
 **Authorise the subnet to call your model** with `chutes share`. You keep your credential, and no key is ever handed to a validator. You are the chute owner, so you pay for your own GPU hours.
 

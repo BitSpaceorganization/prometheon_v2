@@ -170,6 +170,18 @@ class CommitmentMismatchError(RegistryError):
     code: str = "registry.commitment_mismatch"
 
 
+class ImageMismatchError(RegistryError):
+    """The deployment runs an image the subnet did not publish.
+
+    File hashes prove which bytes are on disk; they prove nothing about the
+    interpreter that loads them. Pinning the image is what makes "every model
+    runs identical code" a fact rather than a description, and the id is the
+    only handle the platform exposes.
+    """
+
+    code: str = "registry.image_mismatch"
+
+
 class ChuteNotRunningError(RegistryError):
     code: str = "registry.chute_not_running"
 

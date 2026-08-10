@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 import httpx
 import pytest
 
+from prometheon.canonical.hashes import IMAGE_NAME, IMAGE_TAG, IMAGE_USERNAME, image_id_for
 from prometheon.chain.commitment import ModelCommitment
 from prometheon.registry.chutes import ChutesClient
 from prometheon.registry.huggingface import HuggingFaceClient
@@ -18,7 +19,7 @@ from prometheon.registry.validation import (
     eligible_miners,
 )
 
-from .conftest import CONFORMING_FILES, Calls, engine_bytes, wrapper_source
+from .conftest import CONFORMING_FILES, Calls, wrapper_source
 
 pytestmark = pytest.mark.unit
 
@@ -42,7 +43,6 @@ class Repo:
     """One Hugging Face repository at one revision, as the API would serve it."""
 
     files: tuple[str, ...] = CONFORMING_FILES
-    engine: bytes = field(default_factory=engine_bytes)
 
 
 @dataclass
@@ -58,6 +58,9 @@ class Deployment:
     source: str | None = None
     #: Whatever the platform's own metadata claims, which is never trusted.
     metadata: dict[str, object] = field(default_factory=dict)
+    #: The image the platform says this chute runs. Defaults to the subnet's.
+    image_id: str | None = None
+    image_username: str = IMAGE_USERNAME
 
     def deployed_source(self) -> str:
         if self.source is not None:
@@ -65,7 +68,6 @@ class Deployment:
         return wrapper_source(
             hf_repo=self.declares_repo,
             hf_revision=self.declares_revision,
-            chute_id=self.slug,
         )
 
 
@@ -142,6 +144,14 @@ class World:
                 "chute_id": chute_id,
                 "slug": deployment.slug,
                 "hot": deployment.hot,
+                "image": {
+                    "image_id": (
+                        deployment.image_id
+                        if deployment.image_id is not None
+                        else image_id_for(IMAGE_USERNAME, IMAGE_NAME, IMAGE_TAG)
+                    ),
+                    "user": {"username": deployment.image_username},
+                },
             }
             info.update(deployment.metadata)
             return httpx.Response(200, json=info)
@@ -270,9 +280,43 @@ def test_an_unlisted_file_makes_a_miner_ineligible() -> None:
     assert only(world, entry()).reason is InvalidReason.MANIFEST_VIOLATION
 
 
-def test_a_tampered_engine_makes_a_miner_ineligible() -> None:
-    world = World(repos={(REPO_A, REV_A): Repo(engine=engine_bytes() + b"\n# extra\n")})
-    assert only(world, entry()).reason is InvalidReason.ENGINE_HASH_MISMATCH
+def test_executable_code_in_the_repository_makes_a_miner_ineligible() -> None:
+    """The engine used to live here and be hashed. Now nothing executable does.
+
+    A repository is only ever read for weights, so the manifest stops being a
+    list of the ways code can hide and becomes a description of model files.
+    `chute_config.yml` was the file that made the old version of this necessary:
+    permitted by name, unchecked in content, and applied to the image builder.
+    """
+    for smuggled in ("miner.py", "chute_config.yml", "setup.py"):
+        world = World(repos={(REPO_A, REV_A): Repo(files=(*CONFORMING_FILES, smuggled))})
+        assert only(world, entry()).reason is InvalidReason.MANIFEST_VIOLATION, smuggled
+
+
+def test_a_deployment_running_another_image_makes_a_miner_ineligible() -> None:
+    """The check that makes "every model runs identical code" true.
+
+    Everything else proves which bytes are deployed. This is what makes them run
+    somewhere the miner did not assemble — and it is the only question about a
+    runtime the platform can answer, because the API exposes an image's identity
+    and never its contents.
+    """
+    world = World(
+        chutes={
+            CHUTE_A: Deployment(slug="guard-a", image_id="00000000-0000-0000-0000-000000000000")
+        }
+    )
+    assert only(world, entry()).reason is InvalidReason.IMAGE_MISMATCH
+
+
+def test_an_image_of_the_right_name_owned_by_someone_else_is_refused() -> None:
+    """An id is a hash of three strings the miner picks.
+
+    Anyone can build `their-account/prometheon-moderation:1` from any Dockerfile
+    at all. Only the owner distinguishes ours from theirs.
+    """
+    world = World(chutes={CHUTE_A: Deployment(slug="guard-a", image_username="somebody-else")})
+    assert only(world, entry()).reason is InvalidReason.IMAGE_MISMATCH
 
 
 def test_a_repository_that_does_not_exist_is_an_upstream_failure() -> None:
@@ -293,11 +337,11 @@ def test_hugging_face_being_down_never_marks_a_miner_dishonest() -> None:
 
 
 def test_an_edited_wrapper_is_rejected() -> None:
+    # A one-word change to the verdict rule: ties resolve to YES instead of NO.
+    # Behaviour-changing, invisible in a diff of the deployment's metadata, and
+    # exactly what the hash exists to catch.
     original = wrapper_source(hf_repo=REPO_A, hf_revision=REV_A)
-    tampered = original.replace(
-        "if name in PROMETHEON_FILE_MANIFEST:\n        return True",
-        "if True:\n        return True",
-    )
+    tampered = original.replace("return bool(yes > no)", "return bool(yes >= no)")
     assert tampered != original
 
     world = World(chutes={CHUTE_A: Deployment(slug="guard-a", source=tampered)})
@@ -495,8 +539,10 @@ def test_one_repository_is_verified_once_however_many_miners_claim_it() -> None:
     world, entries = _two_miners_on_one_model(block_a=100, block_b=200)
     world.registry().validate(entries)
 
-    # Two requests per repository verification: the file list and miner.py.
-    assert len(world.hf_calls) == 2
+    # One request per repository verification: the file list, and nothing else.
+    # The engine used to be fetched and hashed from here too; it lives in the
+    # deploy script now, so a repository is only ever read for its file names.
+    assert len(world.hf_calls) == 1
 
 
 def test_a_deterministic_repository_verdict_is_reused_across_miners() -> None:
