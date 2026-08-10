@@ -33,6 +33,21 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# The Chutes SDK, for `tests/contract/test_chutes_sdk_shape.py`.
+#
+# **Its own extra, and it cannot be a dev dependency.** `chutes` pulls
+# `substrate-interface` -> `scalecodec`, which occupies the same namespace as the
+# `cyscale` that `bittensor` installs, and the two refuse to coexist:
+#
+#     Conflict detected: 'scalecodec' is installed.
+#     This conflicts with 'cyscale', which uses the same namespace.
+#
+# So the two SDK contract tests need two environments, and CI runs the Chutes one
+# as a separate job. The alternative — leaving `chutes` uninstalled and letting
+# `importorskip` pass the file over — is what produced every critical defect an
+# independent review found in this repository: a boundary test that skips is not
+# a boundary test.
+chutes = ["chutes>=0.6.9,<0.7"]
 # Only the deployed chute needs these; validators and the CLI do not.
 wrapper = [
     "transformers>=4.44,<4.47",
@@ -53,6 +68,25 @@ dev = [
     "pytest>=8.3.0",
     "pytest-cov>=6.0.0",
     "ruff>=0.8.0",
+]
+
+# The Chutes SDK, in a group of its own because it **cannot** share an
+# environment with bittensor: `chutes` depends on `scalecodec` (py-scale-codec)
+# and `async-substrate-interface` depends on `cyscale`, and the two claim the
+# same import namespace — installing both makes `import bittensor` raise at
+# collection time.
+#
+# So `tests/contract/test_chutes_sdk_shape.py` runs in its own CI job with this
+# group installed and bittensor absent. Both contract files use
+# `pytest.importorskip`, so each skips cleanly in the other's environment.
+#
+# It is worth the extra job. That file exists because `chutes` was not a
+# dependency and nothing imported it, which is how three critical defects
+# reached a review: the deploy script had been hashed a thousand times and
+# executed never.
+chutes = [
+    "chutes>=0.6.9,<0.7",
+    "pytest>=8.3.0",
 ]
 
 [tool.hatch.build.targets.wheel]

@@ -26,6 +26,7 @@ one part of this codebase the review found nothing wrong with.
 
 from __future__ import annotations
 
+import ast
 import inspect
 import uuid
 
@@ -228,5 +229,16 @@ def test_the_rendered_script_parses_and_declares_what_it_should() -> None:
     assert declared["PROMETHEON_HOTKEY"] == "5Hot"
 
     # The image is a plain string in the source, never an `Image(...)` call.
-    assert 'image=PROMETHEON_IMAGE_ID' in source
-    assert "Image(" not in source
+    assert "image=PROMETHEON_IMAGE_ID" in source
+
+    # Asserted against the parse tree, not the text. The first version of this
+    # matched `"Image(" not in source` and tripped on a *comment* explaining why
+    # no `Image(...)` is constructed — a check that reads the prose rather than
+    # the code, which is the same mistake this whole file exists to stop.
+    tree = ast.parse(source)
+    constructed = {
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "Image" not in constructed, "the script must reference an image, never build one"
