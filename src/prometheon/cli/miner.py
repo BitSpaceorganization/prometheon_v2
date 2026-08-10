@@ -19,7 +19,6 @@ import argparse
 
 from prometheon.canonical.hashes import ACCEPTED_WRAPPER_HASHES
 from prometheon.canonical.integrity import (
-    canonical_engine_sha256,
     canonical_wrapper_hash,
     render_wrapper,
     require_valid_revision,
@@ -115,7 +114,6 @@ def cmd_render(args: argparse.Namespace) -> int:
         table(
             [
                 ("wrapper sha256", digest),
-                ("engine sha256", canonical_engine_sha256()),
                 ("accepted", "yes"),
             ]
         )
@@ -226,7 +224,6 @@ def cmd_canonical(args: argparse.Namespace) -> int:
     out(
         table(
             [
-                ("engine sha256", canonical_engine_sha256()),
                 ("wrapper sha256", canonical_wrapper_hash()),
                 ("accepted wrappers", str(len(ACCEPTED_WRAPPER_HASHES))),
             ]

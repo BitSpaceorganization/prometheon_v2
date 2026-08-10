@@ -30,13 +30,8 @@ from typing import Final
 
 import httpx
 
-from prometheon.canonical.integrity import (
-    canonical_engine_sha256,
-    require_valid_revision,
-    wrapper_template_source,
-)
+from prometheon.canonical.integrity import require_valid_revision
 from prometheon.errors import (
-    EngineHashMismatchError,
     ManifestViolationError,
     RegistryError,
 )
@@ -50,13 +45,14 @@ from prometheon.version import __version__
 
 DEFAULT_HF_ENDPOINT: Final[str] = "https://huggingface.co"
 
-ENGINE_FILENAME: Final[str] = "miner.py"
-
-#: The canonical engine is about ten kilobytes. The ceiling exists because the
-#: path is miner-controlled, not because the file is expected to grow.
-MAX_ENGINE_BYTES: Final[int] = 1 << 20
 
 _USER_AGENT: Final[str] = f"prometheon-validator/{__version__}"
+
+#: Ceiling on any single file this client will read. Nothing is fetched from a
+#: miner's repo any more — only its file list — but the cap stays on `fetch_file`
+#: because the path is miner-controlled and an unbounded read is a denial of
+#: service any miner could trigger.
+MAX_FILE_BYTES: Final[int] = 1 << 20
 
 #: ``namespace/name``, or a bare canonical name for the models Hugging Face
 #: hosts without a namespace. Every segment must start alphanumeric, which is
@@ -87,70 +83,51 @@ def require_valid_repo_id(repo: str) -> str:
     return repo
 
 
-def _literal_value(node: ast.expr) -> object | None:
-    """Evaluate a module-level constant, seeing through ``frozenset(...)``."""
-    target = node
-    if (
-        isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id in ("frozenset", "set")
-        and len(node.args) == 1
-        and not node.keywords
-    ):
-        target = node.args[0]
-    try:
-        value: object = ast.literal_eval(target)
-    except (MemoryError, RecursionError, SyntaxError, TypeError, ValueError):
-        return None
-    return value
+#: Every file a conforming repository may contain.
+#:
+#: **Weights, config and tokenizer. No executable code of any kind.** The engine
+#: used to be published here as `miner.py` and hash-checked at load time, which
+#: made this list a security boundary: it had to enumerate the ways code could
+#: hide, and `chute_config.yml` — a permitted file whose *contents* nothing
+#: checked — turned out to be one of them.
+#:
+#: The engine is in the deploy script now, inside the region validators hash. So
+#: this list stops being a defence and becomes a description: these are model
+#: files, and anything else does not belong in a repository that is only ever
+#: read for weights.
+FILE_MANIFEST: Final[frozenset[str]] = frozenset(
+    {
+        ".gitattributes",
+        ".gitignore",
+        "README.md",
+        "config.json",
+        "generation_config.json",
+        "merges.txt",
+        "model.safetensors",
+        "model.safetensors.index.json",
+        "special_tokens_map.json",
+        "tokenizer.json",
+        "tokenizer.model",
+        "tokenizer_config.json",
+        "vocab.json",
+    }
+)
 
-
-@lru_cache(maxsize=1)
-def _manifest_rules() -> tuple[frozenset[str], str, str]:
-    """The file manifest and shard affixes, parsed from the wrapper template."""
-    try:
-        tree = ast.parse(wrapper_template_source())
-    except SyntaxError as exc:  # pragma: no cover - the asset is tested elsewhere
-        raise RegistryError(f"the canonical wrapper template is not valid Python: {exc}") from exc
-
-    values: dict[str, object] = {}
-    for node in tree.body:
-        if not isinstance(node, ast.Assign) or len(node.targets) != 1:
-            continue
-        target = node.targets[0]
-        if not isinstance(target, ast.Name):
-            continue
-        literal = _literal_value(node.value)
-        if literal is not None:
-            values[target.id] = literal
-
-    manifest = values.get("PROMETHEON_FILE_MANIFEST")
-    prefix = values.get("PROMETHEON_SHARD_PREFIX")
-    suffix = values.get("PROMETHEON_SHARD_SUFFIX")
-    if (
-        not isinstance(manifest, (set, frozenset))
-        or not manifest
-        or not all(isinstance(name, str) for name in manifest)
-        or not isinstance(prefix, str)
-        or not isinstance(suffix, str)
-    ):
-        raise RegistryError(
-            "the canonical wrapper template does not declare a readable file manifest"
-        )
-    return frozenset(str(name) for name in manifest), prefix, suffix
+#: Sharded weights are the one legitimate variable-name case.
+SHARD_PREFIX: Final[str] = "model-"
+SHARD_SUFFIX: Final[str] = ".safetensors"
 
 
 def file_manifest() -> frozenset[str]:
     """Every fixed filename a conforming repository may contain."""
-    return _manifest_rules()[0]
+    return FILE_MANIFEST
 
 
 def file_allowed(name: str) -> bool:
-    """Mirror of the deployed wrapper's own check, including sharded weights."""
-    manifest, prefix, suffix = _manifest_rules()
-    if name in manifest:
+    """Whether one repository entry is permitted, sharded weights included."""
+    if name in FILE_MANIFEST:
         return True
-    return name.startswith(prefix) and name.endswith(suffix)
+    return name.startswith(SHARD_PREFIX) and name.endswith(SHARD_SUFFIX)
 
 
 @dataclass(frozen=True)
@@ -226,7 +203,7 @@ class HuggingFaceClient(RegistryHttpClient):
         return RepoSnapshot(repo=repo, revision=revision, files=tuple(sorted(files)))
 
     def fetch_file(
-        self, repo: str, revision: str, filename: str, *, max_bytes: int = MAX_ENGINE_BYTES
+        self, repo: str, revision: str, filename: str, *, max_bytes: int = MAX_FILE_BYTES
     ) -> bytes:
         """Raw bytes of one file at one commit."""
         require_valid_repo_id(repo)
@@ -250,35 +227,32 @@ class HuggingFaceClient(RegistryHttpClient):
             raise ManifestViolationError(
                 f"{snapshot.repo}@{snapshot.revision} contains files outside the manifest: {shown}"
             )
-        if ENGINE_FILENAME not in snapshot.files:
+        if not any(name.endswith(SHARD_SUFFIX) for name in snapshot.files):
             raise ManifestViolationError(
-                f"{snapshot.repo}@{snapshot.revision} is missing {ENGINE_FILENAME}"
+                f"{snapshot.repo}@{snapshot.revision} contains no {SHARD_SUFFIX} weights, "
+                f"so there is no model to serve"
             )
-
-    def verify_engine(self, repo: str, revision: str) -> str:
-        """Raise unless ``miner.py`` hashes to the canonical engine. Returns the digest."""
-        raw = self.fetch_file(repo, revision, ENGINE_FILENAME, max_bytes=MAX_ENGINE_BYTES)
-        digest = hashlib.sha256(raw).hexdigest()
-        expected = canonical_engine_sha256()
-        if digest != expected:
-            raise EngineHashMismatchError(
-                f"{ENGINE_FILENAME} in {repo}@{revision} hashes to {digest}, "
-                f"not the canonical engine {expected}"
-            )
-        return digest
 
     def verify_repository(self, repo: str, revision: str) -> RepoSnapshot:
-        """Manifest first, then engine hash. Returns the snapshot that passed."""
+        """Check the file list. Returns the snapshot that passed.
+
+        One check now, where there used to be two. The engine hash is gone
+        because the engine is no longer published here: it lives in the deploy
+        script, and the script's own hash covers it. Fetching a file from the
+        miner's repo to verify code that runs in the miner's container was
+        proving the wrong thing anyway.
+        """
         snapshot = self.list_files(repo, revision)
         self.verify_manifest(snapshot)
-        self.verify_engine(repo, revision)
         return snapshot
 
 
 __all__ = [
     "DEFAULT_HF_ENDPOINT",
-    "ENGINE_FILENAME",
-    "MAX_ENGINE_BYTES",
+    "FILE_MANIFEST",
+    "SHARD_PREFIX",
+    "MAX_FILE_BYTES",
+    "SHARD_SUFFIX",
     "HuggingFaceClient",
     "RepoSnapshot",
     "file_allowed",

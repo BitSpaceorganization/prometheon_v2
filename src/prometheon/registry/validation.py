@@ -51,7 +51,6 @@ from prometheon.errors import (
     CommitmentError,
     CommitmentMismatchError,
     DuplicateModelError,
-    EngineHashMismatchError,
     ManifestViolationError,
     RegistryError,
     RevisionFormatError,
@@ -81,7 +80,6 @@ class InvalidReason(str, Enum):
     COMMITMENT_MALFORMED = CommitmentDecodeError.code
     REVISION_NOT_SHA = RevisionFormatError.code
     MANIFEST_VIOLATION = ManifestViolationError.code
-    ENGINE_HASH_MISMATCH = EngineHashMismatchError.code
     WRAPPER_HASH_MISMATCH = WrapperHashMismatchError.code
     COMMITMENT_MISMATCH = CommitmentMismatchError.code
     CHUTE_NOT_RUNNING = ChuteNotRunningError.code
@@ -378,10 +376,6 @@ class ModelRegistry:
             return _outcome(
                 entry, commitment, reason=InvalidReason.MANIFEST_VIOLATION, detail=str(exc)
             )
-        except EngineHashMismatchError as exc:
-            return _outcome(
-                entry, commitment, reason=InvalidReason.ENGINE_HASH_MISMATCH, detail=str(exc)
-            )
         except RegistryError as exc:
             return _outcome(
                 entry, commitment, reason=InvalidReason.UPSTREAM_UNAVAILABLE, detail=str(exc)
@@ -496,7 +490,7 @@ class ModelRegistry:
             return
         try:
             self._huggingface.verify_repository(repo, revision)
-        except (ManifestViolationError, EngineHashMismatchError) as exc:
+        except ManifestViolationError as exc:
             repo_verdicts[key] = exc
             raise
         repo_verdicts[key] = None

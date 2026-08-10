@@ -2,7 +2,6 @@
 
 from prometheon.canonical.hashes import ACCEPTED_WRAPPER_HASHES, WRAPPER_VERSION
 from prometheon.canonical.integrity import (
-    canonical_engine_sha256,
     canonical_wrapper_hash,
     extract_declared_variables,
     is_valid_revision,
@@ -13,7 +12,6 @@ from prometheon.canonical.integrity import (
 __all__ = [
     "ACCEPTED_WRAPPER_HASHES",
     "WRAPPER_VERSION",
-    "canonical_engine_sha256",
     "canonical_wrapper_hash",
     "extract_declared_variables",
     "is_valid_revision",
