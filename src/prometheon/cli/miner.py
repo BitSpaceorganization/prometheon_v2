@@ -17,7 +17,14 @@ from __future__ import annotations
 
 import argparse
 
-from prometheon.canonical.hashes import ACCEPTED_WRAPPER_HASHES
+from prometheon.canonical.hashes import (
+    ACCEPTED_WRAPPER_HASHES,
+    IMAGE_NAME,
+    IMAGE_TAG,
+    IMAGE_USERNAME,
+    chute_id_for,
+    image_id_for,
+)
 from prometheon.canonical.integrity import (
     canonical_wrapper_hash,
     render_wrapper,
@@ -81,20 +88,30 @@ def cmd_render(args: argparse.Namespace) -> int:
     config = load(args.config)
     chutes_user = args.chutes_user or config.miner.chutes_user
     hf_repo = args.hf_repo or config.miner.hf_repo
-    chute_id = args.chute_id or config.miner.chute_id
-    if not (chutes_user and hf_repo and chute_id and args.hf_revision):
+    if not (chutes_user and hf_repo and args.hf_revision):
         raise ConfigError(
-            "rendering needs --chutes-user, --hf-repo, --hf-revision and --chute-id "
+            "rendering needs --chutes-user, --hf-repo and --hf-revision "
             "(or their [miner] config equivalents)"
         )
     require_valid_revision(args.hf_revision)
 
+    # The hotkey names the chute, which is what makes its id computable — and
+    # therefore checkable against the commitment. A miner-chosen name left the
+    # committed id unverifiable, and unknowable besides: it had to be committed
+    # before any chute existed to have one.
+    hotkey = open_wallet(config).hotkey.ss58_address
+
+    image_id = image_id_for(IMAGE_USERNAME, IMAGE_NAME, IMAGE_TAG)
     source = render_wrapper(
         hf_repo=hf_repo,
         hf_revision=args.hf_revision,
         chutes_user=chutes_user,
-        chute_id=chute_id,
+        hotkey=hotkey,
+        image_id=image_id,
+        gpu_count=args.gpu_count,
+        min_vram_gb=args.min_vram_gb,
     )
+    chute_id = chute_id_for(chutes_user, hotkey)
     digest = wrapper_hash(source)
     if digest not in ACCEPTED_WRAPPER_HASHES:
         raise ConfigError(
@@ -113,7 +130,14 @@ def cmd_render(args: argparse.Namespace) -> int:
     note(
         table(
             [
-                ("wrapper sha256", digest),
+                ("script sha256", digest),
+                ("image", f"{IMAGE_USERNAME}/{IMAGE_NAME}:{IMAGE_TAG}"),
+                ("image id", image_id),
+                # Printed because it is what goes on chain, and it cannot be
+                # looked up before the chute exists — it is derived from the
+                # account and the hotkey, so it is knowable now.
+                ("chute id (commit this)", chute_id),
+                ("gpus", f"{args.gpu_count} x >= {args.min_vram_gb}GB"),
                 ("accepted", "yes"),
             ]
         )

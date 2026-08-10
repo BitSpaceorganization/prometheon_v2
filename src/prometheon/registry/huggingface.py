@@ -19,13 +19,10 @@ different weights tomorrow.
 
 from __future__ import annotations
 
-import ast
-import hashlib
 import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from functools import lru_cache
 from typing import Final
 
 import httpx
@@ -250,8 +247,8 @@ class HuggingFaceClient(RegistryHttpClient):
 __all__ = [
     "DEFAULT_HF_ENDPOINT",
     "FILE_MANIFEST",
-    "SHARD_PREFIX",
     "MAX_FILE_BYTES",
+    "SHARD_PREFIX",
     "SHARD_SUFFIX",
     "HuggingFaceClient",
     "RepoSnapshot",

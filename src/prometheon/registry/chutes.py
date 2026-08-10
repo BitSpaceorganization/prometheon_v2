@@ -85,11 +85,36 @@ class ChuteInfo:
     #: The deployed source when the info response carries it inline. Empty
     #: otherwise, in which case it is fetched separately.
     code: str = ""
+    #: The image the deployment actually runs, as the platform reports it.
+    #:
+    #: The only handle there is. The API exposes an image's *identity* and never
+    #: its contents — no dockerfile, no digest, no SBOM — and the id is
+    #: ``uuid5(NAMESPACE_OID, "username/name:tag")``, a hash of three strings the
+    #: miner chooses. So "is this the image the subnet published?" is the only
+    #: question about it that can be answered, and the owner is checked beside it
+    #: because an id alone says nothing about who built the thing behind it.
+    image_id: str = ""
+    image_username: str = ""
 
 
 def _read_str(payload: Mapping[str, Any], key: str) -> str:
     value = payload.get(key)
     return value if isinstance(value, str) else ""
+
+
+def _read_image(payload: Mapping[str, Any]) -> tuple[str, str]:
+    """The deployed image's id and owner, or empty strings.
+
+    Empty rather than raising: an absent image block is a platform schema
+    change, and the eligibility check treats "unknown image" as "not the
+    subnet's image", which is the safe direction.
+    """
+    image = payload.get("image")
+    if not isinstance(image, dict):
+        return "", ""
+    owner = image.get("user")
+    username = owner.get("username") if isinstance(owner, dict) else None
+    return _read_str(image, "image_id"), username if isinstance(username, str) else ""
 
 
 def _read_hot(payload: Mapping[str, Any], what: str) -> bool:
@@ -212,6 +237,8 @@ class ChutesClient(RegistryHttpClient):
             hot=_read_hot(payload, what),
             name=_read_str(payload, "name"),
             code=_read_str(payload, "code"),
+            image_id=_read_image(payload)[0],
+            image_username=_read_image(payload)[1],
         )
 
     def fetch_deployed_source(self, chute_id: str) -> str:

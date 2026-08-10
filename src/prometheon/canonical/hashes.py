@@ -42,15 +42,17 @@ ACCEPTED_WRAPPER_HASHES: Final[frozenset[str]] = accepted_wrapper_hashes()
 
 __all__ = [
     "ACCEPTED_WRAPPER_HASHES",
+    "CHUTE_NAME_PREFIX",
     "IMAGE_NAME",
     "IMAGE_TAG",
     "IMAGE_USERNAME",
     "LEGACY_IMAGE_IDS",
-    "accepted_image_ids",
-    "image_id_for",
     "LEGACY_WRAPPER_HASHES",
     "WRAPPER_VERSION",
+    "accepted_image_ids",
     "accepted_wrapper_hashes",
+    "chute_id_for",
+    "image_id_for",
 ]
 
 
@@ -60,14 +62,16 @@ __all__ = [
 
 #: The image every miner's chute must reference, as ``username/name:tag``.
 #:
-#: **Unset until the subnet's Chutes account exists.** Left empty deliberately
-#: rather than guessed: the id is a pure function of these three strings, so a
-#: placeholder would produce a real-looking id that no image answers to, and the
-#: check would fail for every miner with nothing pointing at the cause.
-#: ``tests/contract/test_shipped_artifacts.py`` fails while it is empty.
-IMAGE_USERNAME: Final[str] = ""
-IMAGE_NAME: Final[str] = ""
-IMAGE_TAG: Final[str] = ""
+#: The subnet's own Chutes account. Miners build nothing: they reference this
+#: image by id, so the runtime their weights load inside is one the subnet
+#: published and every validator can name.
+#:
+#: These three strings *are* the id — ``image_id_for`` is a pure function of
+#: them — so changing any of them is an image migration, and
+#: ``LEGACY_IMAGE_IDS`` is how it gets an overlap window.
+IMAGE_USERNAME: Final[str] = "coolaisaworld"
+IMAGE_NAME: Final[str] = "prometheon-moderation"
+IMAGE_TAG: Final[str] = "1"
 
 #: Image ids retired but still accepted during a migration window. Empty outside
 #: one. Rebuilding the image — a torch bump, a CUDA bump — is more frequent than
@@ -97,3 +101,21 @@ def accepted_image_ids() -> frozenset[str]:
     if not (IMAGE_USERNAME and IMAGE_NAME and IMAGE_TAG):
         return frozenset()
     return frozenset({image_id_for(IMAGE_USERNAME, IMAGE_NAME, IMAGE_TAG)}) | LEGACY_IMAGE_IDS
+
+
+#: How the canonical script names a chute: the prefix plus the miner's hotkey.
+#: Kept beside the id derivation so the two cannot drift from the template.
+CHUTE_NAME_PREFIX: Final[str] = "prometheon-"
+
+
+def chute_id_for(chutes_user: str, hotkey: str) -> str:
+    """The id Chutes will give this miner's deployment, computed in advance.
+
+    ``uuid5(NAMESPACE_OID, f"{username}::chute::{name}")``, and the name is
+    fixed by the template as ``prometheon-<hotkey>``. Two things follow: a miner
+    can commit the id before the chute exists — which they had no way to do when
+    the name was theirs to choose — and a validator can check that the chute it
+    fetched is the one the commitment named, rather than taking the field on
+    trust.
+    """
+    return str(uuid.uuid5(uuid.NAMESPACE_OID, f"{chutes_user}::chute::{CHUTE_NAME_PREFIX}{hotkey}"))

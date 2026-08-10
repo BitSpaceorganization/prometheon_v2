@@ -72,7 +72,7 @@ A Hugging Face repository may contain **only** these:
 .gitattributes            config.json               tokenizer.json
 .gitignore                generation_config.json    tokenizer.model
 README.md                 merges.txt                tokenizer_config.json
-chute_config.yml          miner.py                  vocab.json
+vocab.json
 model.safetensors         model.safetensors.index.json
 special_tokens_map.json
 ```
@@ -85,8 +85,10 @@ attacker-controlled, and an allowlist is the only version of this check that
 does not need updating every time somebody invents a new way to smuggle code
 into a model load.
 
-`chute_config.yml` is yours: the image and the node selector are the miner's
-choice, because the miner pays for the GPU.
+The **image is the subnet's**, referenced by id. It is not built on your machine
+and there is no `chute_config.yml`: the Chutes API exposes an image's identity
+and never its contents, so an image you built is one no validator can verify.
+The GPU is still yours to choose — you pay for it — and it is set in the script.
 
 ---
 

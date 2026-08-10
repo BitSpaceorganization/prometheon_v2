@@ -52,17 +52,23 @@ def build_parser() -> argparse.ArgumentParser:
             "render",
             help="render the canonical wrapper to deploy on Chutes",
             description=(
-                "Print the exact wrapper.py to deploy. The rendered file is checked "
-                "against the canonical hash before it is written, so a wrapper no "
-                "validator would accept is caught before deployment rather than "
-                "after a day of serving."
+                "Print the exact miner.py to deploy with `chutes deploy`. It carries "
+                "the inference engine as well as the chute definition, and is checked "
+                "against the canonical hash before it is written, so a script no "
+                "validator would accept is caught before deployment rather than after "
+                "a day of serving. It also prints the chute id to commit, which is "
+                "derived from your account and hotkey and so is knowable before the "
+                "chute exists."
             ),
         )
     )
     render.add_argument("--hf-repo")
     render.add_argument("--hf-revision", help="40-character commit SHA, not a branch")
     render.add_argument("--chutes-user")
-    render.add_argument("--chute-id")
+    render.add_argument(
+        "--gpu-count", type=int, default=1, help="GPUs per instance (1-8); you pay for them"
+    )
+    render.add_argument("--min-vram-gb", type=int, default=16, help="VRAM floor per GPU (16-140)")
     render.add_argument("--output", type=Path, help="write here instead of stdout")
     render.set_defaults(handler=miner.cmd_render)
 

@@ -37,7 +37,11 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Final
 
-from prometheon.canonical.hashes import ACCEPTED_WRAPPER_HASHES
+from prometheon.canonical.hashes import (
+    ACCEPTED_WRAPPER_HASHES,
+    IMAGE_USERNAME,
+    accepted_image_ids,
+)
 from prometheon.canonical.integrity import (
     extract_declared_variables,
     is_valid_revision,
@@ -51,6 +55,7 @@ from prometheon.errors import (
     CommitmentError,
     CommitmentMismatchError,
     DuplicateModelError,
+    ImageMismatchError,
     ManifestViolationError,
     RegistryError,
     RevisionFormatError,
@@ -80,6 +85,7 @@ class InvalidReason(str, Enum):
     COMMITMENT_MALFORMED = CommitmentDecodeError.code
     REVISION_NOT_SHA = RevisionFormatError.code
     MANIFEST_VIOLATION = ManifestViolationError.code
+    IMAGE_MISMATCH = ImageMismatchError.code
     WRAPPER_HASH_MISMATCH = WrapperHashMismatchError.code
     COMMITMENT_MISMATCH = CommitmentMismatchError.code
     CHUTE_NOT_RUNNING = ChuteNotRunningError.code
@@ -436,7 +442,43 @@ class ModelRegistry:
                 wrapper_digest=digest,
             )
 
-        # 6 -- the deployment can actually answer.
+        # 6 -- the deployment runs the image the subnet published.
+        #
+        # The one thing about a runtime a validator can check. Everything above
+        # proves which *bytes* are deployed; this is what makes them run
+        # somewhere the miner did not assemble. The API exposes an image's
+        # identity and never its contents, so an id from an account other than
+        # the subnet's is not the subnet's image whatever it is called.
+        accepted = accepted_image_ids()
+        if not accepted:
+            return _outcome(
+                entry,
+                commitment,
+                reason=InvalidReason.IMAGE_MISMATCH,
+                detail=(
+                    "no subnet image is configured, so no deployment can be verified to "
+                    "run one. Refusing every model rather than accepting an image nobody "
+                    "chose: the Chutes API exposes no image contents, so an unverified "
+                    "image is an unknown runtime"
+                ),
+                chute_slug=info.slug,
+                wrapper_digest=digest,
+            )
+        if info.image_id not in accepted or info.image_username != IMAGE_USERNAME:
+            return _outcome(
+                entry,
+                commitment,
+                reason=InvalidReason.IMAGE_MISMATCH,
+                detail=(
+                    f"chute {info.chute_id} runs image {info.image_id or '(none reported)'} "
+                    f"owned by {info.image_username or '(unknown)'}; this subnet scores only "
+                    f"deployments running an image published by {IMAGE_USERNAME}"
+                ),
+                chute_slug=info.slug,
+                wrapper_digest=digest,
+            )
+
+        # 7 -- the deployment can actually answer.
         try:
             endpoint = self._reachable_endpoint(info)
         except ChuteNotRunningError as exc:
@@ -449,7 +491,7 @@ class ModelRegistry:
                 wrapper_digest=digest,
             )
 
-        # 7 -- an earlier commitment of the same model wins.
+        # 8 -- an earlier commitment of the same model wins.
         if duplicate_of is not None:
             return _outcome(
                 entry,

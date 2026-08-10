@@ -12,9 +12,16 @@ from pathlib import Path
 
 import pytest
 
-from prometheon.canonical.hashes import ACCEPTED_WRAPPER_HASHES
+from prometheon.canonical.hashes import (
+    ACCEPTED_WRAPPER_HASHES,
+    IMAGE_NAME,
+    IMAGE_TAG,
+    IMAGE_USERNAME,
+    accepted_image_ids,
+    chute_id_for,
+    image_id_for,
+)
 from prometheon.canonical.integrity import (
-    canonical_engine_sha256,
     canonical_wrapper_hash,
     render_wrapper,
     wrapper_hash,
@@ -87,8 +94,7 @@ class TestTheShippedPolicyIsUsable:
 #: of the code that produces it. Changing either one changes what every
 #: validator on the network accepts, so a diff that touches them is a
 #: subnet-wide migration and must follow docs/canonical-wrapper.md.
-EXPECTED_WRAPPER_HASH = "0abee123f52c083288d1e3391ba8086641c3eac9b417d10c3ee4d6de830bbee0"
-EXPECTED_ENGINE_HASH = "18dc22db1a8e3037a5738195dc559874f25321e582f9ea18187b97661ea36490"
+EXPECTED_SCRIPT_HASH = "2420578a89ff18e6b753fc55fb0cdcbc05f43340981663db397c8fccf3ff7477"
 
 
 class TestTheCanonicalArtifactsAgree:
@@ -99,10 +105,7 @@ class TestTheCanonicalArtifactsAgree:
 
         This is the test that would have caught the `ast.dump` instability.
         """
-        assert canonical_wrapper_hash() == EXPECTED_WRAPPER_HASH
-
-    def test_the_engine_hash_is_the_published_value(self) -> None:
-        assert canonical_engine_sha256() == EXPECTED_ENGINE_HASH
+        assert canonical_wrapper_hash() == EXPECTED_SCRIPT_HASH
 
     def test_normalisation_does_not_depend_on_the_interpreter(self) -> None:
         """The property the literals above defend, stated directly.
@@ -114,7 +117,7 @@ class TestTheCanonicalArtifactsAgree:
         from prometheon.canonical.integrity import normalise_source
 
         rendered = render_wrapper(
-            hf_repo="a/b", hf_revision="0" * 40, chutes_user="u", chute_id="c"
+            hf_repo="a/b", hf_revision="0" * 40, chutes_user="u", hotkey="5H", image_id="i"
         )
         normalised = normalise_source(rendered)
         for moved in ("type_params", "type_comment", "type_ignores", "kind="):
@@ -133,7 +136,8 @@ class TestTheCanonicalArtifactsAgree:
             hf_repo="example/model",
             hf_revision="0" * 40,
             chutes_user="example",
-            chute_id="example-chute",
+            hotkey="5Hot",
+            image_id="img-1",
         )
         assert wrapper_hash(rendered) == canonical_wrapper_hash()
 
@@ -141,21 +145,57 @@ class TestTheCanonicalArtifactsAgree:
         """Normalisation is what lets four values vary without breaking the pin."""
         first = wrapper_hash(
             render_wrapper(
-                hf_repo="a/one", hf_revision="a" * 40, chutes_user="alice", chute_id="c1"
+                hf_repo="a/one",
+                hf_revision="a" * 40,
+                chutes_user="alice",
+                hotkey="5Alice",
+                image_id="img-1",
+                gpu_count=1,
+                min_vram_gb=16,
             )
         )
         second = wrapper_hash(
-            render_wrapper(hf_repo="b/two", hf_revision="b" * 40, chutes_user="bob", chute_id="c2")
+            render_wrapper(
+                hf_repo="b/two",
+                hf_revision="b" * 40,
+                chutes_user="bob",
+                hotkey="5Bob",
+                image_id="img-1",
+                # A different GPU choice must not change the hash either: it is
+                # the miner's to make and they pay for it.
+                gpu_count=8,
+                min_vram_gb=140,
+            )
         )
         assert first == second == canonical_wrapper_hash()
 
     def test_the_canonical_hash_is_one_validators_accept(self) -> None:
         assert canonical_wrapper_hash() in ACCEPTED_WRAPPER_HASHES
 
-    def test_the_engine_hash_is_stable(self) -> None:
-        digest = canonical_engine_sha256()
-        assert len(digest) == 64
-        assert digest == canonical_engine_sha256()
+    def test_the_subnet_image_is_configured(self) -> None:
+        """An unconfigured image means no deployment can be verified at all.
+
+        `accepted_image_ids()` is empty until the account strings are set, and
+        the registry treats an empty set as "refuse everything" — the safe
+        direction, since the Chutes API exposes no image contents and an
+        unverified image is an unknown runtime. This fails loudly rather than
+        letting a build ship that would zero the whole field.
+        """
+        assert IMAGE_USERNAME and IMAGE_NAME and IMAGE_TAG
+        assert accepted_image_ids() == frozenset(
+            {image_id_for(IMAGE_USERNAME, IMAGE_NAME, IMAGE_TAG)}
+        )
+
+    def test_the_chute_id_is_derivable_before_the_chute_exists(self) -> None:
+        """Which is why the script names the chute from the hotkey.
+
+        A miner must commit `chute_id` before deploying, and a miner-chosen name
+        made that impossible: the id did not exist yet. Derived, it is knowable
+        in advance and checkable afterwards.
+        """
+        assert chute_id_for("alice", "5Hot") == chute_id_for("alice", "5Hot")
+        assert chute_id_for("alice", "5Hot") != chute_id_for("bob", "5Hot")
+        assert chute_id_for("alice", "5Hot") != chute_id_for("alice", "5Cold")
 
 
 class TestTheDocumentedCommandsExist:

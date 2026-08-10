@@ -7,6 +7,12 @@ from collections.abc import Callable
 import httpx
 import pytest
 
+from prometheon.canonical.hashes import (
+    IMAGE_NAME,
+    IMAGE_TAG,
+    IMAGE_USERNAME,
+    image_id_for,
+)
 from prometheon.errors import ChuteNotRunningError, RegistryError
 from prometheon.registry.chutes import (
     MODERATE_PATH,
@@ -48,7 +54,16 @@ def test_fetch_chute_reads_slug_and_hot_status() -> None:
     info = client(chutes_handler(calls=calls)).fetch_chute(CHUTE_ID)
 
     assert info == ChuteInfo(
-        chute_id=CHUTE_ID, slug=SLUG, hot=True, name="moderation-guard", code=""
+        chute_id=CHUTE_ID,
+        slug=SLUG,
+        hot=True,
+        name="moderation-guard",
+        code="",
+        # Read from the nested `image` object the live API returns, owner
+        # included: an image id alone says nothing about who built the thing
+        # behind it, and the id is only a hash of three strings.
+        image_id=image_id_for(IMAGE_USERNAME, IMAGE_NAME, IMAGE_TAG),
+        image_username=IMAGE_USERNAME,
     )
     assert calls.paths() == [f"/chutes/{CHUTE_ID}"]
 

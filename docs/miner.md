@@ -104,7 +104,7 @@ branch moves. A commitment that can move after it is verified is not a
 commitment, and the CLI rejects one before it reaches the chain.
 
 Deploy it to Chutes with your own account, on whatever GPU you choose. The image
-and node selector are yours, in your `chute_config.yml`. You are the chute owner,
+and node selector are set in the script you render. You are the chute owner,
 so you pay for the GPU hours.
 
 ### Authorising the subnet
@@ -162,7 +162,7 @@ fix:
 
 1. a commitment exists and decodes
 2. its revision is a 40-character commit SHA
-3. the Hugging Face repo passes the manifest and carries the canonical engine
+3. the Hugging Face repo holds model files and no executable code
 4. the deployed chute source hashes to an accepted wrapper
 5. the repo and revision *declared in that source* equal what you committed
 6. the chute is hot
