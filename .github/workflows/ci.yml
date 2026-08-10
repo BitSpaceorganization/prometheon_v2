@@ -59,6 +59,31 @@ jobs:
             -m "not unit and not contract and not integration" 2>&1 | tee /tmp/unmarked.txt
           grep -q "no tests collected" /tmp/unmarked.txt
 
+  chutes-sdk:
+    name: chutes SDK shape (isolated)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v5
+      - run: uv python install 3.12
+      # Its own job because `chutes` and `bittensor` cannot share an
+      # environment: chutes depends on `scalecodec`, async-substrate-interface
+      # on `cyscale`, and the two claim one import namespace — installed
+      # together, `import bittensor` raises at collection.
+      #
+      # Both contract files use `importorskip`, so each skips cleanly where the
+      # other's SDK is absent. This job is what stops the Chutes boundary going
+      # untested again: it was untested exactly once, and three critical defects
+      # came out of it.
+      - run: uv sync --group chutes
+      - name: The Chutes contract test runs, and is not silently skipped
+        # `importorskip` makes an absent SDK look like a pass, so a job that
+        # stopped installing it would go green with the boundary untested.
+        run: |
+          uv run pytest tests/contract/test_chutes_sdk_shape.py -ra | tee /tmp/chutes.txt
+          grep -q "passed" /tmp/chutes.txt
+          ! grep -q "skipped" /tmp/chutes.txt
+
   canonical:
     name: canonical artifacts are self-consistent
     runs-on: ubuntu-24.04
