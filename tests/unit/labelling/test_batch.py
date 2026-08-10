@@ -513,9 +513,35 @@ class TestAWellFormedAnswerIsNotAutomaticallyATrueOne:
         assert all(corpus.labels.values())
         assert corpus.excluded_ids == ()
 
-    def test_a_mixed_batch_is_not_checked(self, build_labeller: Callable[..., Harness]) -> None:
-        """Only a batch with a uniform low prior has a base rate to test."""
+    def test_a_mixed_batch_is_checked_on_its_production_subset(
+        self, build_labeller: Callable[..., Harness]
+    ) -> None:
+        """A batch carrying test content is exactly where an injection arrives.
+
+        This asserted the opposite until the batches were interleaved: the check
+        required *every* item to have a low prior, and the caller concatenated
+        test content ahead of production content, so in a real cycle no batch
+        containing a test item was ever checked. That exempted the
+        miner-authored, adversarial-by-design half of the corpus — the half the
+        tripwire was written for.
+
+        Thirty production items all coming back violating is the signal, and the
+        thirty test items sharing the batch do not suppress it.
+        """
         mixed = self._production(30) + self._test_content(30)
+        with pytest.raises(LabellingError, match="does not look like labelling"):
+            _run(build_labeller, self._all_yes, items=mixed, batch_size=60)
+
+    def test_a_mixed_batch_with_too_few_production_items_is_not_checked(
+        self, build_labeller: Callable[..., Harness]
+    ) -> None:
+        """Unanimity over a handful of items is unremarkable, not evidence.
+
+        The floor applies to the low-prior subset rather than to the batch, so a
+        batch that is mostly test content simply has too small a sample to judge
+        and is left alone.
+        """
+        mixed = self._production(5) + self._test_content(55)
         corpus, _ = _run(build_labeller, self._all_yes, items=mixed, batch_size=60)
         assert len(corpus.labels) == 60
 

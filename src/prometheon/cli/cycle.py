@@ -42,7 +42,7 @@ from prometheon.chain import subtensor as chain
 # import here would make a field-name mistake look like a typo rather than a
 # type confusion.
 from prometheon.chain.commitment import ModelCommitment as ChainCommitment
-from prometheon.chain.commitment import read_commitment
+from prometheon.chain.commitment import read_commitment, read_commitment_block
 from prometheon.chain.metagraph import MetagraphView
 from prometheon.chain.weights import (
     assert_submission_allowed,
@@ -57,14 +57,25 @@ from prometheon.dbclient.models import (
     corpus_content_hash,
 )
 from prometheon.dbclient.models import ModelCommitment as FrozenCommitment
-from prometheon.errors import CommitmentError
-from prometheon.evaluation.corpus import EvaluationCorpus, ItemSource, LabelledItem, build_corpus
+from prometheon.errors import CommitmentError, SubtensorError
+from prometheon.evaluation.corpus import (
+    EvaluationCorpus,
+    ItemSource,
+    LabelledItem,
+    build_corpus,
+    corpus_order_key,
+)
 from prometheon.evaluation.result import MinerEvaluation
 from prometheon.evaluation.runner import MinerTarget, evaluate_miner
 from prometheon.labelling.batch import LabelledCorpus, label_items
 from prometheon.labelling.client import ChatCompletionClient
 from prometheon.labelling.prompt import LabelItem
-from prometheon.registry.validation import MinerEntry, MinerValidation, ModelRegistry
+from prometheon.registry.validation import (
+    UNKNOWN_COMMIT_BLOCK,
+    MinerEntry,
+    MinerValidation,
+    ModelRegistry,
+)
 from prometheon.scoring.combine import WeightSplit, combine_weights
 from prometheon.scoring.dataset import DatasetSubmission, score_dataset
 from prometheon.scoring.model import ModelEvaluation, ModelRanking, score_models
@@ -136,6 +147,7 @@ def run_cycle(
 
     metagraph = chain.sync_metagraph_view(subtensor, netuid=config.chain.netuid)
     burn_hotkey = chain.read_subnet_owner_hotkey(subtensor, netuid=config.chain.netuid)
+    _require_burn_target(metagraph, burn_hotkey, netuid=config.chain.netuid)
 
     # --- 2. the day's data, and what the chain says about it -------------
     say(f"fetching the snapshot for {day.isoformat()}")
@@ -243,8 +255,26 @@ def submit_weights(
     reassigned immediately, so submitting against a stale snapshot pays a
     stranger. Hotkeys that vanished are dropped and reported rather than
     aborting the whole submission over somebody else's exit.
+
+    The submission gates are re-run here on freshly read hyperparameters. They
+    are also checked at the top of the cycle, and both matter for opposite
+    reasons: the early check refuses before an OpenAI bill is spent, and this
+    one is the only check that reflects the chain as it is *now*. A cycle takes
+    hours, and ``read_hyperparameters``' own docstring promised it ran
+    "immediately before submission" while the only call site was step 1.
+    Commit-reveal switched on mid-cycle is exactly the case the gate exists for,
+    and exactly the case the early-only check missed.
     """
+    assert_submission_allowed(
+        hyperparameters=chain.read_hyperparameters(subtensor, netuid=config.chain.netuid),
+        capabilities=chain.detect_capabilities(subtensor),
+        configured_version_key=config.chain.version_key,
+        fail_on_weights_version_mismatch=config.chain.fail_on_weights_version_mismatch,
+        allow_missing_mechid=config.chain.allow_missing_mechid,
+    )
+
     fresh = chain.sync_metagraph_view(subtensor, netuid=config.chain.netuid)
+    _require_burn_target(fresh, result.burn_hotkey, netuid=config.chain.netuid)
     registered, gone = fresh.partition_by_registration(list(result.split.weights))
 
     units = {hotkey: result.split.weights[hotkey] for hotkey in registered}
@@ -322,6 +352,36 @@ def build_results(result: CycleResult) -> tuple[MinerResult, ...]:
 # ---------------------------------------------------------------------------
 
 
+def _require_burn_target(metagraph: MetagraphView, burn_hotkey: str, *, netuid: int) -> None:
+    """Refuse at minute zero if the burn target cannot hold a weight.
+
+    Every unclaimed pool is routed to the subnet owner's hotkey, and
+    :func:`resolve_allocations` is strict: a hotkey it cannot resolve to a uid
+    raises rather than being dropped, because dropping one silently
+    redistributes its emission to everybody else.
+
+    A subnet owner's hotkey is **not** automatically registered as a neuron on
+    its own subnet. When it is not, every cycle carrying any burn — which is
+    most early cycles — reached submission and aborted there, after a full day
+    of labelling and inference had already been paid for. The failure is the
+    same either way; the cost of discovering it is not.
+
+    Checked here rather than made survivable at submission because the
+    alternatives are both worse: omitting the burn hands the chain's own
+    normalisation the job of redistributing emission the design says nobody
+    earned, and submitting nothing makes the validator look dead. A subnet whose
+    owner holds no uid is misconfigured, and that is an operator's fix.
+    """
+    if metagraph.uid_for(burn_hotkey) is not None:
+        return
+    raise SubtensorError(
+        f"the subnet owner hotkey {burn_hotkey!r} is not registered on netuid={netuid}, "
+        f"so it cannot receive a weight. Every unclaimed pool burns to it, so this "
+        f"cycle could compute a full result and then fail at submission. Register the "
+        f"owner hotkey as a neuron on its own subnet before running a cycle"
+    )
+
+
 def _chain_entries(
     snapshot: DaySnapshot, *, metagraph: MetagraphView, subtensor: Any, netuid: int
 ) -> tuple[list[MinerEntry], list[str]]:
@@ -353,6 +413,25 @@ def _chain_entries(
             entries.append(MinerEntry(uid=uid, hotkey=miner.hotkey, decode_error=str(exc)))
             continue
 
+        # The block settles duplicate claims on one revision SHA, and it has to
+        # be read here or it is not read at all. Leaving it unset was the whole
+        # of the defect: every entry carried the same default, the sort
+        # collapsed to ascending uid, and a low-uid mirror beat the model's
+        # author every time — the outcome `_duplicate_losers` names as the
+        # strictly worse attack.
+        #
+        # A read failure is not fatal to the cycle. The miner keeps their entry
+        # and takes `UNKNOWN_COMMIT_BLOCK`, which sorts last, so an unreadable
+        # block costs its owner every tie instead of winning them.
+        try:
+            commit_block = read_commitment_block(subtensor, netuid=netuid, hotkey=miner.hotkey)
+        except CommitmentError as exc:
+            commit_block = UNKNOWN_COMMIT_BLOCK
+            notes.append(
+                f"{miner.hotkey}: commitment block unreadable ({exc}); it loses any "
+                "duplicate-model tie it enters"
+            )
+
         declared = frozen.get(miner.hotkey)
         if declared is not None and commitment is not None:
             # Note the field names differ: the DB layer's record calls it
@@ -373,19 +452,45 @@ def _chain_entries(
                 )
 
         chain_commitment: ChainCommitment | None = commitment
-        entries.append(MinerEntry(uid=uid, hotkey=miner.hotkey, commitment=chain_commitment))
+        entries.append(
+            MinerEntry(
+                uid=uid,
+                hotkey=miner.hotkey,
+                commitment=chain_commitment,
+                commit_block=commit_block,
+            )
+        )
     return entries, notes
 
 
 def _label_items_for(snapshot: DaySnapshot) -> list[LabelItem]:
-    """Everything to be labelled, with its prior attached.
+    """Everything to be labelled, in one deterministic interleaved order.
 
     ``expected_violating`` is the prior, never the answer: test content was
     submitted *because* someone believed it violates, production content has a
     low base rate. Labelling uses it only to tell a legitimately unanimous batch
     apart from a subverted one.
+
+    **The order is derived from the day's content hash**, using the same keyed
+    digest :func:`~prometheon.evaluation.corpus.build_corpus` sorts by. Two
+    properties follow, and the labelling path had neither.
+
+    *Every validator batches identically.* Evaluation went to some trouble to
+    make its order reproducible from the snapshot alone; labelling took whatever
+    order the DB layer returned, so two validators could split the same corpus
+    into different calls and disagree for reasons unrelated to the content.
+
+    *Test and production interleave.* Concatenating the two put every miner's
+    items in a contiguous run, so one successful injection inside a test batch
+    landed almost entirely on the miner who authored that batch — it converted
+    their own items to ``V = 100`` and poisoned ground truth at the same time.
+    Scattering them means an injection that survives is diluted across the
+    field rather than aimed, and it is what lets the base-rate tripwire see
+    production items inside a batch that also carries test content. See
+    ``_looks_subverted``: the two changes only work together.
     """
-    return [
+    content_hash = snapshot.manifest.content_hash
+    items = [
         *(
             LabelItem(item_id=item.id, content=item.content, expected_violating=True)
             for item in snapshot.test_items
@@ -395,6 +500,8 @@ def _label_items_for(snapshot: DaySnapshot) -> list[LabelItem]:
             for item in snapshot.production_items
         ),
     ]
+    items.sort(key=lambda item: (corpus_order_key(content_hash, item.item_id), item.item_id))
+    return items
 
 
 def _labelled_test(snapshot: DaySnapshot, labelled: LabelledCorpus) -> list[LabelledItem]:

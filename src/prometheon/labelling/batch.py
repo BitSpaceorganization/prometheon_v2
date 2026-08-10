@@ -359,12 +359,22 @@ def _looks_subverted(chunk: Sequence[LabelItem], verdicts: Mapping[str, bool]) -
     fake without becoming visible. It is scoped as narrowly as possible,
     because a false positive here costs real labels:
 
-    - Only batches whose items are **all** marked ``expected_violating=False``
-      are checked. Test content is submitted *because* someone believed it
-      violates policy, so an all-``YES`` batch of it is the ordinary result and
-      must never trip anything.
-    - Only batches of at least :data:`_MIN_CHUNK_FOR_BASE_RATE` items. Over a
-      handful, unanimity is unremarkable.
+    - It looks at the batch's **low-base-rate subset** — the items marked
+      ``expected_violating=False`` — and asks whether every one of them came
+      back violating. Test content is submitted *because* someone believed it
+      violates policy, so an all-``YES`` answer over it is the ordinary result
+      and is never evidence of anything.
+    - Only when that subset is at least :data:`_MIN_CHUNK_FOR_BASE_RATE` items.
+      Over a handful, unanimity is unremarkable.
+
+    **It used to require the batch to be entirely low-base-rate**, and the
+    caller concatenated test content ahead of production content, so every batch
+    containing a test item returned early and was never checked at all. Test
+    content is the miner-authored, adversarial-by-design half of the corpus —
+    precisely the half an injection arrives in — so the check was off for exactly
+    the input it was written for. It works now because
+    ``_label_items_for`` interleaves the two; the ordering change and this one
+    are one fix in two files.
 
     **A trip aborts the cycle; it does not split.** That is the opposite of how
     every other bad response here is handled. Splitting is containment for an
@@ -379,16 +389,15 @@ def _looks_subverted(chunk: Sequence[LabelItem], verdicts: Mapping[str, bool]) -
     paying for the extra calls. Detecting subversion and then accepting it is
     worse than not checking at all.
     """
-    if len(chunk) < _MIN_CHUNK_FOR_BASE_RATE:
+    low_base_rate = [item for item in chunk if item.expected_violating is False]
+    if len(low_base_rate) < _MIN_CHUNK_FOR_BASE_RATE:
         return ""
-    if not all(item.expected_violating is False for item in chunk):
-        return ""
-    if not verdicts or not all(verdicts.values()):
+    if not all(verdicts.get(item.item_id) for item in low_base_rate):
         return ""
     return (
-        f"every one of {len(chunk)} items expected to be non-violating came back "
-        "violating; treating a unanimous answer against a low base rate as an "
-        "unusable response rather than as ground truth"
+        f"every one of {len(low_base_rate)} items expected to be non-violating came "
+        f"back violating, out of a batch of {len(chunk)}; treating a unanimous answer "
+        "against a low base rate as an unusable response rather than as ground truth"
     )
 
 

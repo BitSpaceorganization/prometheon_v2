@@ -302,6 +302,57 @@ def read_commitment(
     return decode_commitment(raw)
 
 
+def read_commitment_block(subtensor: Any, *, netuid: int, hotkey: str) -> int:
+    """The block a hotkey's commitment was written in.
+
+    This is what settles a duplicate-model contest, and it has to come from the
+    **chain**. The subnet DB layer mirrors a ``block`` on its own commitment
+    records and it would have been one line to read it from there — but
+    duplicate resolution is an anti-gaming mechanism, and sourcing it from the
+    service being audited would make the anti-gaming property depend on the one
+    component a validator is otherwise careful never to trust. The chain is the
+    authority on commitments; this reads the authority.
+
+    Keyed by ``hotkey_ss58`` rather than by uid, unlike
+    :func:`read_commitment`. A uid is a recycled slot, so a metadata read keyed
+    by uid can answer about whoever inherited it; a hotkey is identity.
+
+    Returns :data:`~prometheon.registry.validation.UNKNOWN_COMMIT_BLOCK` when
+    the chain has no readable block for this hotkey. That value sorts *last*, so
+    a hotkey whose block cannot be established loses every duplicate contest it
+    enters rather than winning them.
+    """
+    from prometheon.registry.validation import UNKNOWN_COMMIT_BLOCK
+
+    accessor = getattr(subtensor, "get_commitment_metadata", None)
+    if accessor is None:
+        raise CommitmentError(
+            "the installed bittensor SDK exposes no Subtensor.get_commitment_metadata, "
+            "so the block a commitment was written in cannot be read. Without it, "
+            "duplicate-model claims fall back to uid order, which hands every claim "
+            "to whoever registered earliest; this runtime drives the 10.x accessor "
+            "API, pin 'bittensor>=10.5,<11'"
+        )
+
+    try:
+        metadata = accessor(netuid=netuid, hotkey_ss58=hotkey)
+    except Exception as exc:
+        raise CommitmentError(
+            f"could not read commitment metadata for {hotkey!r} on netuid={netuid}: {exc}"
+        ) from exc
+
+    # The accessor is typed `str | CommitmentOfResponse`: the plain-string form
+    # carries the payload and no block at all. Absent rather than zero, because
+    # zero is a real block number and would win.
+    block = getattr(metadata, "block", None)
+    if block is None:
+        return UNKNOWN_COMMIT_BLOCK
+    try:
+        return int(block)
+    except (TypeError, ValueError):
+        return UNKNOWN_COMMIT_BLOCK
+
+
 def _as_ascii(payload: str | bytes) -> str:
     """Normalise the shapes a commitment arrives in to plain ASCII text.
 
@@ -402,4 +453,5 @@ __all__ = [
     "encode_commitment",
     "publish_commitment",
     "read_commitment",
+    "read_commitment_block",
 ]

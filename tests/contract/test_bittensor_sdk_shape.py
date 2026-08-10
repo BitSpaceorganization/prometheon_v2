@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import dataclasses
 import inspect
+import typing
 from typing import Any
 
 import pytest
@@ -400,6 +401,35 @@ def test_the_commitment_read_is_keyed_by_uid_on_this_sdk() -> None:
     parameters = set(inspect.signature(bittensor.Subtensor.get_commitment).parameters)
     assert "uid" in parameters
     assert "hotkey_ss58" not in parameters
+
+
+def test_the_commitment_block_is_readable_and_keyed_by_hotkey() -> None:
+    """The block that settles a duplicate-model claim, taken from the authority.
+
+    Duplicate claims on one revision SHA are resolved by ascending commit block.
+    Nothing populated it for a while, so the sort collapsed to ascending uid —
+    which hands every claim to whoever registered earliest, the attack
+    ``registry.validation`` exists to prevent.
+
+    The DB layer mirrors a block on its own commitment records and reading it
+    from there would have been easier. It is read from chain instead, because
+    duplicate resolution is an anti-gaming mechanism and sourcing it from the
+    service being audited would make the anti-gaming property depend on the one
+    component a validator is otherwise careful never to trust.
+
+    Keyed by ``hotkey_ss58``, unlike ``get_commitment`` above — which is the
+    better key, since a uid is a recycled slot.
+    """
+    parameters = set(inspect.signature(bittensor.Subtensor.get_commitment_metadata).parameters)
+    assert "hotkey_ss58" in parameters
+    assert "netuid" in parameters
+
+    # The block has to survive as an integer field on the response, or
+    # `read_commitment_block` silently falls back to "unknown" for everyone and
+    # the ordering degrades to uid again without anything failing.
+    from bittensor.core.types import CommitmentOfResponse
+
+    assert "block" in typing.get_type_hints(CommitmentOfResponse)
 
 
 def test_a_commitment_round_trips_through_the_sdk_boundary() -> None:

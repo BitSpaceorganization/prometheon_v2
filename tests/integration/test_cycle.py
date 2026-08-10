@@ -17,6 +17,7 @@ a scripted transport, and each miner's model is an ``httpx.MockTransport``.
 from __future__ import annotations
 
 import datetime as dt
+import itertools
 import json
 from types import SimpleNamespace
 from typing import Any
@@ -49,7 +50,12 @@ from prometheon.dbclient.models import (
 # and warns when it cannot. This is a domain model, not a test class.
 from prometheon.dbclient.models import TestContentItem as ContentItem
 from prometheon.labelling.client import OpenAICompatibleClient
-from prometheon.registry.validation import InvalidReason, MinerValidation, ModelRegistry
+from prometheon.registry.validation import (
+    UNKNOWN_COMMIT_BLOCK,
+    InvalidReason,
+    MinerValidation,
+    ModelRegistry,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -70,11 +76,21 @@ MINER_B = Keypair.create_from_uri("//MinerB")
 
 
 class FakeChain:
-    """The five accessors ``prometheon.chain.subtensor`` requires, and no more."""
+    """The accessors ``prometheon.chain.subtensor`` requires, and no more.
 
-    def __init__(self, hotkeys: list[str], *, owner: str) -> None:
+    "And no more" is load-bearing: `assert_sdk_compatible` checks this exact set
+    at connect time, so a fake that grew an accessor the runtime does not drive
+    would hide the day the SDK stopped offering it.
+    """
+
+    def __init__(
+        self, hotkeys: list[str], *, owner: str, blocks: dict[str, int] | None = None
+    ) -> None:
         self._hotkeys = [owner, *hotkeys]
         self._owner = owner
+        #: Block per hotkey, as `get_commitment_metadata` reports it. Settles
+        #: duplicate-model claims, so a test can make one miner commit first.
+        self._blocks = blocks or {}
         self.submitted: list[dict[str, Any]] = []
 
     def metagraph(self, netuid: int, lite: bool = True) -> Any:
@@ -94,6 +110,11 @@ class FakeChain:
 
     def get_subnet_owner_hotkey(self, netuid: int) -> str:
         return self._owner
+
+    def get_commitment_metadata(self, netuid: int, hotkey_ss58: str) -> Any:
+        # Shaped like `bittensor.core.types.CommitmentOfResponse`, which is what
+        # 10.5 returns: `deposit`, `block`, `info`.
+        return SimpleNamespace(deposit=0, block=self._blocks.get(hotkey_ss58, 500), info=None)
 
     def get_commitment(self, netuid: int, uid: int) -> str:
         from prometheon.chain.commitment import ModelCommitment as ChainCommitment
@@ -375,6 +396,90 @@ def test_a_whole_cycle_produces_a_submittable_weight_vector(
     sent = world["chain"].submitted[0]
     assert sum(sent["weights"]) == 65_535
     assert len(set(sent["uids"])) == len(sent["uids"])
+
+
+def test_the_cycle_reads_a_real_commit_block_for_every_miner(
+    config: Config, world: dict[str, Any]
+) -> None:
+    """The defect was that nothing populated this on the path that runs.
+
+    ``_duplicate_losers`` settles competing claims on one revision SHA by
+    ascending block. Every production construction of ``MinerEntry`` omitted
+    ``commit_block``, so all of them carried the same default and the sort
+    collapsed to ascending uid — which the registry's own docstring calls the
+    strictly worse attack, because a copycat need only hold a lower uid.
+
+    The unit tests passed throughout: they set ``commit_block`` themselves. So
+    this asserts it over the *cycle*, which is the only place the omission
+    lived, and it asserts a real block rather than merely "not the default".
+    """
+    world["chain"]._blocks = {
+        MINER_A.ss58_address: 4_242,
+        MINER_B.ss58_address: 9_001,
+    }
+    result = _run(config, world, accuracy={"a.chutes.invalid": 1.0, "b.chutes.invalid": 0.6})
+
+    blocks = {item.hotkey: item.commit_block for item in result.validations}
+    assert blocks[MINER_A.ss58_address] == 4_242
+    assert blocks[MINER_B.ss58_address] == 9_001
+    assert UNKNOWN_COMMIT_BLOCK not in blocks.values()
+
+
+def test_an_unreadable_commit_block_loses_ties_instead_of_winning_them(
+    config: Config, world: dict[str, Any]
+) -> None:
+    """The direction of the fallback is the point.
+
+    A block that cannot be read cannot prove priority. Defaulting it to ``0``
+    made it the *earliest* possible commitment, so a miner who could make the
+    read fail would win every duplicate contest they entered. It sorts last
+    instead, and the cycle keeps running.
+    """
+
+    def refuse(netuid: int, hotkey_ss58: str) -> Any:
+        raise RuntimeError("substrate said no")
+
+    world["chain"].get_commitment_metadata = refuse
+    result = _run(config, world, accuracy={"a.chutes.invalid": 1.0, "b.chutes.invalid": 0.6})
+
+    assert all(item.commit_block == UNKNOWN_COMMIT_BLOCK for item in result.validations)
+    assert any("duplicate-model tie" in note for note in result.notes)
+    # And the cycle still produced a submittable result rather than aborting.
+    assert result.split.weights
+
+
+def test_labelling_batches_are_deterministic_and_interleaved(
+    config: Config, world: dict[str, Any]
+) -> None:
+    """Two properties the labelling path had neither of.
+
+    Evaluation derives its order from the day's content hash so every validator
+    batches identically; labelling took whatever order the DB layer returned and
+    concatenated test content ahead of production. That made batching
+    validator-dependent, and it put each miner's items in one contiguous run —
+    so a successful injection inside a test batch landed almost entirely on the
+    miner who authored it.
+    """
+    from prometheon.cli.cycle import _label_items_for
+
+    with DbClient(
+        base_url="https://db.invalid",
+        netuid=NETUID,
+        keypair=VALIDATOR,
+        transport=world["layer"].transport,
+    ) as db:
+        snapshot = db.fetch_day(DAY)
+
+    first = [item.item_id for item in _label_items_for(snapshot)]
+    second = [item.item_id for item in _label_items_for(snapshot)]
+    assert first == second, "two validators must split the same day into the same calls"
+
+    priors = [item.expected_violating for item in _label_items_for(snapshot)]
+    assert set(priors) == {True, False}, "the fixture needs both halves to prove anything"
+    # Concatenated order is one run of True followed by one run of False: exactly
+    # two transitions' worth of structure. Interleaving destroys that.
+    runs = sum(1 for a, b in itertools.pairwise(priors) if a != b)
+    assert runs > 1, f"test and production are still contiguous ({runs} transition)"
 
 
 def test_the_better_model_outranks_the_worse_one(config: Config, world: dict[str, Any]) -> None:

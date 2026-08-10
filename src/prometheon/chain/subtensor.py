@@ -65,6 +65,10 @@ _REQUIRED_ACCESSORS: Final[tuple[str, ...]] = (
     "get_subnet_hyperparameters",
     "get_subnet_owner_hotkey",
     "get_commitment",
+    # Supplies the block a commitment was written in, which is what settles a
+    # duplicate-model claim. Absent, duplicate resolution silently degrades to
+    # uid order — the attack `registry.validation` exists to prevent.
+    "get_commitment_metadata",
     "set_weights",
 )
 

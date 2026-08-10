@@ -109,8 +109,23 @@ def _read_hot(payload: Mapping[str, Any], what: str) -> bool:
             return count > 0
     instances = payload.get("instances")
     if isinstance(instances, list):
-        return len(instances) > 0
+        # A *live* instance, not merely a listed one. Each entry carries its own
+        # `active` and `verified` flags, and an instance that is neither is a
+        # record of a deployment that is not serving. Counting the list length
+        # made a chute full of dead instances read as hot, which would send a
+        # batch of a hundred items at something that cannot answer and score the
+        # miner incorrect for it. Absent flags are treated as live, because this
+        # path only runs when the platform has stopped reporting `hot` at all
+        # and inventing a stricter rule than the payload supports would zero a
+        # working miner over a schema change.
+        return any(_instance_is_live(entry) for entry in instances)
     raise RegistryError(f"{what} did not report whether it is hot")
+
+
+def _instance_is_live(entry: Any) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    return all(entry.get(flag) is not False for flag in ("active", "verified"))
 
 
 def _extract_source(raw: bytes, what: str) -> str:

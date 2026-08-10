@@ -91,6 +91,17 @@ class InvalidReason(str, Enum):
     UPSTREAM_UNAVAILABLE = RegistryError.code
 
 
+#: The block of a commitment nobody could read.
+#:
+#: It sorts **last**, and the direction is the whole point. Duplicate claims are
+#: settled by ascending block, so a default of ``0`` meant "unknown" was
+#: indistinguishable from "committed in the genesis block" and therefore *won*
+#: every contest it entered. An unknown block cannot prove priority, so it must
+#: lose to any block that can — and a caller that can make the read fail must
+#: not be rewarded for it.
+UNKNOWN_COMMIT_BLOCK: Final[int] = 1 << 62
+
+
 @dataclass(frozen=True)
 class MinerEntry:
     """One eligible miner as the chain presents it.
@@ -100,16 +111,24 @@ class MinerEntry:
     Prometheon V2 commitment. Different failure, different fix, so the two are
     not collapsed.
 
-    ``commit_block`` is the block the commitment was written in. It settles
-    duplicates and nothing else, so a caller that cannot obtain it may leave it
-    at zero. Ties then fall to the lower uid.
+    ``commit_block`` is the block the commitment was written in, read from the
+    chain. It settles duplicates and nothing else.
+
+    **It has no benign default.** It used to default to ``0``, and nothing in
+    the production path ever set it — only the tests did — so every real
+    duplicate contest was decided by ascending uid. That is the outcome
+    :func:`_duplicate_losers` documents as the *strictly worse* attack: sit on a
+    low uid and mirror anything good. The default is now
+    :data:`UNKNOWN_COMMIT_BLOCK`, which sorts last, so the failure mode of
+    forgetting to populate it is "this miner loses every tie" rather than "this
+    miner wins every tie".
     """
 
     uid: int
     hotkey: str
     commitment: ModelCommitment | None = None
     decode_error: str | None = None
-    commit_block: int = 0
+    commit_block: int = UNKNOWN_COMMIT_BLOCK
 
 
 @dataclass(frozen=True)

@@ -151,9 +151,20 @@ before it is stored, never at read time and never by the client. If truncation
 happened later, the labeller would judge full text while models read a truncated
 version. That is an irreducible corpus error no model could overcome.
 
-**The embargo is two days.** Day N's test content is readable by miners at
-04:00 UTC on day N+2, after the evaluation that used it has finished. Serve
-`403 db.embargoed` before that. Validators are not embargoed.
+**The embargo is two days.** Day N's content is readable by miners at
+**00:00 UTC on day N+2**, by which point the 04:00 cycle that used it has long
+finished. Serve `403 db.embargoed` before that, and carry `available_at` so the
+caller does not have to guess when to return. Validators are never embargoed.
+
+Midnight, not 04:00. The boundary is a property of the *date*, so every server
+and every client derives it from the date alone with no reference to when any
+particular validator happens to run. `FakeDbLayer` lifts it at midnight and
+`test_it_lifts_at_midnight_two_days_later` pins that to the second.
+
+The embargo covers **production content too**, not only test content. The table
+above lists `/v2/dataset/{date}/production` as validator-only, and a server that
+role-gated it would answer `db.not_authorized` where a miner is owed
+`db.embargoed` — a different code with a different remediation.
 
 ---
 
@@ -225,7 +236,7 @@ scores and another does not.
 Always this shape, never a bare status:
 
 ```json
-{"error": {"code": "db.embargoed", "message": "test content for 2026-08-06 is released at 2026-08-08T04:00:00Z"}}
+{"error": {"code": "db.embargoed", "message": "content for 2026-08-06 is released at 2026-08-08T00:00:00Z", "available_at": 1786233600}}
 ```
 
 | Code | Status | Meaning |
