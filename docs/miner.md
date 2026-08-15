@@ -62,17 +62,19 @@ against `NO` at a single position. There is no free generation, so:
 Train accordingly. What matters is calibration on the boundary cases in
 [`content_policy.md`](../content_policy.md), not instruction-following polish.
 
-**Your Hugging Face repository holds weights and the canonical `miner.py`, and
-nothing else.** Any extra file and your deployment is rejected. Get the exact
-engine to commit:
+**Your Hugging Face repository holds weights, and that is all it needs to
+hold.** The engine is not a file you copy in: it *is* the canonical wrapper you
+deploy on Chutes, which loads your weights from the repo at the revision you
+commit. One artefact, hashed in one place.
 
 ```bash
-uv run prometheon canonical          # prints the engine and wrapper hashes
+uv run prometheon canonical          # prints the wrapper hash validators accept
 ```
 
-The engine file ships inside the package at
-`src/prometheon/canonical/assets/miner.py.template`. Copy it into your repo as
-`miner.py`, byte for byte. A validator recomputes its SHA-256 and compares.
+A validator fetches the wrapper source from your Chutes deployment, normalises
+it, and compares the hash. Everything except the four values in §3 is fixed, so
+two miners running the same wrapper hash identically however they filled those
+in — which is what makes a score difference a model difference.
 
 ---
 

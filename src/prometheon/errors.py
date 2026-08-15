@@ -146,12 +146,6 @@ class ManifestViolationError(RegistryError):
     code: str = "registry.manifest_violation"
 
 
-class EngineHashMismatchError(RegistryError):
-    """``miner.py`` is not the canonical engine."""
-
-    code: str = "registry.engine_hash_mismatch"
-
-
 class WrapperHashMismatchError(RegistryError):
     """The deployed chute source is not the canonical wrapper."""
 
@@ -297,7 +291,6 @@ __all__ = [
     "DbLayerError",
     "DuplicateModelError",
     "EmbargoedError",
-    "EngineHashMismatchError",
     "EvaluationError",
     "LabelResponseError",
     "LabellingError",
