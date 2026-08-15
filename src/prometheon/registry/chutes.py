@@ -49,6 +49,18 @@ MAX_SOURCE_BYTES: Final[int] = 1 << 20
 #: A single DNS label: what may be interpolated into a hostname.
 _SLUG_RE: Final[re.Pattern[str]] = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
+#: Every chute this subnet evaluates lives under one namespace, agreed with the
+#: Chutes team. The prefix is what makes a deployment provably ours: a slug
+#: becomes a hostname, and without it a miner could commit any chute on the
+#: platform — including someone else's working model — and be scored on it.
+CHUTE_SLUG_PREFIX: Final[str] = "prometheon"
+
+#: Prefix, then a separator, then at least one more character. A slug that is
+#: exactly the prefix addresses nothing.
+_PREFIXED_SLUG_RE: Final[re.Pattern[str]] = re.compile(
+    rf"^{CHUTE_SLUG_PREFIX}-[a-z0-9](?:[a-z0-9-]{{0,{61 - len(CHUTE_SLUG_PREFIX) - 1}}}[a-z0-9])?$"
+)
+
 #: Chute ids are opaque platform identifiers interpolated into a URL path. The
 #: character class matches what the commitment encoder accepts, so no id the
 #: chain will carry is rejected here; ``.`` and ``..`` are excluded separately
@@ -71,7 +83,13 @@ def require_valid_chute_id(chute_id: str) -> str:
 
 
 def is_valid_slug(slug: str) -> bool:
-    return bool(_SLUG_RE.match(slug or ""))
+    """A DNS label **inside this subnet's namespace**.
+
+    Both conditions, not either: the DNS rule keeps the slug usable as a
+    hostname, and the prefix keeps it ours.
+    """
+    candidate = slug or ""
+    return bool(_SLUG_RE.match(candidate)) and bool(_PREFIXED_SLUG_RE.match(candidate))
 
 
 @dataclass(frozen=True)
@@ -260,8 +278,9 @@ class ChutesClient(RegistryHttpClient):
         """Base URL of a deployed chute, refusing a slug that is not a DNS label."""
         if not is_valid_slug(slug):
             raise RegistryError(
-                f"not a usable chute slug: {slug!r}; a slug becomes a hostname and "
-                "must be a single DNS label"
+                f"not a usable chute slug: {slug!r}; a slug becomes a hostname, so it "
+                f"must be a single DNS label and must start with {CHUTE_SLUG_PREFIX!r}- "
+                "so the deployment is provably inside this subnet's namespace"
             )
         return self._endpoint_template.format(slug=slug)
 
@@ -289,6 +308,7 @@ __all__ = [
     "ChuteInfo",
     "ChutesClient",
     "is_valid_chute_id",
+    "CHUTE_SLUG_PREFIX",
     "is_valid_slug",
     "require_hot",
     "require_valid_chute_id",

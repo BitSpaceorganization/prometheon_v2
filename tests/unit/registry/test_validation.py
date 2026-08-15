@@ -82,7 +82,7 @@ class World:
         hf_down: bool = False,
     ) -> None:
         self.repos = repos if repos is not None else {(REPO_A, REV_A): Repo()}
-        self.chutes = chutes if chutes is not None else {CHUTE_A: Deployment(slug="guard-a")}
+        self.chutes = chutes if chutes is not None else {CHUTE_A: Deployment(slug="prometheon-guard-a")}
         self.hf_down = hf_down
         self.hf_calls = Calls()
         self.chute_calls = Calls()
@@ -209,9 +209,9 @@ def test_a_conforming_miner_is_eligible_and_addressable() -> None:
     assert result.hf_revision == REV_A
     assert result.chute_id == CHUTE_A
     assert result.commit_block == 100
-    assert result.chute_slug == "guard-a"
-    assert result.endpoint_url == "https://guard-a.chutes.ai"
-    assert result.moderate_url == "https://guard-a.chutes.ai/moderate"
+    assert result.chute_slug == "prometheon-guard-a"
+    assert result.endpoint_url == "https://prometheon-guard-a.chutes.ai"
+    assert result.moderate_url == "https://prometheon-guard-a.chutes.ai/moderate"
     assert result.wrapper_digest
 
 
@@ -226,7 +226,7 @@ def test_an_ineligible_miner_carries_no_endpoint() -> None:
 def test_eligible_miners_keeps_only_the_valid_ones() -> None:
     world = World(
         repos={(REPO_A, REV_A): Repo()},
-        chutes={CHUTE_A: Deployment(slug="guard-a")},
+        chutes={CHUTE_A: Deployment(slug="prometheon-guard-a")},
     )
     results = world.registry().validate([entry(uid=1), MinerEntry(uid=2, hotkey=HOTKEY_B)])
     assert [result.uid for result in eligible_miners(results)] == [1]
@@ -303,7 +303,7 @@ def test_a_deployment_running_another_image_makes_a_miner_ineligible() -> None:
     """
     world = World(
         chutes={
-            CHUTE_A: Deployment(slug="guard-a", image_id="00000000-0000-0000-0000-000000000000")
+            CHUTE_A: Deployment(slug="prometheon-guard-a", image_id="00000000-0000-0000-0000-000000000000")
         }
     )
     assert only(world, entry()).reason is InvalidReason.IMAGE_MISMATCH
@@ -315,7 +315,7 @@ def test_an_image_of_the_right_name_owned_by_someone_else_is_refused() -> None:
     Anyone can build `their-account/prometheon-moderation:1` from any Dockerfile
     at all. Only the owner distinguishes ours from theirs.
     """
-    world = World(chutes={CHUTE_A: Deployment(slug="guard-a", image_username="somebody-else")})
+    world = World(chutes={CHUTE_A: Deployment(slug="prometheon-guard-a", image_username="somebody-else")})
     assert only(world, entry()).reason is InvalidReason.IMAGE_MISMATCH
 
 
@@ -344,7 +344,7 @@ def test_an_edited_wrapper_is_rejected() -> None:
     tampered = original.replace("return bool(yes > no)", "return bool(yes >= no)")
     assert tampered != original
 
-    world = World(chutes={CHUTE_A: Deployment(slug="guard-a", source=tampered)})
+    world = World(chutes={CHUTE_A: Deployment(slug="prometheon-guard-a", source=tampered)})
 
     assert only(world, entry()).reason is InvalidReason.WRAPPER_HASH_MISMATCH
 
@@ -357,13 +357,13 @@ def test_a_reformatted_wrapper_is_still_the_canonical_wrapper() -> None:
         + wrapper_source(hf_repo=REPO_A, hf_revision=REV_A)
         + "\n\n# and a trailing one\n"
     )
-    world = World(chutes={CHUTE_A: Deployment(slug="guard-a", source=reformatted)})
+    world = World(chutes={CHUTE_A: Deployment(slug="prometheon-guard-a", source=reformatted)})
 
     assert only(world, entry()).valid
 
 
 def test_source_that_is_not_python_is_rejected_as_a_wrapper_mismatch() -> None:
-    world = World(chutes={CHUTE_A: Deployment(slug="guard-a", source="def broken(:\n")})
+    world = World(chutes={CHUTE_A: Deployment(slug="prometheon-guard-a", source="def broken(:\n")})
     result = only(world, entry())
 
     assert result.reason is InvalidReason.WRAPPER_HASH_MISMATCH
@@ -376,7 +376,7 @@ def test_source_that_is_not_python_is_rejected_as_a_wrapper_mismatch() -> None:
 def test_a_wrapper_serving_another_revision_is_rejected() -> None:
     world = World(
         repos={(REPO_A, REV_A): Repo(), (REPO_A, REV_B): Repo()},
-        chutes={CHUTE_A: Deployment(slug="guard-a", declares_revision=REV_B)},
+        chutes={CHUTE_A: Deployment(slug="prometheon-guard-a", declares_revision=REV_B)},
     )
     result = only(world, entry())
 
@@ -387,7 +387,7 @@ def test_a_wrapper_serving_another_revision_is_rejected() -> None:
 def test_a_wrapper_serving_another_repo_is_rejected() -> None:
     world = World(
         repos={(REPO_A, REV_A): Repo()},
-        chutes={CHUTE_A: Deployment(slug="guard-a", declares_repo=REPO_B)},
+        chutes={CHUTE_A: Deployment(slug="prometheon-guard-a", declares_repo=REPO_B)},
     )
     assert only(world, entry()).reason is InvalidReason.COMMITMENT_MISMATCH
 
@@ -403,7 +403,7 @@ def test_chute_metadata_cannot_rescue_a_wrapper_that_pins_a_branch() -> None:
     world = World(
         chutes={
             CHUTE_A: Deployment(
-                slug="guard-a",
+                slug="prometheon-guard-a",
                 source=branch_pinned,
                 metadata={"hf_revision": REV_A, "revision": REV_A},
             )
@@ -418,7 +418,7 @@ def test_chute_metadata_cannot_rescue_a_wrapper_that_pins_a_branch() -> None:
 def test_the_chute_id_in_the_wrapper_is_not_compared_with_the_commitment() -> None:
     # PROMETHEON_CHUTE_ID is the deployment *name*; the platform assigns the id
     # the chain carries. Comparing them would invalidate every honest miner.
-    world = World(chutes={CHUTE_A: Deployment(slug="guard-a")})
+    world = World(chutes={CHUTE_A: Deployment(slug="prometheon-guard-a")})
     assert only(world, entry()).valid
 
 
@@ -426,7 +426,7 @@ def test_the_chute_id_in_the_wrapper_is_not_compared_with_the_commitment() -> No
 
 
 def test_a_cold_chute_is_not_scorable() -> None:
-    world = World(chutes={CHUTE_A: Deployment(slug="guard-a", hot=False)})
+    world = World(chutes={CHUTE_A: Deployment(slug="prometheon-guard-a", hot=False)})
     result = only(world, entry())
 
     assert result.reason is InvalidReason.CHUTE_NOT_RUNNING
@@ -452,8 +452,8 @@ def _two_miners_on_one_model(*, block_a: int, block_b: int) -> tuple[World, list
     world = World(
         repos={(REPO_A, REV_A): Repo()},
         chutes={
-            CHUTE_A: Deployment(slug="guard-a"),
-            CHUTE_B: Deployment(slug="guard-b"),
+            CHUTE_A: Deployment(slug="prometheon-guard-a"),
+            CHUTE_B: Deployment(slug="prometheon-guard-b"),
         },
     )
     entries = [
@@ -486,8 +486,8 @@ def test_a_copy_does_not_become_eligible_when_the_original_is_cold() -> None:
     world = World(
         repos={(REPO_A, REV_A): Repo()},
         chutes={
-            CHUTE_A: Deployment(slug="guard-a", hot=False),
-            CHUTE_B: Deployment(slug="guard-b"),
+            CHUTE_A: Deployment(slug="prometheon-guard-a", hot=False),
+            CHUTE_B: Deployment(slug="prometheon-guard-b"),
         },
     )
     original = entry(uid=1, hotkey=HOTKEY_A, commit=commitment(chute_id=CHUTE_A), block=100)
@@ -503,8 +503,8 @@ def test_different_revisions_of_one_repo_are_not_duplicates() -> None:
     world = World(
         repos={(REPO_A, REV_A): Repo(), (REPO_A, REV_B): Repo()},
         chutes={
-            CHUTE_A: Deployment(slug="guard-a"),
-            CHUTE_B: Deployment(slug="guard-b", declares_revision=REV_B),
+            CHUTE_A: Deployment(slug="prometheon-guard-a"),
+            CHUTE_B: Deployment(slug="prometheon-guard-b", declares_revision=REV_B),
         },
     )
     entries = [
@@ -527,7 +527,7 @@ def test_the_first_failure_in_pipeline_order_is_the_one_reported() -> None:
     # need to fix first, so that is what they are told.
     world = World(
         repos={(REPO_A, REV_A): Repo(files=(*CONFORMING_FILES, "backdoor.py"))},
-        chutes={CHUTE_A: Deployment(slug="guard-a", hot=False)},
+        chutes={CHUTE_A: Deployment(slug="prometheon-guard-a", hot=False)},
     )
     result = only(world, entry())
 
@@ -549,8 +549,8 @@ def test_a_deterministic_repository_verdict_is_reused_across_miners() -> None:
     world = World(
         repos={(REPO_A, REV_A): Repo(files=(*CONFORMING_FILES, "backdoor.py"))},
         chutes={
-            CHUTE_A: Deployment(slug="guard-a"),
-            CHUTE_B: Deployment(slug="guard-b"),
+            CHUTE_A: Deployment(slug="prometheon-guard-a"),
+            CHUTE_B: Deployment(slug="prometheon-guard-b"),
         },
     )
     entries = [

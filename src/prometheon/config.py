@@ -90,6 +90,16 @@ class EvaluationConfig(BaseModel):
     #: One retry on transport error, then the batch is scored incorrect. Not
     #: configurable upward: a model needing many retries is not serving.
     transport_retries: int = Field(default=1, ge=0, le=1)
+    #: Environment variable holding the Chutes key a **validator** infers with.
+    #:
+    #: This is the subnet owner's key, not the miner's. A miner uses their own
+    #: key to build and deploy their chute; a validator never sees it and must
+    #: not, since a key that could redeploy the model under evaluation would let
+    #: whoever holds it change what is being scored mid-cycle.
+    #:
+    #: One key across the field also keeps inference cost and rate limits
+    #: attributable to the subnet rather than to whichever miner happened to be
+    #: sampled.
     chutes_api_key_env: str = Field(default="CHUTES_API_KEY", min_length=1)
 
 

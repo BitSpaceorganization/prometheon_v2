@@ -189,7 +189,7 @@ class StubRegistry(ModelRegistry):
                     hf_revision=commitment.hf_revision if commitment else "",
                     chute_id=commitment.chute_id if commitment else "",
                     commit_block=entry.commit_block,
-                    chute_slug="slug",
+                    chute_slug="prometheon-slug",
                     endpoint_url=endpoint,
                     wrapper_digest="0" * 64,
                 )

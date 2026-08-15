@@ -27,7 +27,7 @@ REPO = "prometheon-labs/moderation-guard"
 REVISION = "a" * 40
 OTHER_REVISION = "b" * 40
 CHUTE_ID = "b4e8a2f1-6c3d-4e5a-9b7f-1d2c3e4f5a6b"
-SLUG = "moderation-guard"
+SLUG = "prometheon-moderation-guard"
 
 #: A repository that satisfies the manifest, including sharded weights.
 #: Weights, config and tokenizer. No executable code: the engine is in the

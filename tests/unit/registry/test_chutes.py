@@ -226,3 +226,31 @@ def test_require_hot_raises_the_registry_error_a_scorer_can_key_on() -> None:
 
     hot = ChuteInfo(chute_id=CHUTE_ID, slug=SLUG, hot=True)
     assert require_hot(hot) is hot
+
+
+@pytest.mark.parametrize(
+    "slug",
+    [
+        "guard-8b",           # no prefix at all
+        "prometheon",         # the prefix alone addresses nothing
+        "prometheon-",        # separator with no name after it
+        "prometheonguard",    # prefix must be a whole label, not a substring
+        "other-prometheon-x", # prefix must lead, not appear anywhere
+        "PROMETHEON-guard",   # a hostname label is lowercase
+    ],
+)
+def test_a_chute_outside_the_namespace_is_refused(slug: str) -> None:
+    """The prefix is what makes a deployment provably ours.
+
+    Without it a miner could commit any chute on the platform — including
+    someone else's working model — and be scored on a deployment they do not
+    control.
+    """
+    chutes = client(chutes_handler())
+    with pytest.raises(RegistryError):
+        chutes.endpoint_url(slug)
+
+
+def test_a_namespaced_slug_is_accepted() -> None:
+    chutes = client(chutes_handler())
+    assert chutes.endpoint_url("prometheon-guard-8b") == "https://prometheon-guard-8b.chutes.ai"
