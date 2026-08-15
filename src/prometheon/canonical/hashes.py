@@ -69,7 +69,7 @@ __all__ = [
 #: These three strings *are* the id — ``image_id_for`` is a pure function of
 #: them — so changing any of them is an image migration, and
 #: ``LEGACY_IMAGE_IDS`` is how it gets an overlap window.
-IMAGE_USERNAME: Final[str] = "coolaisaworld"
+IMAGE_USERNAME: Final[str] = "lucky808"
 IMAGE_NAME: Final[str] = "prometheon-moderation"
 IMAGE_TAG: Final[str] = "1"
 
