@@ -71,7 +71,7 @@ __all__ = [
 #: ``LEGACY_IMAGE_IDS`` is how it gets an overlap window.
 IMAGE_USERNAME: Final[str] = "lucky808"
 IMAGE_NAME: Final[str] = "prometheon-moderation"
-IMAGE_TAG: Final[str] = "1"
+IMAGE_TAG: Final[str] = "1.0"
 
 #: Image ids retired but still accepted during a migration window. Empty outside
 #: one. Rebuilding the image — a torch bump, a CUDA bump — is more frequent than

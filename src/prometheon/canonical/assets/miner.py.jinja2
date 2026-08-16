@@ -296,6 +296,12 @@ chute = Chute(
     concurrency=PROMETHEON_CONCURRENCY,
     max_instances=PROMETHEON_MAX_INSTANCES,
     shutdown_after_seconds=PROMETHEON_SHUTDOWN_AFTER_SECONDS,
+    # Required by the platform as of 2026-05-12. Without it every deploy is
+    # refused with "Only TEE chutes are supported".
+    tee=True,
+    # The engine loads weights with huggingface_hub.snapshot_download at import
+    # time. Egress off would strand every deployment with no weights on disk.
+    allow_external_egress=True,
 )
 
 

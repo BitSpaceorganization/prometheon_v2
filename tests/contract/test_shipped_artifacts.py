@@ -94,7 +94,7 @@ class TestTheShippedPolicyIsUsable:
 #: of the code that produces it. Changing either one changes what every
 #: validator on the network accepts, so a diff that touches them is a
 #: subnet-wide migration and must follow docs/canonical-wrapper.md.
-EXPECTED_SCRIPT_HASH = "2420578a89ff18e6b753fc55fb0cdcbc05f43340981663db397c8fccf3ff7477"
+EXPECTED_SCRIPT_HASH = "49ade6f50039d734371661f08e140e56c516d69f2a3623c9bc427f722983c117"
 
 
 class TestTheCanonicalArtifactsAgree:

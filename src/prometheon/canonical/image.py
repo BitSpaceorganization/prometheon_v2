@@ -36,7 +36,11 @@ PYTHON_VERSION: Final[str] = "3.12"
 #: show `Image(..., python_version=, base_image=)`, but the pinned SDK's
 #: constructor takes only username/name/tag/readme — the docs describe a newer
 #: release. Follow the installed signature, not the website.
-BASE_IMAGE: Final[str] = "python:3.12-slim"
+#:
+#: Must be a Chutes-known base. Tag ``1`` 500s on the platform for this name;
+#: ``parachutes/python:3.12`` is the documented runtime and is what the
+#: successful ``1.0`` upload used.
+BASE_IMAGE: Final[str] = "parachutes/python:3.12"
 
 #: Pinned, not floated. A rebuild that silently picks up a new torch changes
 #: what every model on the subnet runs inside, which is a change to the thing
