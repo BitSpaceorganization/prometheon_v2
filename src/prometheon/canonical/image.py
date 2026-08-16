@@ -32,6 +32,12 @@ if TYPE_CHECKING:  # pragma: no cover - import shape only
 #: tokenizer APIs the engine uses are not all present.
 PYTHON_VERSION: Final[str] = "3.12"
 
+#: Chained via `from_base`, not passed to the constructor. The published docs
+#: show `Image(..., python_version=, base_image=)`, but the pinned SDK's
+#: constructor takes only username/name/tag/readme — the docs describe a newer
+#: release. Follow the installed signature, not the website.
+BASE_IMAGE: Final[str] = "python:3.12-slim"
+
 #: Pinned, not floated. A rebuild that silently picks up a new torch changes
 #: what every model on the subnet runs inside, which is a change to the thing
 #: the competition holds constant. Bumping these is an image migration —
@@ -47,6 +53,20 @@ REQUIREMENTS: Final[tuple[str, ...]] = (
 )
 
 
+#: Shown on the public image page. It says what the image is *for*, because a
+#: miner who finds it needs to know they reference it rather than rebuild it.
+README: Final[str] = """\
+The Prometheon subnet's published inference runtime.
+
+Every miner's chute references this image by id and builds nothing, so the
+runtime a model loads inside is one the subnet published and every validator
+can name. Miners supply weights; the engine and its dependencies are fixed.
+
+Do not fork or rebuild this to deploy: a chute referencing any other image is
+refused, because a build step on the miner's side is code no hash covers.
+"""
+
+
 def build_image() -> Image:
     """The image every miner's chute references.
 
@@ -56,12 +76,23 @@ def build_image() -> Image:
     """
     from chutes.image import Image
 
-    image: Any = Image(username=IMAGE_USERNAME, name=IMAGE_NAME, tag=IMAGE_TAG)
-    image = image.from_base(f"python:{PYTHON_VERSION}-slim")
+    # `readme` is required by the platform, not optional as the constructor
+    # signature suggests: omitting it fails the upload, not the build.
+    image: Any = Image(
+        username=IMAGE_USERNAME,
+        name=IMAGE_NAME,
+        tag=IMAGE_TAG,
+        readme=README,
+    )
+    image = image.from_base(BASE_IMAGE)
     # One command rather than seven: each `run_command` is a layer, and the
     # resolver needs to see the whole set at once to reject an incompatible
     # combination at build time instead of at first inference.
     image = image.run_command("pip install --no-cache-dir " + " ".join(REQUIREMENTS))
+    # Inference needs no write access and no privileges. A model that can only
+    # read the weights it was given is one fewer thing a crafted input can do
+    # something with.
+    image = image.set_user("chutes")
     return image
 
 
