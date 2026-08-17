@@ -26,7 +26,7 @@ from typing import TYPE_CHECKING, Any, Final
 from prometheon.canonical.hashes import IMAGE_NAME, IMAGE_TAG, IMAGE_USERNAME
 
 if TYPE_CHECKING:  # pragma: no cover - import shape only
-    from chutes.image import Image  # type: ignore[import-untyped]
+    from chutes.image import Image
 
 #: Matches the wrapper's own floor. Below this `torch.inference_mode` and the
 #: tokenizer APIs the engine uses are not all present.
