@@ -44,9 +44,9 @@ model is measured against, which is what the dataset half of the reward pays for
 
 ## 2. Build a model
 
-Any open-source model that fits on the GPU you are willing to pay for. It is
-judged on one task: given the policy and one piece of content, answer `YES` or
-`NO`.
+Any open-source causal language model that fits the RTX PRO 6000 pool the
+wrapper deploys to (96 GB VRAM per GPU, 1–8 GPUs). It is judged on one task:
+given the policy and one piece of content, answer `YES` or `NO`.
 
 You are not writing inference code. Every model on the subnet runs the **same**
 hash-pinned engine, so a score difference is a model difference and nothing
@@ -72,9 +72,9 @@ uv run prometheon canonical          # prints the wrapper hash validators accept
 ```
 
 A validator fetches the wrapper source from your Chutes deployment, normalises
-it, and compares the hash. Everything except the four values in §3 is fixed, so
-two miners running the same wrapper hash identically however they filled those
-in — which is what makes a score difference a model difference.
+it, and compares the hash. Everything except the values you set in §3 is fixed,
+so two miners running the same wrapper hash identically however they filled
+those in — which is what makes a score difference a model difference.
 
 ---
 
@@ -87,41 +87,56 @@ uv run prometheon model render --config ~/prometheon-testnet.toml \
     --chutes-user <you> \
     --hf-repo <you>/<model> \
     --hf-revision <40-char-sha> \
-    --chute-id <uuid> \
     --output wrapper.py
 ```
 
 The command hashes what it produced and refuses to write a wrapper no validator
-would accept, so a mistake costs you a second rather than a day.
+would accept, so a mistake costs a second rather than a day. It also prints the
+**chute id** you commit in §4 — derived from your Chutes account and hotkey, so
+it is known before the chute exists.
 
-Four values are yours to set. Everything else is fixed, and changing any of it
-changes the hash and makes you ineligible:
+You supply three values; the render fills them in and everything else is fixed:
 
 ```python
-PROMETHEON_HF_REPO     = "you/model"
-PROMETHEON_HF_REVISION = "<40-char commit SHA>"
-PROMETHEON_CHUTES_USER = "you"
-PROMETHEON_CHUTE_ID    = "<uuid>"
+PROMETHEON_HF_REPO     = "you/model"      # --hf-repo
+PROMETHEON_HF_REVISION = "<40-char SHA>"  # --hf-revision
+PROMETHEON_CHUTES_USER = "you"            # --chutes-user
 ```
+
+Your hotkey, read from `[wallet]`, names the chute. `--gpu-count` (1–8) and
+`--min-vram-gb` (16–140) size the instance. None of these change the wrapper
+hash. Everything else — the engine, the framing, the image, and the deployment
+target below — is fixed, and changing it makes you ineligible.
 
 **The revision must be a 40-character commit SHA, never a branch or tag.** A
-branch moves. A commitment that can move after it is verified is not a
-commitment, and the CLI rejects one before it reaches the chain.
+branch moves, and a commitment that can move after it is verified is not a
+commitment; the CLI rejects one before it reaches the chain.
 
-Deploy it to Chutes with your own account, on whatever GPU you choose. The image
-and node selector are set in the script you render. You are the chute owner,
-so you pay for the GPU hours.
+### The deployment is confidential, on the pro_6000 pool
 
-### Authorising the subnet
+The wrapper pins two things you do not choose:
 
-Validators call your model without ever holding your credentials:
+- **`tee=True`** — the chute runs in a trusted execution enclave. Chutes accepts
+  only TEE chutes, and the subnet requires it: your weights are served from
+  hardware the host cannot read into.
+- **`include=["pro_6000"]`** — the RTX PRO 6000 pool, which is where TEE capacity
+  is available. The wrapper targets it so a deploy is scheduled rather than
+  refused for capacity.
+
+Deploy from your own Chutes account — you own the chute and pay for its GPU hours:
 
 ```bash
-chutes share --chute-id <your-chute-id> --user-id <subnet-user-id>
+chutes deploy wrapper.py --accept-fee
 ```
 
-The caller pays per invocation; you pay for the GPU your chute occupies. No key
-is exchanged in either direction.
+### Reachability
+
+The chute is named **`prometheon-<hotkey>`**, which places it in the subnet's
+`prometheon` namespace. Validators call your model through the subnet's Chutes
+inference key, which is scoped to that namespace — so deploying under the
+canonical name is all that is required. You never share a credential and never
+hand one over. The caller pays per invocation; you pay for the GPU your chute
+occupies.
 
 ---
 

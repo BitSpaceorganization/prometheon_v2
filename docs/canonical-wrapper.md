@@ -30,16 +30,19 @@ uv run prometheon canonical    # prints both
 
 ---
 
-## The four values a miner may change
+## The values a miner sets
 
 ```python
-PROMETHEON_HF_REPO     = "you/model"
-PROMETHEON_HF_REVISION = "<40-char commit SHA>"
-PROMETHEON_CHUTES_USER = "you"
-PROMETHEON_CHUTE_ID    = "<uuid>"
+PROMETHEON_HF_REPO     = "you/model"      # --hf-repo
+PROMETHEON_HF_REVISION = "<40-char SHA>"  # --hf-revision
+PROMETHEON_CHUTES_USER = "you"            # --chutes-user
+PROMETHEON_HOTKEY      = "<ss58>"         # from [wallet]; names the chute
+PROMETHEON_GPU_COUNT   = 1                # --gpu-count (1-8)
+PROMETHEON_MIN_VRAM_GB = 16               # --min-vram-gb (16-140)
 ```
 
-Nothing else. Not a constant, not a comment, not a blank line.
+Nothing else. Not a constant, not a comment, not a blank line — and in
+particular not `tee=True` or the `pro_6000` pool, which are fixed.
 
 ### How that is enforced without punishing whitespace
 
@@ -49,11 +52,9 @@ and they lose a day to a trailing newline.
 
 Instead the source is **normalised** before hashing:
 
-1. The four approved variables are replaced with a fixed placeholder.
-2. So is `PROMETHEON_CANONICAL_ENGINE_SHA256`, which the renderer substitutes.
-   Otherwise every miner's wrapper hash would change after an engine bump even
-   though the wrapper itself did not.
-3. The result is parsed and re-emitted from its abstract syntax tree.
+1. The six values above are replaced with a fixed placeholder, so two miners who
+   differ only in model, account, hotkey, or instance size hash identically.
+2. The result is parsed and re-emitted from its abstract syntax tree.
 
 Comments, whitespace, and quote style vanish. Anything that changes *behaviour*
 survives and changes the hash.
@@ -88,7 +89,12 @@ into a model load.
 The **image is the subnet's**, referenced by id. It is not built on your machine
 and there is no `chute_config.yml`: the Chutes API exposes an image's identity
 and never its contents, so an image you built is one no validator can verify.
-The GPU is still yours to choose — you pay for it — and it is set in the script.
+
+The **deployment target is fixed and part of the hash**: `tee=True` (Chutes
+serves only confidential-compute chutes, and the subnet requires it) and
+`include=["pro_6000"]` (the RTX PRO 6000 pool, where TEE capacity is available).
+You size the instance with `--gpu-count` and `--min-vram-gb` and you pay for the
+GPU hours, but the pool and the enclave requirement are not yours to change.
 
 ---
 

@@ -74,6 +74,15 @@ PROMETHEON_SHUTDOWN_AFTER_SECONDS = 86_400
 PROMETHEON_CONCURRENCY = 4
 PROMETHEON_MAX_INSTANCES = 1
 
+# The TEE-capable GPU pool. Chutes requires `tee=True` for every chute (as of
+# 2026-05-12) but a generic TEE request is refused with an infrastructure
+# capacity error — TEE capacity is currently only on the RTX PRO 6000 pool. So
+# the subnet pins the pool here rather than leaving every miner to discover the
+# capacity wall alone. Fixed, not miner-set, so it is part of the canonical hash
+# every validator verifies — the deployed chute runs on the pool the subnet
+# agreed on, not one a miner picked.
+PROMETHEON_GPU_INCLUDE = ["pro_6000"]
+
 # Forced-choice candidates, resolved against the model's own vocabulary at load
 # time. Only members that tokenise to exactly one token are usable.
 AFFIRMATIVE = ("YES", "Yes", "yes", " YES", " Yes", " yes")
@@ -292,6 +301,7 @@ chute = Chute(
     node_selector=NodeSelector(
         gpu_count=PROMETHEON_GPU_COUNT,
         min_vram_gb_per_gpu=PROMETHEON_MIN_VRAM_GB,
+        include=PROMETHEON_GPU_INCLUDE,
     ),
     concurrency=PROMETHEON_CONCURRENCY,
     max_instances=PROMETHEON_MAX_INSTANCES,
