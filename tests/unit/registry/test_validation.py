@@ -82,7 +82,9 @@ class World:
         hf_down: bool = False,
     ) -> None:
         self.repos = repos if repos is not None else {(REPO_A, REV_A): Repo()}
-        self.chutes = chutes if chutes is not None else {CHUTE_A: Deployment(slug="prometheon-guard-a")}
+        self.chutes = (
+            chutes if chutes is not None else {CHUTE_A: Deployment(slug="prometheon-guard-a")}
+        )
         self.hf_down = hf_down
         self.hf_calls = Calls()
         self.chute_calls = Calls()
@@ -303,7 +305,9 @@ def test_a_deployment_running_another_image_makes_a_miner_ineligible() -> None:
     """
     world = World(
         chutes={
-            CHUTE_A: Deployment(slug="prometheon-guard-a", image_id="00000000-0000-0000-0000-000000000000")
+            CHUTE_A: Deployment(
+                slug="prometheon-guard-a", image_id="00000000-0000-0000-0000-000000000000"
+            )
         }
     )
     assert only(world, entry()).reason is InvalidReason.IMAGE_MISMATCH
@@ -315,7 +319,9 @@ def test_an_image_of_the_right_name_owned_by_someone_else_is_refused() -> None:
     Anyone can build `their-account/prometheon-moderation:1` from any Dockerfile
     at all. Only the owner distinguishes ours from theirs.
     """
-    world = World(chutes={CHUTE_A: Deployment(slug="prometheon-guard-a", image_username="somebody-else")})
+    world = World(
+        chutes={CHUTE_A: Deployment(slug="prometheon-guard-a", image_username="somebody-else")}
+    )
     assert only(world, entry()).reason is InvalidReason.IMAGE_MISMATCH
 
 

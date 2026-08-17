@@ -231,12 +231,12 @@ def test_require_hot_raises_the_registry_error_a_scorer_can_key_on() -> None:
 @pytest.mark.parametrize(
     "slug",
     [
-        "guard-8b",           # no prefix at all
-        "prometheon",         # the prefix alone addresses nothing
-        "prometheon-",        # separator with no name after it
-        "prometheonguard",    # prefix must be a whole label, not a substring
-        "other-prometheon-x", # prefix must lead, not appear anywhere
-        "PROMETHEON-guard",   # a hostname label is lowercase
+        "guard-8b",  # no prefix at all
+        "prometheon",  # the prefix alone addresses nothing
+        "prometheon-",  # separator with no name after it
+        "prometheonguard",  # prefix must be a whole label, not a substring
+        "other-prometheon-x",  # prefix must lead, not appear anywhere
+        "PROMETHEON-guard",  # a hostname label is lowercase
     ],
 )
 def test_a_chute_outside_the_namespace_is_refused(slug: str) -> None:

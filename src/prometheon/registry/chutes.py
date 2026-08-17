@@ -300,6 +300,7 @@ def require_hot(info: ChuteInfo) -> ChuteInfo:
 
 
 __all__ = [
+    "CHUTE_SLUG_PREFIX",
     "DEFAULT_CHUTES_API_BASE",
     "DEFAULT_ENDPOINT_TEMPLATE",
     "HEALTH_PATH",
@@ -308,7 +309,6 @@ __all__ = [
     "ChuteInfo",
     "ChutesClient",
     "is_valid_chute_id",
-    "CHUTE_SLUG_PREFIX",
     "is_valid_slug",
     "require_hot",
     "require_valid_chute_id",

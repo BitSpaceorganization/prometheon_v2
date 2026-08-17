@@ -92,32 +92,37 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       - run: uv python install 3.11
       - run: uv sync --group dev
-      # The engine hash and wrapper hash are what every miner's deployment is
-      # verified against. If a change to either asset lands without the
-      # migration set being updated, every deployed model becomes invalid at
-      # once — so the hashes are asserted in CI rather than discovered in
-      # production.
-      - name: Engine and wrapper hashes resolve
+      # The wrapper hash is what every miner's deployment is verified against;
+      # the engine is folded into the wrapper now, so one canonical value covers
+      # both. If a change to the asset lands without the migration set being
+      # updated, every deployed model becomes invalid at once — so the hash is
+      # asserted in CI rather than discovered in production.
+      - name: The wrapper hash resolves
         run: |
           uv run python - <<'EOF'
+          from prometheon.canonical.hashes import (
+              IMAGE_NAME,
+              IMAGE_TAG,
+              IMAGE_USERNAME,
+              image_id_for,
+          )
           from prometheon.canonical.integrity import (
-              canonical_engine_sha256,
               canonical_wrapper_hash,
               render_wrapper,
               wrapper_hash,
           )
-          engine = canonical_engine_sha256()
+
           canonical = canonical_wrapper_hash()
           rendered = wrapper_hash(
               render_wrapper(
-                  hf_repo="example/model",
-                  hf_revision="0" * 40,
-                  chutes_user="example",
-                  chute_id="example-chute",
+                  hf_repo="acme/guard",
+                  hf_revision="a" * 40,
+                  chutes_user="acme",
+                  hotkey="5Hot",
+                  image_id=image_id_for(IMAGE_USERNAME, IMAGE_NAME, IMAGE_TAG),
               )
           )
           assert rendered == canonical, "a rendered wrapper must hash to the canonical value"
-          print(f"engine  {engine}")
           print(f"wrapper {canonical}")
           EOF
 
