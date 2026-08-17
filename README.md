@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="Prometheon_Logo.svg" width="120" alt="Prometheon" />
+</p>
+
 # Prometheon V2
 
 A Bittensor subnet that develops, benchmarks, and continuously improves **open-source content-moderation models**.
