@@ -135,11 +135,14 @@ class OpenAICompatibleClient:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            # Ground truth must not wander between validators or between the
-            # first attempt and its retry, and sampling is the largest avoidable
-            # source of that drift.
-            "temperature": 0,
         }
+        # Ground truth must not wander between validators or between the first
+        # attempt and its retry, and sampling is the largest avoidable source of
+        # that drift — so temperature is 0 by default. Some models accept only
+        # their own default and reject an explicit 0; for those the operator
+        # sets the supported value, or null to omit the field entirely.
+        if self._config.temperature is not None:
+            body["temperature"] = self._config.temperature
         if self._json_response_format:
             body["response_format"] = {"type": "json_object"}
 

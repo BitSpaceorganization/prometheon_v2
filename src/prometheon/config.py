@@ -76,6 +76,12 @@ class LabellingConfig(BaseModel):
     base_url: str = Field(default="https://api.openai.com/v1", min_length=1)
     api_key_env: str = Field(default="OPENAI_API_KEY", min_length=1)
     batch_size: int = Field(default=100, ge=1, le=100)
+    #: Sampling temperature for the labelling request. ``0`` keeps ground truth
+    #: from wandering between validators, which is the default. Some models
+    #: (the gpt-5 reasoning line among them) accept only their own default and
+    #: reject an explicit ``0``; set this to their supported value, or to
+    #: ``null`` to omit the field entirely for such a model.
+    temperature: float | None = Field(default=0.0, ge=0.0, le=2.0)
     request_timeout_seconds: float = Field(default=180.0, gt=0)
     max_retries: int = Field(default=3, ge=0)
 
