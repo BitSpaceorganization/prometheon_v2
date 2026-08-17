@@ -16,10 +16,31 @@ against it first; it enforces the same rules a real server must.
 
 ## 1. Authentication
 
-**There are no API keys.** A caller proves identity by signing a request
-envelope with its hotkey, and the server checks that signature against the
-metagraph. A deregistered hotkey loses access the moment the chain says so, with
-nobody having to remember to revoke anything.
+**The reads are public, and no envelope is required to read.** The `/v2` reads
+are a read-only database governed by the embargo rather than by a password — the
+same posture the dashboard takes, and for the same reason: the corpus, and the
+numbers computed over it, are what let anyone audit the subnet. An anonymous
+caller may pull them, subject to the embargo in §4. There are no API keys.
+
+A caller that *does* sign proves its identity. The server checks the signature
+against the metagraph, and a **validator** signature buys the one thing the
+public does not get: the current day's still-embargoed corpus, which a validator
+must read in order to score it. A deregistered hotkey loses that the moment the
+chain says so, with nobody having to remember to revoke anything.
+
+Two rules follow, and §2 says which route each applies to:
+
+- **A read is all-or-nothing signed.** Send no authentication header and the
+  request is anonymous; send any and it must verify completely. A signature that
+  is present but malformed, expired, over the wrong bytes, or from a hotkey the
+  metagraph does not know is a 401 or 403 — never a silent downgrade to an
+  anonymous read, which would let a caller who cannot sign reach embargoed
+  content by corrupting a header on purpose. No nonce is claimed for a read: a
+  read is idempotent, so there is nothing a replay of one could achieve.
+- **The write, `POST /v2/evaluations`, is always signed** — envelope, nonce, and
+  the record's own signature. Nothing relaxes it. See §7.
+
+The signature mechanics below are the same for a signed read and for the write.
 
 Six headers:
 
@@ -90,9 +111,10 @@ client-supplied values makes all three fields decorative.
 **`path` is the origin-form request target**, query string included, exactly as
 it appears on the wire. Neither side normalises.
 
-**Claim the nonce *after* the signature verifies.** Claiming first lets anyone
-who can observe a nonce burn it by replaying an unsigned request. That turns a
-replay defence into a denial-of-service tool against the caller it protects.
+**Claim the nonce *after* the signature verifies.** This is the write path — a
+read claims no nonce (§1) — and claiming first lets anyone who can observe a
+nonce burn it by replaying an unsigned request. That turns a replay defence into
+a denial-of-service tool against the caller it protects.
 
 **Expire nonces against your own clock.** `issued_at` is supplied by the caller
 and is therefore not a clock. Pruning against it lets a replayer choose an
@@ -107,16 +129,19 @@ only too long. It must never become a 500.
 
 ## 2. Endpoints
 
-| Method | Path | Caller | Returns |
+| Method | Path | Who may call | Returns |
 |---|---|---|---|
-| GET | `/v2/snapshot/{date}` | validator | `SnapshotManifest` |
-| GET | `/v2/dataset/{date}/test` | validator, miner¹ | `TestContentPage` |
-| GET | `/v2/dataset/{date}/production` | validator | `ProductionContentPage` |
-| GET | `/v2/eligible-miners/{date}` | validator | `EligibleMinerSet` |
-| GET | `/v2/models/{date}` | validator | `ModelCommitmentSet` |
-| POST | `/v2/evaluations` | validator | `EvaluationAccepted` |
+| GET | `/v2/snapshot/{date}` | public | `SnapshotManifest` |
+| GET | `/v2/dataset/{date}/test` | public, after the embargo¹ | `TestContentPage` |
+| GET | `/v2/dataset/{date}/production` | public, after the embargo¹ | `ProductionContentPage` |
+| GET | `/v2/eligible-miners/{date}` | public | `EligibleMinerSet` |
+| GET | `/v2/models/{date}` | public | `ModelCommitmentSet` |
+| POST | `/v2/evaluations` | validator (signed) | `EvaluationAccepted` |
 
-¹ Miners may read test content only after the embargo.
+¹ Content is embargoed until 00:00 UTC on day N+2 (§4). A signed **validator**
+bypasses the embargo — it reads the current day to score it — and is the only
+caller that reaches unreleased content. Snapshot, eligible-miner and model
+metadata name no embargoed content and are public immediately.
 
 `{date}` is `YYYY-MM-DD`, UTC.
 
@@ -151,20 +176,22 @@ before it is stored, never at read time and never by the client. If truncation
 happened later, the labeller would judge full text while models read a truncated
 version. That is an irreducible corpus error no model could overcome.
 
-**The embargo is two days.** Day N's content is readable by miners at
+**The embargo is two days.** Day N's content is readable by anyone at
 **00:00 UTC on day N+2**, by which point the 04:00 cycle that used it has long
-finished. Serve `403 db.embargoed` before that, and carry `available_at` so the
-caller does not have to guess when to return. Validators are never embargoed.
+finished. Serve `403 db.embargoed` before that to every caller that has not
+signed as a validator — anonymous or miner alike — and carry `available_at` so
+it does not have to guess when to return. A signed **validator** is never
+embargoed: it must read the current day in order to score it.
 
 Midnight, not 04:00. The boundary is a property of the *date*, so every server
 and every client derives it from the date alone with no reference to when any
 particular validator happens to run. `FakeDbLayer` lifts it at midnight and
 `test_it_lifts_at_midnight_two_days_later` pins that to the second.
 
-The embargo covers **production content too**, not only test content. The table
-above lists `/v2/dataset/{date}/production` as validator-only, and a server that
-role-gated it would answer `db.not_authorized` where a miner is owed
-`db.embargoed` — a different code with a different remediation.
+The embargo covers **production content too**, not only test content. A caller
+that may not read it yet is owed `db.embargoed`, never `db.not_authorized`: the
+two codes carry different remediations, and a server that role-gated production
+instead of embargo-gating it would return the wrong one.
 
 ---
 
