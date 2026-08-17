@@ -96,7 +96,11 @@ FILE_MANIFEST: Final[frozenset[str]] = frozenset(
     {
         ".gitattributes",
         ".gitignore",
+        "LICENSE",
+        "LICENSE.txt",
         "README.md",
+        "added_tokens.json",
+        "chat_template.jinja",
         "config.json",
         "generation_config.json",
         "merges.txt",
