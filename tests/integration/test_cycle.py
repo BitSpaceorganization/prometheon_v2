@@ -388,9 +388,7 @@ def test_a_whole_cycle_produces_a_submittable_weight_vector(
     # 60% of miner emission burns to the owner before any miner is paid; a full
     # field splits the remaining 40%.
     assert result.split.burn_units == 600_000
-    miner_units = sum(
-        w for hk, w in result.split.weights.items() if hk != result.split.burn_hotkey
-    )
+    miner_units = sum(w for hk, w in result.split.weights.items() if hk != result.split.burn_hotkey)
     assert miner_units == 400_000
 
     receipt = submit_weights(
