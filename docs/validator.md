@@ -14,8 +14,8 @@ git clone https://github.com/BitSpaceorganization/prometheon_v2
 cd prometheon_v2
 uv sync
 
-cp configs/testnet.example.toml ~/prometheon-testnet.toml
-$EDITOR ~/prometheon-testnet.toml        # set [wallet] name and hotkey
+cp configs/mainnet.example.toml ~/prometheon-mainnet.toml
+$EDITOR ~/prometheon-mainnet.toml        # set [wallet] name and hotkey
 
 export OPENAI_API_KEY="…"
 export CHUTES_API_KEY="…"
@@ -37,7 +37,7 @@ Everything runs: labelling, evaluation, scoring. Nothing is submitted or
 published. This is the right first run.
 
 ```bash
-uv run prometheon validator run --config ~/prometheon-testnet.toml
+uv run prometheon validator run --config ~/prometheon-mainnet.toml
 ```
 
 ---

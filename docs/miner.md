@@ -84,7 +84,7 @@ those in — which is what makes a score difference a model difference.
 Render the wrapper for your deployment:
 
 ```bash
-uv run prometheon model render --config ~/prometheon-testnet.toml \
+uv run prometheon model render --config ~/prometheon-mainnet.toml \
     --chutes-user <you> \
     --hf-repo <you>/<model> \
     --hf-revision <40-char-sha> \
@@ -146,7 +146,7 @@ occupies.
 This is the submission. Until it lands, you are not scored on a model.
 
 ```bash
-uv run prometheon model commit --config ~/prometheon-testnet.toml \
+uv run prometheon model commit --config ~/prometheon-mainnet.toml \
     --hf-repo <you>/<model> --hf-revision <sha> --chute-id <uuid>
 ```
 
@@ -170,7 +170,7 @@ model or the deployment actually changed, not otherwise.
 ## 5. Check what a validator will see
 
 ```bash
-uv run prometheon model verify --config ~/prometheon-testnet.toml
+uv run prometheon model verify --config ~/prometheon-mainnet.toml
 ```
 
 This runs the validator's own eligibility pipeline, the same code a validator
@@ -203,7 +203,7 @@ commit loses.
 ## 6. Train against released data
 
 ```bash
-uv run prometheon dataset pull --config ~/prometheon-testnet.toml --date 2026-08-05
+uv run prometheon dataset pull --config ~/prometheon-mainnet.toml --date 2026-08-05
 ```
 
 A day's test content is released **two days later**, after the evaluation that

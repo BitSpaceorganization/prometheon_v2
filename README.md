@@ -88,18 +88,18 @@ Register your Fan Group and link its leader account to your hotkey at **[bitfan.
 
 ```bash
 # 1. Render the canonical wrapper to deploy on Chutes
-uv run prometheon model render --config ~/prometheon-testnet.toml \
+uv run prometheon model render --config ~/prometheon-mainnet.toml \
     --hf-repo <you>/<model> --hf-revision <40-char-sha> \
     --chutes-user <you> --chute-id <uuid> --output wrapper.py
 
 # 2. Commit it on chain — this is the submission
-uv run prometheon model commit --config ~/prometheon-testnet.toml
+uv run prometheon model commit --config ~/prometheon-mainnet.toml
 
 # 3. Check what a validator will conclude about your deployment
-uv run prometheon model verify --config ~/prometheon-testnet.toml
+uv run prometheon model verify --config ~/prometheon-mainnet.toml
 
 # 4. Pull released datasets to train against
-uv run prometheon dataset pull --config ~/prometheon-testnet.toml --date 2026-08-05
+uv run prometheon dataset pull --config ~/prometheon-mainnet.toml --date 2026-08-05
 ```
 
 Your Hugging Face repository holds **weights, config and tokenizer — no executable code at all**. Any other file and your deployment is not scored. See [`docs/miner.md`](./docs/miner.md).
@@ -113,11 +113,11 @@ Your Hugging Face repository holds **weights, config and tokenizer — no execut
 A validator runs **one cycle per day**, starting at 04:00 UTC against the previous day's data.
 
 ```bash
-cp configs/testnet.example.toml ~/prometheon-testnet.toml   # then edit [wallet]
+cp configs/mainnet.example.toml ~/prometheon-mainnet.toml   # then edit [wallet]
 export OPENAI_API_KEY="…"        # you pay for ground-truth labelling
 export CHUTES_API_KEY="…"        # the subnet-issued key for calling miners' models
 
-uv run prometheon validator run --config ~/prometheon-testnet.toml
+uv run prometheon validator run --config ~/prometheon-mainnet.toml
 ```
 
 Each stage is runnable on its own for debugging. See [`docs/validator.md`](./docs/validator.md).
@@ -139,7 +139,7 @@ Each stage is runnable on its own for debugging. See [`docs/validator.md`](./doc
 
 ## Status
 
-Phase 2 targets Bittensor **testnet netuid 481**.
+Phase 2 targets Bittensor **mainnet netuid 108**.
 
 ## License
 

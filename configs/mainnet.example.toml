@@ -1,0 +1,71 @@
+# Prometheon V2 — mainnet (netuid 108, finney).
+#
+# Copy this to a local file and edit [wallet]. Everything else is pre-pinned.
+#
+#   cp configs/mainnet.example.toml ~/prometheon-mainnet.toml
+
+[chain]
+network = "finney"
+netuid = 108
+version_key = 0
+fail_on_weights_version_mismatch = true
+# Localnet only. On a live network, weights submitted without a mechid land on
+# whatever mechanism the chain defaults to and nothing reports it.
+allow_missing_mechid = false
+
+[wallet]
+# Your btcli wallet (coldkey directory) and the hotkey registered on 108.
+name = "validator"
+hotkey = "default"
+
+[db]
+# The subnet DB layer. Every dataset, miner list, and model commitment the
+# runtime reads comes from here — nothing in this repo talks to the BitFan
+# platform directly. Reads are public; no key is needed to pull a snapshot.
+base_url = "https://audit.bitfan.ai"
+request_timeout_seconds = 60.0
+max_retries = 3
+
+[labelling]
+# Ground truth. Validators pay for this with their own key.
+model = "gpt-5.6-sol"
+base_url = "https://api.openai.com/v1"
+api_key_env = "OPENAI_API_KEY"
+batch_size = 100
+
+[evaluation]
+# Calling miners' deployed models. The key is the subnet's shared Chutes
+# credential; miners authorise it with `chutes share`, so no miner ever hands a
+# credential to a validator.
+batch_size = 100
+request_timeout_seconds = 120.0
+chutes_api_key_env = "CHUTES_API_KEY"
+
+[scoring]
+# These decide emissions. Defaults are the agreed reward design; change one and
+# payouts change with it.
+# Share of miner emission that burns to the owner (uid 0) before any miner is
+# paid. At 6000, 60% burns every day and miners compete for the other 40%.
+miner_burn_share_bp = 6000
+dataset_share_bp = 5000
+dataset_top_n = 10
+model_rank_shares_bp = [3000, 1500, 500]
+# A model scored on fewer items than this is not ranked at all. Accuracy over a
+# handful of items is noise, and a miner can shrink its own corpus by supplying
+# most of a day's test content — its own items are excluded from what it is
+# scored on.
+model_min_scored_items = 100
+efficiency_lambda_bp = 1500
+efficiency_min_cv_bp = 1000
+
+[validator]
+state_directory = ".validator-state"
+submit_weights = true
+dry_run = false
+submit_results = true
+
+[miner]
+# Miners only. Filled in by `prometheon model render`.
+chutes_user = ""
+chute_id = ""
+hf_repo = ""

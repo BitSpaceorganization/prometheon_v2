@@ -166,7 +166,7 @@ updates.
 ## Verifying it yourself
 
 ```bash
-uv run prometheon model verify --config ~/prometheon-testnet.toml
+uv run prometheon model verify --config ~/prometheon-mainnet.toml
 ```
 
 Runs the validator's own pipeline, not a miner-side reimplementation of it. A

@@ -45,7 +45,7 @@ The signature mechanics below are the same for a signed read and for the write.
 Six headers:
 
 ```http
-X-Prometheon-Netuid:      481
+X-Prometheon-Netuid:      108
 X-Prometheon-Hotkey:      5F…
 X-Prometheon-Nonce:       <32 lowercase hex>
 X-Prometheon-Issued-At:   <unix seconds>
@@ -314,11 +314,11 @@ without trusting the DB layer that served them.
 ```python
 from prometheon.dbclient import DbClient, FakeDbLayer
 
-layer = FakeDbLayer(netuid=481)
+layer = FakeDbLayer(netuid=108)
 layer.register(hotkey, CallerRole.VALIDATOR)
 layer.seed_day(day, test_items=…, production_items=…)
 
-with DbClient(base_url="https://db.invalid", netuid=481,
+with DbClient(base_url="https://db.invalid", netuid=108,
               keypair=keypair, transport=layer.transport) as db:
     snapshot = db.fetch_day(day)
 ```
