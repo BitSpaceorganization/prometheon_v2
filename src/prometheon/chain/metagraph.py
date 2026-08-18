@@ -52,6 +52,11 @@ class MetagraphView(BaseModel):
     #: Stake in rao (integer), never TAO floats.
     stake_rao: tuple[int, ...] = ()
     validator_permit: tuple[bool, ...] = ()
+    #: Coldkey ss58 per neuron, aligned to ``hotkeys``. Optional: a lite table
+    #: omits the column and older callers built the view without it, so an empty
+    #: tuple means "not available", not "no coldkeys". When present it is
+    #: full-length, so every hotkey pairs with exactly one coldkey.
+    coldkeys: tuple[str, ...] = ()
 
     _uid_by_hotkey: dict[str, int] = PrivateAttr(default_factory=dict)
     _row_by_uid: dict[int, int] = PrivateAttr(default_factory=dict)
@@ -79,6 +84,13 @@ class MetagraphView(BaseModel):
             raise ValueError("metagraph hotkeys are not unique")
         if any(stake < 0 for stake in self.stake_rao):
             raise ValueError("metagraph carries a negative stake")
+        # Coldkeys are optional, but a partial column is worse than none: it
+        # would pair some hotkeys with the wrong coldkey. Require full length
+        # when the column is present at all.
+        if self.coldkeys and len(self.coldkeys) != count:
+            raise ValueError(
+                f"metagraph has {count} hotkeys but {len(self.coldkeys)} coldkey entries"
+            )
 
         self._uid_by_hotkey.update(zip(self.hotkeys, self.uids, strict=True))
         self._row_by_uid.update({uid: row for row, uid in enumerate(self.uids)})
@@ -115,6 +127,14 @@ class MetagraphView(BaseModel):
     def stake_rao_for(self, hotkey: str) -> int | None:
         row = self._row_for_hotkey(hotkey)
         return None if row is None else self.stake_rao[row]
+
+    def coldkey_for(self, hotkey: str) -> str | None:
+        """The coldkey ss58 for ``hotkey``, or ``None`` if it is unregistered or
+        the snapshot did not carry coldkeys."""
+        row = self._row_for_hotkey(hotkey)
+        if row is None or not self.coldkeys:
+            return None
+        return self.coldkeys[row]
 
     def has_validator_permit(self, hotkey: str) -> bool:
         row = self._row_for_hotkey(hotkey)
@@ -198,12 +218,16 @@ class MetagraphView(BaseModel):
 def _columns_from_rows(neurons: Any) -> dict[str, tuple[Any, ...]]:
     """Transpose a list of neuron rows into the view's columns."""
     rows = list(neurons)
-    return {
+    columns: dict[str, tuple[Any, ...]] = {
         "uids": tuple(int(row.uid) for row in rows),
         "hotkeys": tuple(str(row.hotkey) for row in rows),
         "stake_rao": tuple(_to_rao(_row_stake(row)) for row in rows),
         "validator_permit": tuple(bool(getattr(row, "validator_permit", False)) for row in rows),
     }
+    coldkeys = _coldkeys([getattr(row, "coldkey", None) for row in rows])
+    if coldkeys is not None:
+        columns["coldkeys"] = coldkeys
+    return columns
 
 
 def _row_stake(row: Any) -> Any:
@@ -217,7 +241,7 @@ def _row_stake(row: Any) -> Any:
 def _columns_from_arrays(raw: Any) -> dict[str, tuple[Any, ...]]:
     hotkeys = [str(hotkey) for hotkey in getattr(raw, "hotkeys", [])]
     count = len(hotkeys)
-    return {
+    columns: dict[str, tuple[Any, ...]] = {
         "uids": tuple(_coerce_uids(getattr(raw, "uids", None), count=count)),
         "hotkeys": tuple(hotkeys),
         "stake_rao": tuple(_coerce_stake(raw, count=count)),
@@ -225,6 +249,24 @@ def _columns_from_arrays(raw: Any) -> dict[str, tuple[Any, ...]]:
             _coerce_permits(getattr(raw, "validator_permit", None), count=count)
         ),
     }
+    raw_coldkeys = getattr(raw, "coldkeys", None)
+    coldkeys = _coldkeys(list(raw_coldkeys) if raw_coldkeys is not None else [])
+    # A partial column is dropped rather than force-fit: pairing must stay exact.
+    if coldkeys is not None and len(coldkeys) == count:
+        columns["coldkeys"] = coldkeys
+    return columns
+
+
+def _coldkeys(values: list[Any]) -> tuple[str, ...] | None:
+    """A full coldkey column, or ``None`` when the SDK did not supply one.
+
+    Returns ``None`` unless every entry is a non-empty ss58 string, so a table
+    that carries coldkeys for only some neurons is treated as not carrying them
+    rather than pairing the rest with a blank.
+    """
+    if not values or any(value in (None, "") for value in values):
+        return None
+    return tuple(str(value) for value in values)
 
 
 def _coerce_uids(value: Any, *, count: int) -> list[int]:
