@@ -17,8 +17,8 @@ uv sync
 cp configs/mainnet.example.toml ~/prometheon-mainnet.toml
 $EDITOR ~/prometheon-mainnet.toml        # set [wallet] name and hotkey
 
-export OPENAI_API_KEY="…"
-export CHUTES_API_KEY="…"
+export OPENAI_API_KEY="…"     # your own key — you pay for ground-truth labelling
+export CHUTES_API_KEY="…"     # the subnet owner gives you this shared key; you do not need a Chutes account of your own
 ```
 
 Your hotkey must be registered on the netuid and hold a validator permit. There
