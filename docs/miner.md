@@ -7,7 +7,7 @@ You earn from two independent streams, in equal measure:
 | Dataset contribution | 50% | test content your Fan Group users write |
 | Model performance | 50% | how well your model judges everyone else's |
 
-**One entry gate, two streams behind it.** A Fan Group with **at least 500
+**One entry gate, two streams behind it.** A Fan Group with **at least 50
 active members** — real accounts that have cleared the platform's anti-farming
 checks — is what makes you a miner at all. It is not a condition on one stream
 or the other; below it you are not on the eligible list, and a validator never
@@ -25,7 +25,7 @@ Everything else depends on this, and it happens on the platform rather than
 through any subnet command.
 
 1. Sign in at **[bitfan.ai](https://bitfan.ai)**.
-2. Create a Fan Group and grow it to **at least 500 qualified users**. Qualified
+2. Create a Fan Group and grow it to **at least 50 qualified users**. Qualified
    means active real accounts that have cleared the platform's anti-farming
    checks, not raw signups.
 3. Open **[bitfan.ai/me/prometheon](https://bitfan.ai/me/prometheon)** and link

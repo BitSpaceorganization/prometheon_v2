@@ -82,7 +82,7 @@ Every command below assumes `uv run` in front of `prometheon`. To drop the prefi
 
 ## Miners
 
-You need a Fan Group with **at least 500 qualified users**, meaning active real accounts that have cleared the platform's anti-farming checks. That gate applies to both reward streams.
+You need a Fan Group with **at least 50 qualified users**, meaning active real accounts that have cleared the platform's anti-farming checks. That gate applies to both reward streams.
 
 Register your Fan Group and link its leader account to your hotkey at **[bitfan.ai/me/prometheon](https://bitfan.ai/me/prometheon)**. That is a platform step, not a subnet command, and nothing else works until it is done.
 
