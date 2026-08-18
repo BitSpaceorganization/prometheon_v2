@@ -7,7 +7,13 @@ from dataclasses import dataclass, field
 import httpx
 import pytest
 
-from prometheon.canonical.hashes import IMAGE_NAME, IMAGE_TAG, IMAGE_USERNAME, image_id_for
+from prometheon.canonical.hashes import (
+    CHUTE_NAME_PREFIX,
+    IMAGE_NAME,
+    IMAGE_TAG,
+    IMAGE_USERNAME,
+    image_id_for,
+)
 from prometheon.chain.commitment import ModelCommitment
 from prometheon.registry.chutes import ChutesClient
 from prometheon.registry.huggingface import HuggingFaceClient
@@ -51,6 +57,9 @@ class Deployment:
 
     slug: str
     hot: bool = True
+    #: The hotkey this chute is deployed for. The platform reports the chute
+    #: name as `prometheon-<hotkey>`, and that is what binds it to its miner.
+    hotkey: str = HOTKEY_A
     #: What the deployed wrapper pins. Defaults to a self-consistent wrapper.
     declares_repo: str = REPO_A
     declares_revision: str = REV_A
@@ -144,6 +153,7 @@ class World:
                 return httpx.Response(404, json={"error": "not found"})
             info: dict[str, object] = {
                 "chute_id": chute_id,
+                "name": f"{CHUTE_NAME_PREFIX}{deployment.hotkey}",
                 "slug": deployment.slug,
                 "hot": deployment.hot,
                 "image": {
@@ -325,6 +335,31 @@ def test_an_image_of_the_right_name_owned_by_someone_else_is_refused() -> None:
     assert only(world, entry()).reason is InvalidReason.IMAGE_MISMATCH
 
 
+def test_a_chute_named_for_another_hotkey_is_refused() -> None:
+    """The chute name is what binds a deployment to the miner that committed it.
+
+    A miner who points their commitment at somebody else's working deployment
+    passes the wrapper hash and the repo/revision checks, because that chute is
+    genuinely serving what it says. Only the name says whose it is.
+
+    The slug cannot carry this: Chutes derives it from the deploying account, so
+    a real deployment is `<account>-prometheon-<hotkey>` with the hotkey
+    truncated to fit a DNS label.
+    """
+    world = World(
+        chutes={CHUTE_A: Deployment(slug="prometheon-guard-a", hotkey=HOTKEY_B)},
+    )
+    result = only(world, entry(hotkey=HOTKEY_A))
+
+    assert result.reason is InvalidReason.COMMITMENT_MISMATCH
+    assert HOTKEY_A in result.detail
+
+
+def test_a_chute_named_for_its_own_hotkey_is_accepted() -> None:
+    world = World(chutes={CHUTE_A: Deployment(slug="tensortribe-prometheon-guard-a")})
+    assert only(world, entry(hotkey=HOTKEY_A)).valid
+
+
 def test_a_repository_that_does_not_exist_is_an_upstream_failure() -> None:
     world = World(repos={})
     result = only(world, entry())
@@ -459,7 +494,7 @@ def _two_miners_on_one_model(*, block_a: int, block_b: int) -> tuple[World, list
         repos={(REPO_A, REV_A): Repo()},
         chutes={
             CHUTE_A: Deployment(slug="prometheon-guard-a"),
-            CHUTE_B: Deployment(slug="prometheon-guard-b"),
+            CHUTE_B: Deployment(slug="prometheon-guard-b", hotkey=HOTKEY_B),
         },
     )
     entries = [
@@ -493,7 +528,7 @@ def test_a_copy_does_not_become_eligible_when_the_original_is_cold() -> None:
         repos={(REPO_A, REV_A): Repo()},
         chutes={
             CHUTE_A: Deployment(slug="prometheon-guard-a", hot=False),
-            CHUTE_B: Deployment(slug="prometheon-guard-b"),
+            CHUTE_B: Deployment(slug="prometheon-guard-b", hotkey=HOTKEY_B),
         },
     )
     original = entry(uid=1, hotkey=HOTKEY_A, commit=commitment(chute_id=CHUTE_A), block=100)
@@ -510,7 +545,9 @@ def test_different_revisions_of_one_repo_are_not_duplicates() -> None:
         repos={(REPO_A, REV_A): Repo(), (REPO_A, REV_B): Repo()},
         chutes={
             CHUTE_A: Deployment(slug="prometheon-guard-a"),
-            CHUTE_B: Deployment(slug="prometheon-guard-b", declares_revision=REV_B),
+            CHUTE_B: Deployment(
+                slug="prometheon-guard-b", hotkey=HOTKEY_B, declares_revision=REV_B
+            ),
         },
     )
     entries = [
@@ -556,7 +593,7 @@ def test_a_deterministic_repository_verdict_is_reused_across_miners() -> None:
         repos={(REPO_A, REV_A): Repo(files=(*CONFORMING_FILES, "backdoor.py"))},
         chutes={
             CHUTE_A: Deployment(slug="prometheon-guard-a"),
-            CHUTE_B: Deployment(slug="prometheon-guard-b"),
+            CHUTE_B: Deployment(slug="prometheon-guard-b", hotkey=HOTKEY_B),
         },
     )
     entries = [

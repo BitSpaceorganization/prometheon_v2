@@ -18,8 +18,15 @@ cp configs/mainnet.example.toml ~/prometheon-mainnet.toml
 $EDITOR ~/prometheon-mainnet.toml        # set [wallet] name and hotkey
 
 export OPENAI_API_KEY="…"     # your own key — you pay for ground-truth labelling
-export CHUTES_API_KEY="…"     # the subnet owner gives you this shared key; you do not need a Chutes account of your own
+export CHUTES_API_KEY="…"     # your own Chutes key, authorised on the subnet by the owner
 ```
+
+**The Chutes key is your own, not a shared one.** Create a Chutes account, then
+ask the subnet owner to authorise it for netuid 108. That grant carries the
+*invoke private chutes of a subnet* role, which is what lets you call miners'
+deployments — every miner's chute is private, and without the role the platform
+answers `404` for chutes that plainly exist. Miners do not share anything with
+you individually, and no miner ever hands over a credential.
 
 Your hotkey must be registered on the netuid and hold a validator permit. There
 are no API keys for the subnet DB layer: every request is signed with your

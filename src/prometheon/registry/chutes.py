@@ -18,7 +18,6 @@ against a DNS-label shape before any URL is built from it.
 from __future__ import annotations
 
 import json
-import os
 import re
 import time
 from collections.abc import Callable, Mapping
@@ -52,27 +51,33 @@ MAX_SOURCE_BYTES: Final[int] = 1 << 20
 _SLUG_RE: Final[re.Pattern[str]] = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 
 #: Every chute this subnet evaluates lives under one namespace, agreed with the
-#: Chutes team. The prefix is what makes a deployment provably ours: a slug
-#: becomes a hostname, and without it a miner could commit any chute on the
-#: platform — including someone else's working model — and be scored on it.
+#: Chutes team. The prefix keeps a deployment inside that namespace. It is *not*
+#: what ties a deployment to its miner — the chute **name** is, checked in
+#: :mod:`prometheon.registry.validation`, because the slug is derived by the
+#: platform from the deploying account and truncates the hotkey.
 CHUTE_SLUG_PREFIX: Final[str] = chute_namespace_prefix()
 
 #: Prefix, then a separator, then at least one more character. A slug that is
 #: exactly the prefix addresses nothing.
 #:
-#: In the reserved (mainnet) namespace the slug is clean — ``prometheon-<hotkey>``
-#: — so the prefix must be first, and that strict rule is what keeps a deployment
-#: provably ours. On testnet the namespace is not reserved, so Chutes prefixes the
-#: slug with the deploying account (``lucky808-promtest-…``); only when the prefix
-#: is overridden for testnet is an optional leading ``<account>-`` label tolerated.
-_bound = 61 - len(CHUTE_SLUG_PREFIX) - 1
-if os.environ.get("PROMETHEON_CHUTE_PREFIX") is not None:
-    _slug_pattern = (
-        r"^(?:[a-z0-9][a-z0-9-]*-)?"
-        rf"{CHUTE_SLUG_PREFIX}-[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$"
-    )
-else:
-    _slug_pattern = rf"^{CHUTE_SLUG_PREFIX}-[a-z0-9](?:[a-z0-9-]{{0,{_bound}}}[a-z0-9])?$"
+#: **An optional leading ``<account>-`` label is tolerated on every network.**
+#: This used to be testnet-only, on the assumption that a chute deployed into
+#: the reserved ``prometheon`` namespace gets a clean ``prometheon-<hotkey>``
+#: slug. That assumption is false: Chutes derives the slug from the deploying
+#: *account*, so a mainnet miner deploying ``prometheon-<hotkey>`` is assigned
+#: ``<account>-prometheon-<hotkey>`` — and the label also pushes the slug past
+#: the 63-character DNS limit, truncating the hotkey. Every mainnet deployment
+#: was therefore rejected as "not a usable chute slug".
+#:
+#: Relaxing this does not weaken the identity binding, because the prefix was
+#: never what enforced it. A miner who commits someone else's chute is caught
+#: by ``_commitment_mismatch`` (the deployed wrapper declares its own repo and
+#: revision, which must equal the chain commitment) and by ``_duplicate_losers``
+#: (revision SHAs are grouped and the earliest commit block wins). What the
+#: prefix still does is keep the deployment inside the subnet's namespace.
+_slug_pattern = (
+    r"^(?:[a-z0-9][a-z0-9-]*-)?" rf"{CHUTE_SLUG_PREFIX}-[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$"
+)
 _PREFIXED_SLUG_RE: Final[re.Pattern[str]] = re.compile(_slug_pattern)
 
 #: Chute ids are opaque platform identifiers interpolated into a URL path. The
@@ -100,7 +105,8 @@ def is_valid_slug(slug: str) -> bool:
     """A DNS label **inside this subnet's namespace**.
 
     Both conditions, not either: the DNS rule keeps the slug usable as a
-    hostname, and the prefix keeps it ours.
+    hostname, and the prefix keeps it inside the namespace. Whose deployment it
+    is, is settled by the chute name, not here.
     """
     candidate = slug or ""
     return bool(_SLUG_RE.match(candidate)) and bool(_PREFIXED_SLUG_RE.match(candidate))

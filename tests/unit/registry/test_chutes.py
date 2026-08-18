@@ -235,16 +235,19 @@ def test_require_hot_raises_the_registry_error_a_scorer_can_key_on() -> None:
         "prometheon",  # the prefix alone addresses nothing
         "prometheon-",  # separator with no name after it
         "prometheonguard",  # prefix must be a whole label, not a substring
-        "other-prometheon-x",  # prefix must lead, not appear anywhere
         "PROMETHEON-guard",  # a hostname label is lowercase
     ],
 )
 def test_a_chute_outside_the_namespace_is_refused(slug: str) -> None:
-    """The prefix is what makes a deployment provably ours.
+    """The slug must still sit inside the namespace to be addressable.
 
-    Without it a miner could commit any chute on the platform — including
-    someone else's working model — and be scored on a deployment they do not
-    control.
+    ``other-prometheon-x`` is deliberately *not* in this list any more. Chutes
+    derives a slug from the deploying account, so every genuine mainnet
+    deployment looks exactly like that — ``<account>-prometheon-<hotkey>`` —
+    and rejecting the shape rejected every real miner. What binds a deployment
+    to its hotkey is the chute *name*, checked in
+    :mod:`prometheon.registry.validation`; see
+    ``test_a_chute_named_for_another_hotkey_is_refused``.
     """
     chutes = client(chutes_handler())
     with pytest.raises(RegistryError):
