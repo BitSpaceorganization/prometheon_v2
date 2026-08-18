@@ -14,7 +14,7 @@ A Bittensor subnet that develops, benchmarks, and continuously improves **open-s
 
 Miners compete to build the best moderation model, and they supply the data it is measured on.
 
-1. **A miner grows a BitFan Fan Group.** Their qualified users write posts and replies they believe violate the platform's content policy, marked as **test content**. Those are recorded, never published.
+1. **A miner grows a BitFan Fan Group.** Its members write posts and replies they believe violate the platform's content policy, marked as **test content**. Those are recorded, never published.
 2. **The subnet collects a day of content**: that test content, plus a sample of real production content.
 3. **Validators label it** against [`content_policy.md`](./content_policy.md), producing the day's ground truth.
 4. **Miners publish a moderation model** to Hugging Face and deploy it to Chutes behind a canonical, hash-pinned wrapper, committing `(hf_repo, revision_sha, chute_id)` on chain.
@@ -82,9 +82,9 @@ Every command below assumes `uv run` in front of `prometheon`. To drop the prefi
 
 ## Miners
 
-You need a Fan Group with **at least 50 qualified users**, meaning active real accounts that have cleared the platform's anti-farming checks. That gate applies to both reward streams.
+You need a Fan Group with **at least 50 registered members** — accounts that have joined your group. That gate applies to both reward streams.
 
-Register your Fan Group and link its leader account to your hotkey at **[bitfan.ai/me/prometheon](https://bitfan.ai/me/prometheon)**. That is a platform step, not a subnet command, and nothing else works until it is done.
+Register your Fan Group, then connect your **Talisman** wallet (or another Substrate wallet — polkadot-js, SubWallet, Nova) at **[bitfan.ai/me/wallet](https://bitfan.ai/me/wallet)** and sign the ownership proof, which binds your mining hotkey to your leader account. That is a platform step, not a subnet command, and nothing else works until it is done.
 
 ```bash
 # 1. Render the canonical wrapper to deploy on Chutes

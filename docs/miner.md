@@ -9,10 +9,10 @@ for the remaining **40%**, from two independent streams in equal measure:
 | Model performance | 50% (20% of total) | how well your model judges everyone else's |
 
 **One entry gate, two streams behind it.** A Fan Group with **at least 50
-active members** — real accounts that have cleared the platform's anti-farming
-checks — is what makes you a miner at all. It is not a condition on one stream
-or the other; below it you are not on the eligible list, and a validator never
-looks at you.
+registered members** — accounts that have joined the group — is what makes you a
+miner at all. It is a plain headcount, not an activity or anti-farming score. It
+is not a condition on one stream or the other; below it you are not on the
+eligible list, and a validator never looks at you.
 
 Above it, the two streams are independent. Contribute data and deploy no model
 and you earn the dataset half; deploy a model and your users submit nothing that
@@ -26,15 +26,16 @@ Everything else depends on this, and it happens on the platform rather than
 through any subnet command.
 
 1. Sign in at **[bitfan.ai](https://bitfan.ai)**.
-2. Create a Fan Group and grow it to **at least 50 qualified users**. Qualified
-   means active real accounts that have cleared the platform's anti-farming
-   checks, not raw signups.
-3. Open **[bitfan.ai/me/prometheon](https://bitfan.ai/me/prometheon)** and link
-   your Fan Group leader account to the hotkey you will mine with.
+2. Create a Fan Group and grow it to **at least 50 registered members** —
+   accounts that have joined your group.
+3. Connect your **Talisman** wallet (or another Substrate wallet — polkadot-js,
+   SubWallet, Nova) at **[bitfan.ai/me/wallet](https://bitfan.ai/me/wallet)** and
+   sign the ownership proof. The proved address is the hotkey you will mine with,
+   and it becomes your Fan Group's leader hotkey on chain.
 
-The link is what makes your users' test content attributable to your hotkey. Until
-it exists the platform has no way to credit you, so your submissions count toward
-nobody and you earn nothing from either stream.
+The signed proof is what makes your users' test content attributable to your
+hotkey. Until it exists the platform has no way to credit you, so your
+submissions count toward nobody and you earn nothing from either stream.
 
 Your users then write posts and replies they believe violate
 [`content_policy.md`](../content_policy.md), marked as **test content**. Those
