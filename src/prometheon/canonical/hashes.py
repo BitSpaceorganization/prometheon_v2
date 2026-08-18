@@ -22,7 +22,7 @@ from __future__ import annotations
 import uuid
 from typing import Final
 
-from prometheon.canonical.integrity import canonical_wrapper_hash
+from prometheon.canonical.integrity import canonical_wrapper_hash, chute_namespace_prefix
 
 WRAPPER_VERSION: Final[str] = "prometheon-moderation/1"
 
@@ -105,7 +105,7 @@ def accepted_image_ids() -> frozenset[str]:
 
 #: How the canonical script names a chute: the prefix plus the miner's hotkey.
 #: Kept beside the id derivation so the two cannot drift from the template.
-CHUTE_NAME_PREFIX: Final[str] = "prometheon-"
+CHUTE_NAME_PREFIX: Final[str] = f"{chute_namespace_prefix()}-"
 
 
 def chute_id_for(chutes_user: str, hotkey: str) -> str:
@@ -118,4 +118,6 @@ def chute_id_for(chutes_user: str, hotkey: str) -> str:
     fetched is the one the commitment named, rather than taking the field on
     trust.
     """
-    return str(uuid.uuid5(uuid.NAMESPACE_OID, f"{chutes_user}::chute::{CHUTE_NAME_PREFIX}{hotkey}"))
+    return str(
+        uuid.uuid5(uuid.NAMESPACE_OID, f"{chutes_user}::chute::{chute_namespace_prefix()}-{hotkey}")
+    )

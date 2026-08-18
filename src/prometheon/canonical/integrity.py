@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import os
 import re
 from functools import lru_cache
 from pathlib import Path
@@ -60,6 +61,19 @@ _MASKED_VARIABLES: Final[tuple[str, ...]] = (
 )
 
 _HF_SHA_RE: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{40}$")
+
+
+def chute_namespace_prefix() -> str:
+    """The prefix every chute name and slug carries — ``prometheon`` by default.
+
+    Overridable via ``PROMETHEON_CHUTE_PREFIX`` for testnet only: Chutes reserves
+    the ``prometheon`` namespace to a specific mainnet netuid, so a testnet miner
+    cannot deploy under it. A testnet run sets a non-reserved prefix here, and the
+    validator's slug check reads the same env var, so the rendered wrapper and the
+    canonical hash stay in lockstep on both sides. Mainnet leaves it unset and the
+    behaviour — and the hash — is exactly ``prometheon``.
+    """
+    return os.environ.get("PROMETHEON_CHUTE_PREFIX", "prometheon")
 
 
 def is_valid_revision(revision: str) -> bool:
@@ -151,6 +165,7 @@ def render_wrapper(
         "{{ image_id }}": image_id,
         "{{ gpu_count }}": str(gpu_count),
         "{{ min_vram_gb }}": str(min_vram_gb),
+        "{{ chute_prefix }}": chute_namespace_prefix(),
     }
     for placeholder, value in replacements.items():
         source = source.replace(placeholder, value)

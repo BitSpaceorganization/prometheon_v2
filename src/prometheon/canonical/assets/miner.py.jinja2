@@ -63,7 +63,7 @@ PROMETHEON_IMAGE_ID = "{{ image_id }}"
 # miner-chosen name left the committed `chute_id` unverifiable — and
 # unknowable, since a miner had to commit an id before any chute existed to
 # have one.
-PROMETHEON_CHUTE_NAME = "prometheon-" + PROMETHEON_HOTKEY
+PROMETHEON_CHUTE_NAME = "{{ chute_prefix }}-" + PROMETHEON_HOTKEY
 
 # Idle chutes scale to zero, and eligibility requires a hot one at 04:00 UTC.
 # On the SDK defaults (300s, one instance, concurrency one) every chute in the

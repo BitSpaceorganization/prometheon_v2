@@ -18,6 +18,7 @@ against a DNS-label shape before any URL is built from it.
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from collections.abc import Callable, Mapping
@@ -26,6 +27,7 @@ from typing import Any, Final
 
 import httpx
 
+from prometheon.canonical.integrity import chute_namespace_prefix
 from prometheon.errors import ChuteNotRunningError, RegistryError
 from prometheon.registry._http import (
     DEFAULT_BACKOFF_SECONDS,
@@ -53,13 +55,25 @@ _SLUG_RE: Final[re.Pattern[str]] = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0
 #: Chutes team. The prefix is what makes a deployment provably ours: a slug
 #: becomes a hostname, and without it a miner could commit any chute on the
 #: platform — including someone else's working model — and be scored on it.
-CHUTE_SLUG_PREFIX: Final[str] = "prometheon"
+CHUTE_SLUG_PREFIX: Final[str] = chute_namespace_prefix()
 
 #: Prefix, then a separator, then at least one more character. A slug that is
 #: exactly the prefix addresses nothing.
-_PREFIXED_SLUG_RE: Final[re.Pattern[str]] = re.compile(
-    rf"^{CHUTE_SLUG_PREFIX}-[a-z0-9](?:[a-z0-9-]{{0,{61 - len(CHUTE_SLUG_PREFIX) - 1}}}[a-z0-9])?$"
-)
+#:
+#: In the reserved (mainnet) namespace the slug is clean — ``prometheon-<hotkey>``
+#: — so the prefix must be first, and that strict rule is what keeps a deployment
+#: provably ours. On testnet the namespace is not reserved, so Chutes prefixes the
+#: slug with the deploying account (``lucky808-promtest-…``); only when the prefix
+#: is overridden for testnet is an optional leading ``<account>-`` label tolerated.
+_bound = 61 - len(CHUTE_SLUG_PREFIX) - 1
+if os.environ.get("PROMETHEON_CHUTE_PREFIX") is not None:
+    _slug_pattern = (
+        r"^(?:[a-z0-9][a-z0-9-]*-)?"
+        rf"{CHUTE_SLUG_PREFIX}-[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$"
+    )
+else:
+    _slug_pattern = rf"^{CHUTE_SLUG_PREFIX}-[a-z0-9](?:[a-z0-9-]{{0,{_bound}}}[a-z0-9])?$"
+_PREFIXED_SLUG_RE: Final[re.Pattern[str]] = re.compile(_slug_pattern)
 
 #: Chute ids are opaque platform identifiers interpolated into a URL path. The
 #: character class matches what the commitment encoder accepts, so no id the
