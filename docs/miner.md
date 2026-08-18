@@ -29,9 +29,10 @@ through any subnet command.
 2. Create a Fan Group and grow it to **at least 50 registered members** —
    accounts that have joined your group.
 3. Connect your **Talisman** wallet (or another Substrate wallet — polkadot-js,
-   SubWallet, Nova) at **[bitfan.ai/me/wallet](https://bitfan.ai/me/wallet)** and
-   sign the ownership proof. The proved address is the hotkey you will mine with,
-   and it becomes your Fan Group's leader hotkey on chain.
+   SubWallet, Nova) with the **Connect Wallet** button in the bitfan.ai site
+   header, and sign the ownership proof it prompts for. The proved address is the
+   hotkey you will mine with, and it becomes your Fan Group's leader hotkey on
+   chain.
 
 The signed proof is what makes your users' test content attributable to your
 hotkey. Until it exists the platform has no way to credit you, so your
