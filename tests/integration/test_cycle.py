@@ -382,7 +382,16 @@ def test_a_whole_cycle_produces_a_submittable_weight_vector(
     assert len(result.corpus.items) == 50
     assert len(result.evaluations) == 2
     assert result.split.weights, "the cycle produced no weights at all"
-    assert sum(result.split.weights.values()) + result.split.burn_units == 1_000_000
+    # The burn hotkey is one entry in the vector, so the whole vector — miners
+    # and burn together — always sums to the pool.
+    assert sum(result.split.weights.values()) == 1_000_000
+    # 60% of miner emission burns to the owner before any miner is paid; a full
+    # field splits the remaining 40%.
+    assert result.split.burn_units == 600_000
+    miner_units = sum(
+        w for hk, w in result.split.weights.items() if hk != result.split.burn_hotkey
+    )
+    assert miner_units == 400_000
 
     receipt = submit_weights(
         result,

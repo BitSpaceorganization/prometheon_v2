@@ -1,11 +1,12 @@
 # Mining
 
-You earn from two independent streams, in equal measure:
+**60% of miner emission burns to the owner (uid 0) every day.** Miners compete
+for the remaining **40%**, from two independent streams in equal measure:
 
-| Stream | Share | What it pays for |
+| Stream | Share of the 40% | What it pays for |
 |---|---|---|
-| Dataset contribution | 50% | test content your Fan Group users write |
-| Model performance | 50% | how well your model judges everyone else's |
+| Dataset contribution | 50% (20% of total) | test content your Fan Group users write |
+| Model performance | 50% (20% of total) | how well your model judges everyone else's |
 
 **One entry gate, two streams behind it.** A Fan Group with **at least 50
 active members** — real accounts that have cleared the platform's anti-farming

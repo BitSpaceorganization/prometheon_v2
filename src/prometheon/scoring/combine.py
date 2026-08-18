@@ -1,17 +1,20 @@
 """Combining the two halves into one weight vector.
 
-The pool is an integer count of weight units, split by ``dataset_share_bp``.
-Everything that is not allocated to a miner goes to the subnet owner hotkey as
-burn, so the vector always sums to the same total no matter how thin the field
-is. That makes a day's emission legible: the burn line is the subnet saying
-"nobody earned this", explicitly, rather than a shortfall the chain quietly
-renormalises away.
+The pool is an integer count of weight units. A fixed ``miner_burn_share_bp``
+comes off the top as burn to the subnet owner hotkey (uid 0) before any miner is
+paid; the remainder is the *miner pool*, split by ``dataset_share_bp`` between
+the dataset and model halves. Everything not allocated to a miner — the fixed
+burn plus any half with no eligible participant — goes to the burn hotkey, so
+the vector always sums to the same total no matter how thin the field is. That
+makes a day's emission legible: the burn line is the subnet saying, explicitly,
+what share was withheld, rather than a shortfall the chain quietly renormalises
+away.
 
-Four cases have to survive:
+Cases that have to survive (all on top of the fixed burn share):
 
-- no dataset-eligible miners: the dataset half burns;
-- no model-eligible miners: the model half burns;
-- neither: everything burns;
+- no dataset-eligible miners: the dataset half of the miner pool burns;
+- no model-eligible miners: the model half of the miner pool burns;
+- neither: the whole pool burns;
 - a miner in both halves: its units add, and it is one entry in the vector.
 """
 
@@ -68,10 +71,14 @@ def combine_weights(
     if not burn_hotkey:
         raise ScoringError("a burn hotkey is required; unallocated emission must have a target")
 
-    dataset_pool = total_units * scoring.dataset_share_bp // BASIS_POINTS
+    # A fixed share of the pool burns before any miner is paid; only the rest —
+    # the miner pool — is divided between the two halves. `burn_units` below then
+    # captures this fixed burn plus any half that had no eligible participant.
+    miner_pool = total_units * (BASIS_POINTS - scoring.miner_burn_share_bp) // BASIS_POINTS
+    dataset_pool = miner_pool * scoring.dataset_share_bp // BASIS_POINTS
     # The remainder rather than a second share calculation, so the two halves
     # cannot drift apart by a rounding unit as the share is retuned.
-    model_pool = total_units - dataset_pool
+    model_pool = miner_pool - dataset_pool
 
     dataset_units = allocate_dataset_pool(
         dataset_scores, pool=dataset_pool, top_n=scoring.dataset_top_n

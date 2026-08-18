@@ -118,8 +118,16 @@ class ScoringConfig(BaseModel):
 
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", frozen=True)
 
-    #: Dataset contribution takes half of miner emission, model performance the
-    #: other half.
+    #: Share of miner emission that always burns to the subnet owner (uid 0)
+    #: before any miner is paid. The remaining ``10000 - this`` is the pool the
+    #: dataset and model halves divide among miners by score. At 6000, 60% burns
+    #: every day and miners compete for the other 40%; the burn line on the
+    #: dashboard is the subnet stating that share explicitly rather than letting
+    #: the chain renormalise it away.
+    miner_burn_share_bp: int = Field(default=6000, ge=0, le=10000)
+
+    #: Dataset contribution takes half of the *miner pool* (what is left after
+    #: the burn share above), model performance the other half.
     dataset_share_bp: int = Field(default=5000, ge=0, le=10000)
 
     #: Only the top contributors are paid, proportionally to score. With fewer
@@ -127,9 +135,10 @@ class ScoringConfig(BaseModel):
     #: present rather than burning the remainder.
     dataset_top_n: int = Field(default=10, ge=1)
 
-    #: Rank shares of *total* miner emission: 30/15/5 sums to the 50% model
-    #: half. With fewer valid models the shares renormalise across those
-    #: present.
+    #: Rank ratios within the model half of the miner pool: 30/15/5 is the top
+    #: three in 6:3:1, renormalised to fill that half across the models actually
+    #: present. With fewer valid models the shares renormalise across those
+    #: present rather than burning the difference.
     #:
     #: Constrained here rather than at first use. An empty or negative-bearing
     #: tuple used to validate cleanly and only fail at ``allocate_model_pool``,
