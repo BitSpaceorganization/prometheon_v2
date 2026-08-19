@@ -28,7 +28,15 @@ from prometheon.cli._common import (
     require_env,
     table,
 )
-from prometheon.cli.cycle import SCORING_VERSION, build_results, run_cycle, submit_weights
+from prometheon.cli.cycle import (
+    SCORING_VERSION,
+    CycleResult,
+    build_results,
+    run_cycle,
+    submit_allocation,
+    submit_weights,
+)
+from prometheon.config import Config
 from prometheon.dbclient import auth
 from prometheon.dbclient.client import DbClient
 from prometheon.dbclient.models import EvaluationSubmission
@@ -90,6 +98,102 @@ def _policy_text(args: argparse.Namespace) -> tuple[str, str]:
             "against a policy version so a disagreement can be attributed"
         )
     return text, version
+
+
+#: Where a completed cycle leaves the vector it submitted, so it can be posted
+#: again between cycles.
+_LAST_WEIGHTS_FILE: Final[str] = "last-weights.json"
+
+
+def _state_path(config: Config) -> Path:
+    return config.validator.state_directory / _LAST_WEIGHTS_FILE
+
+
+def save_submitted_allocation(config: Config, *, day: dt.date, result: CycleResult) -> Path:
+    """Record the allocation a cycle submitted.
+
+    A cycle runs once a day, but weights stop counting toward consensus once
+    ``activity_cutoff`` passes -- 720 blocks, under three hours, on a subnet
+    whose tempo is 72 minutes. Between cycles the validator has to re-post the
+    same vector or its miners earn nothing for the rest of the day, so the
+    vector has to outlive the process that computed it.
+    """
+    path = _state_path(config)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "day": day.isoformat(),
+                "netuid": config.chain.netuid,
+                "burn_hotkey": result.burn_hotkey,
+                "scoring_version": SCORING_VERSION,
+                "submitted_at": int(time.time()),
+                "weights": dict(result.split.weights),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def cmd_resubmit(args: argparse.Namespace) -> int:
+    """Re-post the last cycle's vector without recomputing it.
+
+    Deliberately cheap: no labelling, no evaluation, no OpenAI or Chutes spend.
+    It reads what the last cycle decided and sends it again, resolved against a
+    *fresh* metagraph by the same code path the cycle itself uses -- so a miner
+    that deregistered since is dropped here too, rather than being paid because
+    a re-post was allowed to skip the rule.
+    """
+    config = load(args.config)
+    path = _state_path(config)
+    if not path.is_file():
+        raise ConfigError(
+            f"no submitted allocation at {path}; run `prometheon validator run` first, "
+            "and note that a dry run does not leave one"
+        )
+
+    state = json.loads(path.read_text(encoding="utf-8"))
+    if int(state.get("netuid", -1)) != config.chain.netuid:
+        raise ConfigError(
+            f"{path} was written for netuid={state.get('netuid')}, "
+            f"but this config targets netuid={config.chain.netuid}"
+        )
+    weights = {str(key): int(value) for key, value in dict(state["weights"]).items()}
+    if not weights:
+        raise ConfigError(f"{path} carries no weights to submit")
+
+    if config.validator.dry_run:
+        note(f"dry run: would re-submit {len(weights)} hotkeys from {state['day']}")
+        return EXIT_OK
+
+    wallet = open_wallet(config)
+    subtensor = chain.connect(config.chain.network)
+    capabilities = chain.detect_capabilities(subtensor)
+
+    # A cycle and a re-post landing inside the rate limit is routine -- both run
+    # on timers, and the cycle's own submission is the one that matters. Exiting
+    # non-zero here would mark a healthy validator as failing once a day.
+    waiting = chain.blocks_until_weights_allowed(
+        subtensor, netuid=config.chain.netuid, hotkey=wallet.hotkey.ss58_address
+    )
+    if waiting:
+        note(f"rate limit not clear for another {waiting} blocks; nothing sent")
+        return EXIT_OK
+
+    receipt = submit_allocation(
+        weights=weights,
+        burn_hotkey=str(state["burn_hotkey"]),
+        config=config,
+        subtensor=subtensor,
+        wallet=wallet,
+        mechid=0 if capabilities.supports_mechid else None,
+    )
+    note(f"re-submitted {state['day']} ({len(weights)} hotkeys): {receipt or 'no receipt'}")
+    return EXIT_OK
 
 
 def cmd_run(args: argparse.Namespace) -> int:
@@ -165,6 +269,8 @@ def cmd_run(args: argparse.Namespace) -> int:
                 mechid=0 if capabilities.supports_mechid else None,
             )
             note(f"weights submitted: {receipt or 'no receipt returned'}")
+            saved = save_submitted_allocation(config, day=day, result=result)
+            note(f"allocation saved for re-submission: {saved}")
         else:
             note("submit_weights is off: weights were computed but not sent")
 

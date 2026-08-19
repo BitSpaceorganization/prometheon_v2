@@ -28,6 +28,7 @@ it, or diff two validators' runs against each other.
 from __future__ import annotations
 
 import datetime as dt
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from fractions import Fraction
 from typing import Any
@@ -265,6 +266,34 @@ def submit_weights(
     Commit-reveal switched on mid-cycle is exactly the case the gate exists for,
     and exactly the case the early-only check missed.
     """
+    return submit_allocation(
+        weights=result.split.weights,
+        burn_hotkey=result.burn_hotkey,
+        config=config,
+        subtensor=subtensor,
+        wallet=wallet,
+        mechid=mechid,
+    )
+
+
+def submit_allocation(
+    *,
+    weights: Mapping[str, int],
+    burn_hotkey: str,
+    config: Config,
+    subtensor: Any,
+    wallet: Any,
+    mechid: int | None,
+) -> str | None:
+    """Resolve one hotkey->units allocation against the chain and send it.
+
+    Split out of :func:`submit_weights` so a re-submission of an already
+    computed day goes through the same gates and the same fresh-metagraph
+    resolution. A validator has to re-post its vector between cycles — weights
+    stop counting once ``activity_cutoff`` passes — and a second code path for
+    that would be a second place for the burn target, the deregistration rule,
+    or the commit-reveal gate to drift.
+    """
     assert_submission_allowed(
         hyperparameters=chain.read_hyperparameters(subtensor, netuid=config.chain.netuid),
         capabilities=chain.detect_capabilities(subtensor),
@@ -274,17 +303,15 @@ def submit_weights(
     )
 
     fresh = chain.sync_metagraph_view(subtensor, netuid=config.chain.netuid)
-    _require_burn_target(fresh, result.burn_hotkey, netuid=config.chain.netuid)
-    registered, gone = fresh.partition_by_registration(list(result.split.weights))
+    _require_burn_target(fresh, burn_hotkey, netuid=config.chain.netuid)
+    registered, gone = fresh.partition_by_registration(list(weights))
 
-    units = {hotkey: result.split.weights[hotkey] for hotkey in registered}
+    units = {hotkey: weights[hotkey] for hotkey in registered}
     if gone:
         # Their share is not redistributed. It goes to the burn hotkey, the
         # same place an unclaimed pool goes. Redistributing would let a
         # deregistration quietly raise everyone else's payout.
-        units[result.burn_hotkey] = units.get(result.burn_hotkey, 0) + sum(
-            result.split.weights[hotkey] for hotkey in gone
-        )
+        units[burn_hotkey] = units.get(burn_hotkey, 0) + sum(weights[hotkey] for hotkey in gone)
 
     vector = to_u16_chain_vector(resolve_allocations(units, metagraph=fresh))
     return chain.submit_set_weights(

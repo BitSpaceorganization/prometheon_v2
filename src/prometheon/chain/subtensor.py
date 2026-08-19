@@ -286,6 +286,40 @@ def read_subnet_owner_hotkey(subtensor: Any, *, netuid: int) -> str:
     return owner
 
 
+def blocks_until_weights_allowed(subtensor: Any, *, netuid: int, hotkey: str) -> int:
+    """How many blocks remain before this hotkey may set weights again.
+
+    ``0`` when it may set them now, including when the chain cannot answer.
+    Being wrong in that direction costs one rejected extrinsic; being wrong the
+    other way would silently skip a submission that was due.
+
+    Exists so a re-post between cycles can skip quietly instead of failing. The
+    rate limit is short (100 blocks on netuid 108) and a re-post runs on a
+    timer, so a cycle and a re-post landing minutes apart is routine, not an
+    error worth waking anybody for.
+    """
+    try:
+        limit = int(subtensor.weights_rate_limit(netuid=netuid))
+    except Exception:  # pragma: no cover - older SDKs, or an RPC hiccup
+        return 0
+    if limit <= 0:
+        return 0
+
+    view = sync_metagraph_view(subtensor, netuid=netuid)
+    try:
+        uid = view.hotkeys.index(hotkey)
+    except ValueError:
+        # Not registered. Let the submission itself produce that error, which
+        # says so far more clearly than a silent skip would.
+        return 0
+
+    try:
+        elapsed = int(subtensor.blocks_since_last_update(netuid, uid))
+    except Exception:  # pragma: no cover - as above
+        return 0
+    return max(0, limit - elapsed)
+
+
 def submit_set_weights(
     subtensor: Any,
     *,
