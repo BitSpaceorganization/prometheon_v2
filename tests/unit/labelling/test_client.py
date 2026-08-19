@@ -42,7 +42,7 @@ def test_the_request_is_an_openai_chat_completion(
         {"role": "user", "content": "items here"},
     ]
     # Ground truth must not move between a first attempt and its retry.
-    assert body["temperature"] == 0
+    assert body["temperature"] == LabellingConfig().temperature
     assert body["response_format"] == {"type": "json_object"}
 
 

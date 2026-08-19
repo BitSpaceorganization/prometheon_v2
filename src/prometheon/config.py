@@ -16,7 +16,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, ClassVar
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from prometheon.errors import ConfigError
 
@@ -76,14 +76,37 @@ class LabellingConfig(BaseModel):
     base_url: str = Field(default="https://api.openai.com/v1", min_length=1)
     api_key_env: str = Field(default="OPENAI_API_KEY", min_length=1)
     batch_size: int = Field(default=100, ge=1, le=100)
-    #: Sampling temperature for the labelling request. ``0`` keeps ground truth
-    #: from wandering between validators, which is the default. Some models
-    #: (the gpt-5 reasoning line among them) accept only their own default and
-    #: reject an explicit ``0``; set this to their supported value, or to
-    #: ``null`` to omit the field entirely for such a model.
-    temperature: float | None = Field(default=0.0, ge=0.0, le=2.0)
+    #: Sampling temperature for the labelling request.
+    #:
+    #: ``0`` is what keeps ground truth from wandering between validators, and
+    #: is the right value for any model that accepts it. It is *not* the default
+    #: here only because the default ``model`` is a gpt-5 reasoning model, which
+    #: rejects an explicit ``0`` outright — and a default that cannot run with
+    #: the neighbouring default is a trap, not a default. Set ``0`` explicitly
+    #: when you point ``model`` at something that allows it.
+    temperature: float | None = Field(default=1.0, ge=0.0, le=2.0)
     request_timeout_seconds: float = Field(default=180.0, gt=0)
     max_retries: int = Field(default=3, ge=0)
+
+    @model_validator(mode="after")
+    def _temperature_suits_the_model(self) -> LabellingConfig:
+        """Refuse a model/temperature pair the endpoint will reject.
+
+        The gpt-5 reasoning line accepts only its own default of 1 and answers
+        an explicit 0 with HTTP 400. Left to be discovered at run time that
+        surfaces *after* the snapshot is fetched and hours into a cycle, as a
+        provider error with no hint that the fix is one line of config. It is
+        knowable the moment the file is read, so it is refused here.
+        """
+        if self.model.startswith("gpt-5") and self.temperature == 0:
+            raise ValueError(
+                f"model {self.model!r} rejects an explicit temperature of 0 "
+                "(HTTP 400: 'Only the default (1) value is supported'). "
+                "Set `temperature = 1.0` under [labelling], or choose a model "
+                "that accepts 0 — 0 is what keeps ground truth from wandering "
+                "between validators, so prefer it where the model allows it."
+            )
+        return self
 
 
 class EvaluationConfig(BaseModel):

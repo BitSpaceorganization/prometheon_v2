@@ -144,6 +144,36 @@ switched off rather than allowed to randomise close rankings.
 
 ---
 
+## Upgrading an existing validator
+
+**`git pull` does not touch your config.** You copied
+`configs/mainnet.example.toml` once; that copy keeps whatever values it had, so
+a pull brings new code and new docs but leaves your `[scoring]` and
+`[labelling]` behind. After pulling, diff your config against the example:
+
+```bash
+git pull
+diff <(grep -vE '^\s*(#|$)' configs/mainnet.example.toml) \
+     <(grep -vE '^\s*(#|$)' ~/prometheon-mainnet.toml)
+```
+
+Two of those differences change what you submit:
+
+| Setting | If yours is stale | Consequence |
+|---|---|---|
+| `miner_burn_share_bp`, `dataset_share_bp` | `6000` / `5000` | you compute a **different weight vector** from every updated validator, and disagree on chain |
+| `temperature` under `[labelling]` | absent | the cycle dies at labelling with HTTP 400 |
+
+The runtime now refuses a model/temperature pair the endpoint would reject, so
+the second one fails immediately at startup rather than hours into a cycle. The
+first cannot be caught that way — a stale split is valid config, just a
+different policy — so it is on you to diff.
+
+You also need the hourly re-post entry below; a pull does not add it to your
+crontab.
+
+---
+
 ## Running it daily — **and re-posting between cycles**
 
 Two entries, not one. The cycle runs once a day; the re-post runs every hour.
