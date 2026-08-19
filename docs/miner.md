@@ -55,6 +55,26 @@ Any open-source causal language model that fits the RTX PRO 6000 pool the
 wrapper deploys to (96 GB VRAM per GPU, 1–8 GPUs). It is judged on one task:
 given the policy and one piece of content, answer `YES` or `NO`.
 
+**The image pins `transformers>=4.44,<4.47`, so your architecture has to be one
+that release recognises.** A newer one is not rejected at commit time and not
+rejected at deploy time — it fails inside the container, at
+`AutoModelForCausalLM.from_pretrained`:
+
+```text
+KeyError: 'qwen3'
+ValueError: The checkpoint you are trying to load has model type `qwen3` but
+Transformers does not recognize this architecture.
+```
+
+From the outside that looks like nothing at all: the deploy succeeds, an
+instance is assigned, it reports `verified: true`, then dies during startup and
+is rescheduled — repeatedly, with no failure reason on the API. `chutes
+startup-logs` is what shows the real error.
+
+So `Qwen2.5` (`model_type: qwen2`) works and `Qwen3` does not, however new and
+capable it is. Check `config.json` for `model_type` and confirm the pinned
+`transformers` knows it before you commit anything.
+
 You are not writing inference code. Every model on the subnet runs the **same**
 hash-pinned engine, so a score difference is a model difference and nothing
 else. What you control is the weights.
