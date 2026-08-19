@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -109,3 +111,63 @@ class TestTheEntryPointExitsCorrectly:
         from prometheon.cli.main import main
 
         assert main([]) != 0
+
+
+class TestTheAllocationSurvivesBetweenCycles:
+    """A cycle runs daily; weights stop counting in hours.
+
+    `activity_cutoff` on netuid 108 is 720 blocks -- under three hours -- while
+    a cycle runs once a day. Without the saved vector there is nothing to
+    re-post, the validator's row is masked out of consensus for most of every
+    day, and the miners it weighted earn nothing.
+    """
+
+    def _config(self, tmp_path: Path, netuid: int = 108) -> object:
+        """Only the fields the state helpers touch. A real Config here would
+        assert nothing extra and would break on every unrelated field added."""
+        return SimpleNamespace(
+            chain=SimpleNamespace(netuid=netuid),
+            validator=SimpleNamespace(state_directory=tmp_path / "state"),
+        )
+
+    def _result(self) -> object:
+        return SimpleNamespace(
+            burn_hotkey="5Hburn",
+            split=SimpleNamespace(
+                weights={"5Hburn": 800_000, "5Hminer_a": 120_000, "5Hminer_b": 80_000}
+            ),
+        )
+
+    def test_the_submitted_vector_outlives_the_process_that_computed_it(
+        self, tmp_path: Path
+    ) -> None:
+        from prometheon.cli.validator import _state_path, save_submitted_allocation
+
+        config = self._config(tmp_path)
+        path = save_submitted_allocation(config, day=dt.date(2026, 8, 17), result=self._result())
+
+        assert path == _state_path(config)
+        state = json.loads(path.read_text(encoding="utf-8"))
+        assert state["weights"] == self._result().split.weights
+        assert state["burn_hotkey"] == "5Hburn"
+        assert state["day"] == "2026-08-17"
+        assert state["netuid"] == 108
+
+    def test_the_directory_is_created_rather_than_required(self, tmp_path: Path) -> None:
+        """A first cycle on a fresh box must not fail after doing all the work."""
+        from prometheon.cli.validator import save_submitted_allocation
+
+        config = self._config(tmp_path / "nested" / "deeper")
+        path = save_submitted_allocation(config, day=dt.date(2026, 8, 17), result=self._result())
+
+        assert path.is_file()
+
+    def test_the_netuid_is_recorded_so_a_re_post_cannot_cross_subnets(self, tmp_path: Path) -> None:
+        """Re-posting one subnet's payout onto another would pay strangers."""
+        from prometheon.cli.validator import save_submitted_allocation
+
+        path = save_submitted_allocation(
+            self._config(tmp_path, netuid=108), day=dt.date(2026, 8, 17), result=self._result()
+        )
+
+        assert json.loads(path.read_text(encoding="utf-8"))["netuid"] == 108

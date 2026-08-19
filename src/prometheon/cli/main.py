@@ -148,6 +148,21 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--policy", help="path to content_policy.md")
     run.set_defaults(handler=validator.cmd_run)
 
+    resubmit = with_config(
+        validator_commands.add_parser(
+            "resubmit",
+            help="re-post the last cycle's weights without recomputing them",
+            description=(
+                "Sends the vector the last `validator run` submitted, resolved against "
+                "a fresh metagraph. Weights stop counting toward consensus once "
+                "activity_cutoff passes, which is far shorter than a day, so a "
+                "once-daily cycle must re-post between runs or its miners earn nothing "
+                "for the rest of the day. Costs nothing: no labelling, no evaluation."
+            ),
+        )
+    )
+    resubmit.set_defaults(handler=validator.cmd_resubmit)
+
     return parser
 
 
