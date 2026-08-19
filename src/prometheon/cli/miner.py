@@ -126,17 +126,6 @@ def cmd_render(args: argparse.Namespace) -> int:
         gpu_count=args.gpu_count,
         min_vram_gb=args.min_vram_gb,
     )
-    # Before anything is written or paid for: can the image load this at all?
-    # An architecture the pinned transformers does not know fails only inside
-    # the container, and from outside that is indistinguishable from having no
-    # GPU capacity. Checked here, where the miner can still pick another model.
-    with HuggingFaceClient() as huggingface:
-        checked = require_loadable(huggingface, hf_repo, hf_revision)
-    if checked is None:
-        note(
-            "note: transformers is not installed here, so the architecture was not "
-            "checked. `uv sync --extra wrapper` installs the version the image pins."
-        )
 
     chute_id = chute_id_for(chutes_user, hotkey)
     digest = wrapper_hash(source)

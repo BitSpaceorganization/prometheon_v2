@@ -25,11 +25,19 @@ from __future__ import annotations
 import json
 from typing import Any, Final
 
+from pathlib import Path
+
 from prometheon.errors import RegistryError
 
 #: `config.json` is small. A checkpoint shipping a huge one is not one this can
 #: reason about anyway.
 _MAX_CONFIG_BYTES: Final[int] = 1 << 20
+
+#: The architectures the deployment image can load, frozen from its pinned
+#: transformers. See the file's header for how to regenerate it.
+_MODEL_TYPES_FILE: Final[Path] = (
+    Path(__file__).parent / "assets" / "transformers-4.46-model-types.txt"
+)
 
 
 class ArchitectureUnsupportedError(RegistryError):
@@ -54,30 +62,33 @@ def model_type_of(client: Any, repo: str, revision: str) -> str:
     return model_type if isinstance(model_type, str) else ""
 
 
-def known_model_types() -> frozenset[str] | None:
-    """Every ``model_type`` the installed transformers recognises.
+def known_model_types() -> frozenset[str]:
+    """Every ``model_type`` the *image's* transformers recognises.
 
-    ``None`` when transformers is absent, which is the common case on a machine
-    that only drives the CLI. Callers report that as *unchecked* rather than as
-    a pass: claiming a checkpoint loads when nothing verified it is how this
-    failure stayed invisible in the first place.
+    Read from a frozen list rather than from the installed package, and that is
+    the whole point. The image pins its own `transformers`, so the question is
+    never "can this machine load the checkpoint" but "can the container". A
+    miner running a newer release locally would see a newer architecture
+    accepted here and still watch every instance die inside the container --
+    which is precisely the failure this exists to prevent.
+
+    Regenerate the list when the pin in `pyproject.toml` moves; the file says
+    how.
     """
-    try:
-        from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
-    except Exception:  # pragma: no cover - depends on the optional extra
-        return None
-    return frozenset(CONFIG_MAPPING_NAMES)
+    text = _MODEL_TYPES_FILE.read_text(encoding="utf-8")
+    return frozenset(
+        line.strip() for line in text.splitlines() if line.strip() and not line.startswith("#")
+    )
 
 
-def require_loadable(client: Any, repo: str, revision: str) -> str | None:
-    """Raise unless the pinned transformers can load this checkpoint.
+def require_loadable(client: Any, repo: str, revision: str) -> str:
+    """Raise unless the image's transformers can load this checkpoint.
 
-    Returns the checked ``model_type``, or ``None`` when transformers is absent
-    and nothing could be checked.
+    Returns the ``model_type`` that was checked, or ``""`` when the repository
+    declares none -- an absent field is not evidence of a bad model, and this
+    check does not guess.
     """
     known = known_model_types()
-    if known is None:
-        return None
 
     model_type = model_type_of(client, repo, revision)
     if not model_type or model_type in known:
