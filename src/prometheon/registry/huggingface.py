@@ -203,6 +203,43 @@ class HuggingFaceClient(RegistryHttpClient):
 
         return RepoSnapshot(repo=repo, revision=revision, files=tuple(sorted(files)))
 
+    def weight_bytes(self, repo: str, revision: str) -> int:
+        """Total size of the weight shards at ``revision``, in bytes.
+
+        Read from the API rather than by downloading, because the point is to
+        refuse an oversized model *before* every validator on the subnet spends
+        an hour pulling it. `?blobs=true` is what makes the API report sizes at
+        all; without it `siblings` carries names only.
+
+        Returns ``0`` when the API reports no sizes. A missing number is not
+        evidence of a small model, so callers treat it as unknown rather than
+        as a pass.
+        """
+        require_valid_repo_id(repo)
+        require_valid_revision(revision)
+        what = f"Hugging Face repo {repo}@{revision}"
+        payload = self.get_json(
+            f"/api/models/{repo}/revision/{revision}?blobs=true", what=what
+        )
+        siblings = payload.get("siblings")
+        if not isinstance(siblings, list):
+            return 0
+
+        total = 0
+        for sibling in siblings:
+            if not isinstance(sibling, dict):
+                continue
+            name = sibling.get("rfilename")
+            size = sibling.get("size")
+            if (
+                isinstance(name, str)
+                and name.endswith(SHARD_SUFFIX)
+                and isinstance(size, int)
+                and size > 0
+            ):
+                total += size
+        return total
+
     def fetch_file(
         self, repo: str, revision: str, filename: str, *, max_bytes: int = MAX_FILE_BYTES
     ) -> bytes:

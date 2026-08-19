@@ -180,6 +180,18 @@ class ChuteNotRunningError(RegistryError):
     code: str = "registry.chute_not_running"
 
 
+class ModelTooLargeError(RegistryError):
+    """The weights exceed what every validator is expected to be able to run.
+
+    A size ceiling is unusual as a *protocol* rule, and it is one here for a
+    structural reason: every validator downloads and runs every eligible model,
+    so an oversized model is not one miner overreaching on their own hardware
+    budget. It is work the whole subnet attempts and fails at simultaneously.
+    """
+
+    code = "registry.model_too_large"
+
+
 class DuplicateModelError(RegistryError):
     """Another hotkey committed this exact model first."""
 

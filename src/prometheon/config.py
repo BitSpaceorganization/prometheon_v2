@@ -110,26 +110,43 @@ class LabellingConfig(BaseModel):
 
 
 class EvaluationConfig(BaseModel):
-    """Calling miners' deployed models."""
+    """Running miners' models on this validator's own hardware."""
 
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", frozen=True)
 
     batch_size: int = Field(default=100, ge=1, le=100)
-    request_timeout_seconds: float = Field(default=120.0, gt=0)
-    #: One retry on transport error, then the batch is scored incorrect. Not
-    #: configurable upward: a model needing many retries is not serving.
-    transport_retries: int = Field(default=1, ge=0, le=1)
-    #: Environment variable holding the Chutes key a **validator** infers with.
+
+    #: Ceiling on a submitted model's weights, in bytes.
     #:
-    #: This is the subnet owner's key, not the miner's. A miner uses their own
-    #: key to build and deploy their chute; a validator never sees it and must
-    #: not, since a key that could redeploy the model under evaluation would let
-    #: whoever holds it change what is being scored mid-cycle.
+    #: Every validator downloads and runs every eligible model, so this is not
+    #: a miner's private trade-off: it decides what hardware validating the
+    #: subnet requires. 24 GiB leaves headroom for KV cache and activations on
+    #: a 32 GB card, which is the floor a validator is expected to own.
     #:
-    #: One key across the field also keeps inference cost and rate limits
-    #: attributable to the subnet rather than to whichever miner happened to be
-    #: sampled.
-    chutes_api_key_env: str = Field(default="CHUTES_API_KEY", min_length=1)
+    #: Enforced from the Hugging Face API before anything is downloaded, so an
+    #: oversized model costs the subnet one request rather than an hour of
+    #: bandwidth on every validator at once.
+    max_weight_bytes: int = Field(default=24 * 1024**3, gt=0)
+
+    #: Torch dtype the weights are loaded in, pinned rather than inferred.
+    #:
+    #: Two validators must reach the same verdict on the same item, and dtype
+    #: is the largest avoidable source of divergence: the same checkpoint in
+    #: bfloat16 and float16 puts different probability mass on YES and NO, so
+    #: near-ties can flip between validators that only differ in a default.
+    #: Residual disagreement from differing GPU kernels is left to consensus,
+    #: which is what consensus is for; a silent dtype difference is not.
+    torch_dtype: str = Field(default="float16", min_length=1)
+
+    #: Where to run. ``auto`` picks CUDA when present and falls back to CPU,
+    #: which is unusably slow for a real cycle but keeps a dry run possible on
+    #: a machine without a GPU.
+    device: str = Field(default="auto", min_length=1)
+
+    #: Seconds a single model's evaluation may take before it is abandoned and
+    #: scored on whatever it completed. A model that cannot finish the corpus
+    #: is not a model the subnet can serve.
+    model_timeout_seconds: float = Field(default=3600.0, gt=0)
 
 
 class ScoringConfig(BaseModel):
