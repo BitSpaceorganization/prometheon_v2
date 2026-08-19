@@ -23,6 +23,7 @@ committing on chain, before paying for a deploy.
 from __future__ import annotations
 
 import json
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Final
 
@@ -31,6 +32,11 @@ from prometheon.errors import RegistryError
 #: `config.json` is small. A checkpoint shipping a huge one is not one this can
 #: reason about anyway.
 _MAX_CONFIG_BYTES: Final[int] = 1 << 20
+
+#: The architectures the image's pinned transformers knows, captured from it.
+_MODEL_TYPES_ASSET: Final[Path] = (
+    Path(__file__).resolve().parent / "assets" / "transformers_model_types.txt"
+)
 
 #: The architectures the deployment image can load, frozen from its pinned
 #: transformers. See the file's header for how to regenerate it.
@@ -62,21 +68,25 @@ def model_type_of(client: Any, repo: str, revision: str) -> str:
 
 
 def known_model_types() -> frozenset[str]:
-    """Every ``model_type`` the *image's* transformers recognises.
+    """Every ``model_type`` the deployment image's transformers recognises.
 
-    Read from a frozen list rather than from the installed package, and that is
-    the whole point. The image pins its own `transformers`, so the question is
-    never "can this machine load the checkpoint" but "can the container". A
-    miner running a newer release locally would see a newer architecture
-    accepted here and still watch every instance die inside the container --
-    which is precisely the failure this exists to prevent.
-
-    Regenerate the list when the pin in `pyproject.toml` moves; the file says
-    how.
+    Read from a frozen list, **not** from the transformers installed here. A
+    miner's machine may carry a newer release that recognises an architecture
+    the image cannot load; trusting it would return a pass for a checkpoint
+    that then dies in the container, which is the exact failure this module
+    exists to prevent. The image's pin is the authority, so the list is
+    captured from it and shipped alongside the code.
     """
-    text = _MODEL_TYPES_FILE.read_text(encoding="utf-8")
+    return _frozen_model_types()
+
+
+@lru_cache(maxsize=1)
+def _frozen_model_types() -> frozenset[str]:
+    text = _MODEL_TYPES_ASSET.read_text(encoding="utf-8")
     return frozenset(
-        line.strip() for line in text.splitlines() if line.strip() and not line.startswith("#")
+        line.strip()
+        for line in text.splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
     )
 
 
@@ -95,9 +105,6 @@ def require_loadable(client: Any, repo: str, revision: str) -> str | None:
     raised ``TypeError``, turning "cannot check" into a crash.
     """
     known = known_model_types()
-    if known is None:
-        return None
-
     model_type = model_type_of(client, repo, revision)
     if not model_type or model_type in known:
         return model_type
