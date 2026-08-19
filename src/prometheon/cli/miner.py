@@ -16,6 +16,7 @@ diverge on the day it mattered.
 from __future__ import annotations
 
 import argparse
+import os
 
 from prometheon.canonical.hashes import (
     ACCEPTED_WRAPPER_HASHES,
@@ -216,7 +217,14 @@ def cmd_verify(args: argparse.Namespace) -> int:
 
     with (
         HuggingFaceClient() as huggingface,
-        ChutesClient(api_key=args.chutes_api_key) as chutes,
+        # Fall back to the same env var the validator reads. A private chute
+        # is invisible without a key, and the platform answers 404 rather than
+        # 403 — so verifying without one reported a chute that plainly exists
+        # as missing, which sent miners hunting a deployment bug they did not
+        # have.
+        ChutesClient(
+            api_key=args.chutes_api_key or os.environ.get("CHUTES_API_KEY") or None
+        ) as chutes,
     ):
         registry = ModelRegistry(huggingface=huggingface, chutes=chutes)
         result = registry.validate([MinerEntry(uid=uid, hotkey=hotkey, commitment=commitment)])[0]

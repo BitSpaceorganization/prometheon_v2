@@ -8,6 +8,7 @@ a miner sees names the first thing they can fix.
     1. a commitment exists and decodes
     2. its revision is a 40-character commit SHA
     3. the Hugging Face repo passes the manifest and carries the canonical engine
+    3b. the chute is named ``prometheon-<hotkey>`` for the committing hotkey
     4. the deployed chute source normalises to an accepted wrapper hash
     5. the repo and revision *declared in that source* equal the commitment
     6. the chute is hot
@@ -39,6 +40,7 @@ from typing import Final
 
 from prometheon.canonical.hashes import (
     ACCEPTED_WRAPPER_HASHES,
+    CHUTE_NAME_PREFIX,
     IMAGE_USERNAME,
     accepted_image_ids,
 )
@@ -393,6 +395,34 @@ class ModelRegistry:
         except RegistryError as exc:
             return _outcome(
                 entry, commitment, reason=InvalidReason.UPSTREAM_UNAVAILABLE, detail=str(exc)
+            )
+
+        # 3b -- the chute is *this* miner's, by name.
+        #
+        # The canonical name is `prometheon-<hotkey>`, and the platform reports
+        # it exactly. This is what binds a deployment to the hotkey that
+        # committed it, and it replaces the old rule that the *slug* had to
+        # start with the namespace prefix. The slug cannot carry that binding:
+        # Chutes derives it from the deploying account, so a real mainnet
+        # deployment is `<account>-prometheon-<hotkey>`, and the extra label
+        # pushes it past the 63-character DNS limit, truncating the hotkey. A
+        # rule strict enough to reject `<attacker>-prometheon-x` also rejected
+        # every genuine mainnet slug, so no miner could ever be scored.
+        #
+        # Matching the name instead is strictly stronger than what it replaces:
+        # the old check proved only that a slug began with `prometheon-`, for
+        # any hotkey, truncated. This pins the exact committing hotkey.
+        expected_name = f"{CHUTE_NAME_PREFIX}{entry.hotkey}"
+        if info.name != expected_name:
+            return _outcome(
+                entry,
+                commitment,
+                reason=InvalidReason.COMMITMENT_MISMATCH,
+                detail=(
+                    f"chute {info.chute_id} is named {info.name!r}, but a deployment for "
+                    f"hotkey {entry.hotkey} must be named {expected_name!r}"
+                ),
+                chute_slug=info.slug,
             )
 
         # 4 -- the deployed source is the canonical wrapper.

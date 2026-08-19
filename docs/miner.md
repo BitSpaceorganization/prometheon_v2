@@ -132,6 +132,13 @@ Deploy from your own Chutes account — you own the chute and pay for its GPU ho
 chutes deploy wrapper.py --accept-fee
 ```
 
+**Your Chutes account must be authorised on netuid 108 before this works.** The
+`prometheon` namespace is reserved, and a deploy into it from an unauthorised
+account is refused with *"You must be a registered miner on subnet='prometheon'
+netuid=108"* — being registered on chain is not by itself enough today. Ask the
+subnet owner to authorise your Chutes account for the netuid, and check
+`https://api.chutes.ai/users/me` afterwards: `netuids` should list `108`.
+
 ### Reachability
 
 The chute is named **`prometheon-<hotkey>`**, which places it in the subnet's

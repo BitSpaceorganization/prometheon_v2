@@ -67,7 +67,12 @@ def _raise_for_status(response: httpx.Response, what: str) -> None:
     if code in _RETRYABLE_STATUS:
         raise _RetryableStatusError(code)
     if code == 404:
-        raise RegistryError(f"{what} does not exist (HTTP 404)")
+        # Chutes answers 404, not 403, for a private chute the caller may not
+        # read. "Does not exist" alone therefore accused miners of a missing
+        # deployment when the real fault was a missing key or an unshared chute.
+        raise RegistryError(
+            f"{what} does not exist, or is not readable with the credentials used (HTTP 404)"
+        )
     if code in (401, 403):
         raise RegistryError(f"{what} is not publicly readable (HTTP {code})")
     if code >= 400:
