@@ -72,8 +72,19 @@ is rescheduled — repeatedly, with no failure reason on the API. `chutes
 startup-logs` is what shows the real error.
 
 So `Qwen2.5` (`model_type: qwen2`) works and `Qwen3` does not, however new and
-capable it is. Check `config.json` for `model_type` and confirm the pinned
-`transformers` knows it before you commit anything.
+capable it is.
+
+`prometheon model render` now refuses an architecture the image cannot load,
+before it writes a wrapper and long before you pay for a deploy:
+
+```text
+error [registry.architecture_unsupported] …declares model_type 'qwen3', which
+the deployment image's transformers does not recognise…
+```
+
+It checks against a list frozen from the image's own `transformers`, not
+whatever you have installed — a newer release locally would accept a newer
+architecture and you would still watch every instance die in the container.
 
 You are not writing inference code. Every model on the subnet runs the **same**
 hash-pinned engine, so a score difference is a model difference and nothing
