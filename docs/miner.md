@@ -1,12 +1,16 @@
 # Mining
 
-**60% of miner emission burns to the owner (uid 0) every day.** Miners compete
-for the remaining **40%**, from two independent streams in equal measure:
+**40% of miner emission burns to the owner (uid 0) every day.** Miners compete
+for the remaining **60%**, from two independent streams:
 
-| Stream | Share of the 40% | What it pays for |
-|---|---|---|
-| Dataset contribution | 50% (20% of total) | test content your Fan Group users write |
-| Model performance | 50% (20% of total) | how well your model judges everyone else's |
+| Stream | Share of the 60% | Of total | What it pays for |
+|---|---|---|---|
+| Dataset contribution | two thirds | **40%** | test content your Fan Group users write |
+| Model performance | one third | **20%** | how well your model judges everyone else's |
+
+Data is weighted twice as heavily as model performance. It is what every model
+is measured against, it accrues daily from real users, and it is the half you
+can earn with no deployed model at all.
 
 **One entry gate, two streams behind it.** A Fan Group with **at least 50
 registered members** — accounts that have joined the group — is what makes you a

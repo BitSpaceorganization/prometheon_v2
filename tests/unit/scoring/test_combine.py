@@ -12,8 +12,15 @@ from prometheon.scoring.model import ModelEvaluation, ModelScore, score_models
 
 pytestmark = pytest.mark.unit
 
-DEFAULTS = ScoringConfig()
-NO_BURN = ScoringConfig(miner_burn_share_bp=0)  # isolate the allocation math
+# These exercise the allocation arithmetic, not the subnet's policy numbers, so
+# they state the split they rely on instead of inheriting it. The shipped split
+# is pinned separately, in `tests/contract/test_shipped_artifacts.py`; without
+# that separation every policy change rewrites unrelated expected values here.
+EVEN_SPLIT_BP = 5000
+DEFAULTS = ScoringConfig(dataset_share_bp=EVEN_SPLIT_BP)
+NO_BURN = ScoringConfig(
+    miner_burn_share_bp=0, dataset_share_bp=EVEN_SPLIT_BP
+)  # isolate the allocation math
 OWNER = "hk-subnet-owner"
 
 
@@ -215,8 +222,8 @@ def test_an_empty_burn_hotkey_is_refused_so_units_cannot_vanish() -> None:
 
 
 def test_the_fixed_burn_share_comes_off_the_top_before_any_miner() -> None:
-    # DEFAULTS burns 60% to the owner; miners compete for the other 40%, split
-    # 20% dataset / 20% model within that pool.
+    # DEFAULTS burns 40% to the owner; miners compete for the other 60%, and
+    # this fixture splits that pool evenly to keep the arithmetic readable.
     split = combine_weights(
         dataset_scores=_dataset(("hk-d1", 100, 50), ("hk-d2", 100, 50)),
         model_scores=_models(("hk-m1", 900), ("hk-m2", 800), ("hk-m3", 700)),
@@ -224,23 +231,23 @@ def test_the_fixed_burn_share_comes_off_the_top_before_any_miner() -> None:
         burn_hotkey=OWNER,
     )
 
-    assert split.burn_units == 600_000
-    assert split.weights[OWNER] == 600_000
+    assert split.burn_units == 400_000
+    assert split.weights[OWNER] == 400_000
     miners = {hk: w for hk, w in split.weights.items() if hk != OWNER}
-    assert sum(miners.values()) == 400_000
+    assert sum(miners.values()) == 600_000
     assert miners == {
-        "hk-d1": 100_000,
-        "hk-d2": 100_000,
-        "hk-m1": 120_000,
-        "hk-m2": 60_000,
-        "hk-m3": 20_000,
+        "hk-d1": 150_000,
+        "hk-d2": 150_000,
+        "hk-m1": 180_000,
+        "hk-m2": 90_000,
+        "hk-m3": 30_000,
     }
     assert sum(split.weights.values()) == DEFAULT_WEIGHT_POOL_UNITS
 
 
 def test_an_empty_half_burns_on_top_of_the_fixed_share() -> None:
-    # No models: the model half of the 40% miner pool (20% of total) burns too,
-    # so 80% burns and the dataset contributors split the remaining 20%.
+    # No models: the model half of the 60% miner pool (30% of total) burns too,
+    # so 70% burns and the dataset contributors split the remaining 30%.
     split = combine_weights(
         dataset_scores=_dataset(("hk-d1", 100, 50), ("hk-d2", 100, 50)),
         model_scores=(),
@@ -248,8 +255,8 @@ def test_an_empty_half_burns_on_top_of_the_fixed_share() -> None:
         burn_hotkey=OWNER,
     )
 
-    assert split.burn_units == 800_000
-    assert dict(split.weights) == {"hk-d1": 100_000, "hk-d2": 100_000, OWNER: 800_000}
+    assert split.burn_units == 700_000
+    assert dict(split.weights) == {"hk-d1": 150_000, "hk-d2": 150_000, OWNER: 700_000}
 
 
 def test_the_burn_share_is_configurable() -> None:

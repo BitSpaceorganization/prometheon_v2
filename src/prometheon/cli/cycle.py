@@ -84,7 +84,7 @@ from prometheon.scoring.model import ModelEvaluation, ModelRanking, score_models
 #: Bumped when a change here would make two validators compute different
 #: weights from identical inputs. Published in every evaluation record so a
 #: divergence can be attributed to a version skew rather than to a disagreement.
-SCORING_VERSION = "prometheon-scoring/2.0"
+SCORING_VERSION = "prometheon-scoring/2.1"
 
 _BASIS_POINTS = 10_000
 

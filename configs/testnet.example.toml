@@ -50,9 +50,11 @@ chutes_api_key_env = "CHUTES_API_KEY"
 # These decide emissions. Defaults are the agreed reward design; change one and
 # payouts change with it.
 # Share of miner emission that burns to the owner (uid 0) before any miner is
-# paid. At 6000, 60% burns every day and miners compete for the other 40%.
-miner_burn_share_bp = 6000
-dataset_share_bp = 5000
+# paid. At 4000, 40% burns every day and miners compete for the other 60%.
+miner_burn_share_bp = 4000
+# Dataset's share of that 60% pool. 6667 splits it two to one, which is 40% of
+# total emission for contributed data and 20% for model performance.
+dataset_share_bp = 6667
 dataset_top_n = 10
 model_rank_shares_bp = [3000, 1500, 500]
 # A model scored on fewer items than this is not ranked at all. Accuracy over a

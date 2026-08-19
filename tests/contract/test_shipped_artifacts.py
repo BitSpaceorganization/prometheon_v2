@@ -91,6 +91,27 @@ class TestTheShippedConfigsLoad:
             "which that model rejects with HTTP 400"
         )
 
+    @pytest.mark.parametrize("path", _configs(), ids=lambda p: p.name)
+    def test_the_shipped_split_is_the_agreed_one(self, path: Path) -> None:
+        """40% burns, 40% pays for data, 20% pays for models.
+
+        These three numbers are the subnet's economics, and they are *config*,
+        not code: two validators running identical code but different values
+        compute different weight vectors and disagree on chain. Pinning them
+        here means a change has to be deliberate and has to land in every
+        shipped example at once.
+        """
+        scoring = load_config(path).scoring
+        total = 1_000_000
+        pool = total * (10_000 - scoring.miner_burn_share_bp) // 10_000
+        dataset = pool * scoring.dataset_share_bp // 10_000
+        model = pool - dataset
+        burn = total - pool
+
+        assert burn / total == pytest.approx(0.40, abs=0.001), f"{path.name}: burn"
+        assert dataset / total == pytest.approx(0.40, abs=0.001), f"{path.name}: dataset"
+        assert model / total == pytest.approx(0.20, abs=0.001), f"{path.name}: model"
+
 
 class TestTheShippedPolicyIsUsable:
     def test_it_exists(self) -> None:

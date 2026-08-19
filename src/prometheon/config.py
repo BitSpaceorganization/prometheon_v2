@@ -120,15 +120,21 @@ class ScoringConfig(BaseModel):
 
     #: Share of miner emission that always burns to the subnet owner (uid 0)
     #: before any miner is paid. The remaining ``10000 - this`` is the pool the
-    #: dataset and model halves divide among miners by score. At 6000, 60% burns
-    #: every day and miners compete for the other 40%; the burn line on the
+    #: dataset and model halves divide among miners by score. At 4000, 40% burns
+    #: every day and miners compete for the other 60%; the burn line on the
     #: dashboard is the subnet stating that share explicitly rather than letting
     #: the chain renormalise it away.
-    miner_burn_share_bp: int = Field(default=6000, ge=0, le=10000)
+    miner_burn_share_bp: int = Field(default=4000, ge=0, le=10000)
 
-    #: Dataset contribution takes half of the *miner pool* (what is left after
-    #: the burn share above), model performance the other half.
-    dataset_share_bp: int = Field(default=5000, ge=0, le=10000)
+    #: Dataset contribution's share of the *miner pool* (what is left after the
+    #: burn share above); model performance takes the rest. At 6667 against a
+    #: 6000 pool that is 40% of total emission for data and 20% for models —
+    #: two to one, which is as close as basis points of the pool get to it.
+    #:
+    #: The weighting is deliberate. Data is what every model is measured
+    #: against, it accrues daily from real users, and it is the half a miner
+    #: can earn without a deployed model at all.
+    dataset_share_bp: int = Field(default=6667, ge=0, le=10000)
 
     #: Only the top contributors are paid, proportionally to score. With fewer
     #: than this many eligible contributors the pool divides among those
