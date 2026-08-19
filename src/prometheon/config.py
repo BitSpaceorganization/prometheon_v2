@@ -191,6 +191,11 @@ class MinerRuntimeConfig(BaseModel):
     chutes_user: str = Field(default="", max_length=128)
     chute_id: str = Field(default="", max_length=128)
     hf_repo: str = Field(default="", max_length=256)
+    #: The 40-character commit SHA to serve. Settable here because
+    #: `model commit` tells a miner to "set them under [miner] in the config
+    #: file" when a value is missing, and this was the one value that advice
+    #: did not work for: it had no field, so following the error was impossible.
+    hf_revision: str = Field(default="", max_length=40)
 
 
 class Config(BaseModel):

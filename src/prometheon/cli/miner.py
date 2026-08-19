@@ -57,12 +57,13 @@ def _commitment_from(args: argparse.Namespace) -> ModelCommitment:
     config = load(args.config)
     hf_repo = args.hf_repo or config.miner.hf_repo
     chute_id = args.chute_id or config.miner.chute_id
+    hf_revision = args.hf_revision or config.miner.hf_revision
 
     missing = [
         name
         for name, value in (
             ("--hf-repo", hf_repo),
-            ("--hf-revision", args.hf_revision),
+            ("--hf-revision", hf_revision),
             ("--chute-id", chute_id),
         )
         if not value
@@ -75,8 +76,8 @@ def _commitment_from(args: argparse.Namespace) -> ModelCommitment:
 
     # Checked here rather than at the chain call: a miner who typed a branch
     # name should learn that before an extrinsic spends part of their quota.
-    require_valid_revision(args.hf_revision)
-    return ModelCommitment(hf_repo=hf_repo, hf_revision=args.hf_revision, chute_id=chute_id)
+    require_valid_revision(hf_revision)
+    return ModelCommitment(hf_repo=hf_repo, hf_revision=hf_revision, chute_id=chute_id)
 
 
 def cmd_render(args: argparse.Namespace) -> int:
@@ -89,12 +90,13 @@ def cmd_render(args: argparse.Namespace) -> int:
     config = load(args.config)
     chutes_user = args.chutes_user or config.miner.chutes_user
     hf_repo = args.hf_repo or config.miner.hf_repo
-    if not (chutes_user and hf_repo and args.hf_revision):
+    hf_revision = args.hf_revision or config.miner.hf_revision
+    if not (chutes_user and hf_repo and hf_revision):
         raise ConfigError(
             "rendering needs --chutes-user, --hf-repo and --hf-revision "
             "(or their [miner] config equivalents)"
         )
-    require_valid_revision(args.hf_revision)
+    require_valid_revision(hf_revision)
 
     # The hotkey names the chute, which is what makes its id computable — and
     # therefore checkable against the commitment. A miner-chosen name left the
@@ -105,7 +107,7 @@ def cmd_render(args: argparse.Namespace) -> int:
     image_id = image_id_for(IMAGE_USERNAME, IMAGE_NAME, IMAGE_TAG)
     source = render_wrapper(
         hf_repo=hf_repo,
-        hf_revision=args.hf_revision,
+        hf_revision=hf_revision,
         chutes_user=chutes_user,
         hotkey=hotkey,
         image_id=image_id,
