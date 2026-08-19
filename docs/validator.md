@@ -144,12 +144,37 @@ switched off rather than allowed to randomise close rankings.
 
 ---
 
-## Running it daily
+## Running it daily — **and re-posting between cycles**
+
+Two entries, not one. The cycle runs once a day; the re-post runs every hour.
 
 ```cron
+# The cycle: label, evaluate, score, submit. Once a day.
 0 4 * * * cd /opt/prometheon_v2 && /usr/local/bin/uv run prometheon validator run \
-    --config /etc/prometheon/testnet.toml >> /var/log/prometheon.log 2>&1
+    --config /etc/prometheon/mainnet.toml >> /var/log/prometheon.log 2>&1
+
+# The re-post: send the same vector again so it keeps counting. Every hour.
+30 * * * * cd /opt/prometheon_v2 && /usr/local/bin/uv run prometheon validator resubmit \
+    --config /etc/prometheon/mainnet.toml >> /var/log/prometheon.log 2>&1
 ```
+
+**Without the second entry your miners earn nothing for most of the day.**
+Weights stop counting toward consensus once `activity_cutoff` passes — 720
+blocks on netuid 108, about 2.4 hours — while a cycle runs every 24. For the
+remaining ~21 hours the validator's row is masked out of consensus, and the
+miners it weighted sit at zero incentive and zero emission however carefully
+the cycle scored them.
+
+`validator resubmit` never labels and never evaluates, so it costs nothing
+beyond the extrinsic: it re-sends the allocation the last cycle computed. It
+does re-read the chain, so the submission gates and the metagraph are resolved
+fresh and a miner that deregistered since is dropped exactly as it would be at
+first submission. Re-posting inside the 100-block (~20 min) weights rate limit
+— which happens when the hourly entry lands just after the daily one — is
+reported and skipped, not failed.
+
+Hourly is deliberate: comfortably inside the 2.4-hour cutoff, and far enough
+above the 20-minute rate limit that the two never fight.
 
 Results go to stdout, progress to stderr, so a log keeps both and a pipe keeps
 only the result.

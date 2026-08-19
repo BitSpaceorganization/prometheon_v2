@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the Prometheon validator cycle daily at 04:00 UTC
+
+[Timer]
+# The cycle scores the previous day, which is complete at 00:00 UTC.
+OnCalendar=*-*-* 04:00:00 UTC
+# If the box was down at 04:00, run as soon as it is back rather than skipping.
+Persistent=true
+Unit=prometheon-validator.service
+
+[Install]
+WantedBy=timers.target

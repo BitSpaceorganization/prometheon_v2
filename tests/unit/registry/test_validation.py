@@ -356,7 +356,7 @@ def test_a_chute_named_for_another_hotkey_is_refused() -> None:
 
 
 def test_a_chute_named_for_its_own_hotkey_is_accepted() -> None:
-    world = World(chutes={CHUTE_A: Deployment(slug="tensortribe-prometheon-guard-a")})
+    world = World(chutes={CHUTE_A: Deployment(slug="someaccount-prometheon-guard-a")})
     assert only(world, entry(hotkey=HOTKEY_A)).valid
 
 
