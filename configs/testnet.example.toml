@@ -39,12 +39,19 @@ temperature = 1.0
 batch_size = 100
 
 [evaluation]
-# Calling miners' deployed models. The key is the subnet's shared Chutes
-# credential; miners authorise it with `chutes share`, so no miner ever hands a
-# credential to a validator.
+# Running miners' models on this validator's own hardware.
 batch_size = 100
-request_timeout_seconds = 120.0
-chutes_api_key_env = "CHUTES_API_KEY"
+# Ceiling on a submitted model's weights. Every validator downloads and runs
+# every eligible model, so this decides what hardware validating costs: 24 GiB
+# leaves headroom on a 32 GB card, which is the floor a validator is expected
+# to own. Enforced from the Hugging Face API before anything is downloaded.
+max_weight_bytes = 25769803776
+# Pinned, not inferred. The same checkpoint in float16 and bfloat16 puts
+# different mass on YES and NO, so a near-tie can flip between two validators
+# that differ only in a default.
+torch_dtype = "float16"
+device = "auto"
+model_timeout_seconds = 3600.0
 
 [scoring]
 # These decide emissions. Defaults are the agreed reward design; change one and
@@ -73,8 +80,6 @@ submit_results = true
 
 [miner]
 # Miners only. Filled in by `prometheon model render`.
-chutes_user = ""
-chute_id = ""
 hf_repo = ""
 # The 40-character commit SHA, not a branch.
 hf_revision = ""

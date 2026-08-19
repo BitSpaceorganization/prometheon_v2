@@ -31,8 +31,8 @@ systemctl list-timers 'prometheon-*'
   `~/.local/bin/uv` rather than `/usr/local/bin/uv`, and systemd does not expand
   `~`.
 - `--config` — your TOML, copied from `configs/mainnet.example.toml`.
-- `EnvironmentFile` — a `0600` file holding `OPENAI_API_KEY` and
-  `CHUTES_API_KEY`, one `KEY=value` per line. No `export`, no quotes: systemd
+- `EnvironmentFile` — a `0600` file holding `OPENAI_API_KEY`,
+  one `KEY=value` per line. No `export`, no quotes: systemd
   parses this file itself, it is not a shell script.
 
 ## Checking on it

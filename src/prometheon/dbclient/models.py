@@ -32,7 +32,7 @@ from typing import Any, ClassVar, Final
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from prometheon.canonical.integrity import is_valid_revision
+from prometheon.revision import is_valid_revision
 from prometheon.security.canonical_json import to_canonical_bytes
 
 #: URL segment for this revision of the contract.
@@ -191,12 +191,17 @@ class ModelCommitment(_Strict):
     Mirrored here rather than read from chain by every validator so that all
     validators evaluate the *same* set: a commitment written at 03:59 must not
     change what one validator scores and another does not.
+
+    **``chute_id`` is gone, and its absence is enforced.** Responses are
+    validated with ``extra="forbid"``, so a DB layer still sending it makes the
+    snapshot unparseable rather than being quietly ignored. That is deliberate:
+    the field named a deployment validators no longer call, and a snapshot
+    carrying one describes a submission under rules that no longer apply.
     """
 
     hotkey: str = Field(min_length=1, max_length=64)
     hf_repo: str = Field(min_length=1, max_length=256)
     revision_sha: str = Field(min_length=40, max_length=40)
-    chute_id: str = Field(min_length=1, max_length=128)
     committed_at: int = Field(ge=0)
     block: int = Field(ge=0)
 
@@ -443,7 +448,6 @@ def model_commitment_digest(commitment: ModelCommitment) -> bytes:
     return _member_digest(
         {
             "block": commitment.block,
-            "chute_id": commitment.chute_id,
             "committed_at": commitment.committed_at,
             "hf_repo": commitment.hf_repo,
             "hotkey": commitment.hotkey,

@@ -3,7 +3,14 @@
 A validator runs **one cycle per day**, scoring the previous day at 04:00 UTC.
 
 You pay for two things: ground-truth labelling (an OpenAI-compatible key) and
-model invocation (a subnet-issued Chutes key). Miners pay for their own GPUs.
+**the GPU that runs every miner's model**. Miners publish weights and pay for
+nothing at evaluation time.
+
+**You need a GPU.** Validators download each eligible model and run it locally,
+so a card with at least 32 GB is the floor — models are capped at 24 GiB of
+weights, and the rest is headroom for KV cache and activations. A cycle loads
+each model in turn and frees it before the next, so it is one model at a time,
+not all of them at once.
 
 ---
 
@@ -18,15 +25,12 @@ cp configs/mainnet.example.toml ~/prometheon-mainnet.toml
 $EDITOR ~/prometheon-mainnet.toml        # set [wallet] name and hotkey
 
 export OPENAI_API_KEY="…"     # your own key — you pay for ground-truth labelling
-export CHUTES_API_KEY="…"     # your own Chutes key, authorised on the subnet by the owner
 ```
 
-**The Chutes key is your own, not a shared one.** Create a Chutes account, then
-ask the subnet owner to authorise it for netuid 108. That grant carries the
-*invoke private chutes of a subnet* role, which is what lets you call miners'
-deployments — every miner's chute is private, and without the role the platform
-answers `404` for chutes that plainly exist. Miners do not share anything with
-you individually, and no miner ever hands over a credential.
+**There is no inference credential any more.** Nothing is called over the
+network to evaluate a model: the checkpoint is fetched from Hugging Face at the
+committed SHA and run here. Miners share nothing with you, and there is no key
+to be authorised for.
 
 Your hotkey must be registered on the netuid and hold a validator permit. There
 are no API keys for the subnet DB layer: every request is signed with your
@@ -55,7 +59,7 @@ uv run prometheon validator run --config ~/prometheon-mainnet.toml
 1. check the chain gates          ← before spending a penny
 2. fetch the day's snapshot       ← from the DB layer, hash-verified
 3. read commitments from chain    ← not from the DB layer
-4. verify each model              ← Hugging Face + Chutes, independently
+4. verify each model              ← Hugging Face: manifest, architecture, size
 5. label the corpus               ← ground truth, fixed before any model sees it
 6. evaluate every eligible model  ← each on its own view of the corpus
 7. score and combine              ← one weight vector
@@ -72,8 +76,8 @@ bill.
 **The chain is the authority on commitments.** The DB layer says who is
 *eligible*; the chain says what they *committed*. A DB layer that invented a
 commitment could not get a model scored, because the commitment is read from
-chain and then verified against Hugging Face and Chutes independently. The two
-are compared, and a disagreement is recorded in the published result. The chain
+chain and then verified against Hugging Face independently. The two are
+compared, and a disagreement is recorded in the published result. The chain
 value is the one used.
 
 **Ground truth is fixed before evaluation.** No model can influence what it is
@@ -104,10 +108,9 @@ exists because the quiet version of it is worse:
 | A low-base-rate batch came back unanimously violating | Evidence the labeller stopped labelling; publishing it would poison the day |
 | Snapshot version or content hash mismatch | You were served something other than what the manifest describes |
 
-What does **not** stop a cycle: any single miner. A model that times out,
-returns garbage, declares a false `Content-Encoding`, floods the response, or
-refuses the connection is scored incorrect for that batch and the cycle
-continues. That is a promise the code keeps. Every validator evaluates the same
+What does **not** stop a cycle: any single miner. A model that will not
+download, will not load, runs out of memory, or exceeds its time budget is
+scored incorrect for those items and the cycle continues. That is a promise the code keeps. Every validator evaluates the same
 miners at the same time, so an exception escaping one miner's evaluation would
 take down the whole subnet's submission simultaneously.
 
@@ -221,5 +224,7 @@ Labelling is the bill you control. It scales with corpus size, and the policy
 prefix is sent with every batch, roughly 2,100 tokens against a 4,096 ceiling.
 Batching at 100 items amortises it; the default is already 100.
 
-Evaluation cost is per invocation against miners' chutes, using the
-subnet-issued key. You do not pay for their GPU time.
+Evaluation costs GPU time rather than API calls, and it is now **your** GPU
+time: each eligible model is downloaded once, cached by revision, loaded, run
+over the corpus, then freed before the next. That is the trade the design
+makes — miners pay nothing to be evaluated, and validating requires hardware.

@@ -17,7 +17,7 @@ Miners compete to build the best moderation model, and they supply the data it i
 1. **A miner grows a BitFan Fan Group.** Its members write posts and replies they believe violate the platform's content policy, marked as **test content**. Those are recorded, never published.
 2. **The subnet collects a day of content**: that test content, plus a sample of real production content.
 3. **Validators label it** against [`content_policy.md`](./content_policy.md), producing the day's ground truth.
-4. **Miners publish a moderation model** to Hugging Face and deploy it to Chutes behind a canonical, hash-pinned wrapper, committing `(hf_repo, revision_sha, chute_id)` on chain.
+4. **Miners publish a moderation model** to Hugging Face, committing `(hf_repo, revision_sha)` on chain. Nothing is deployed and nothing is served: weights are the whole submission.
 5. **Validators run every model** over the labelled corpus and set one weight vector.
 
 Two things are rewarded, in equal measure: **contributing usable evaluation data**, and **building the model that judges it best**.
@@ -25,7 +25,7 @@ Two things are rewarded, in equal measure: **contributing usable evaluation data
 ```text
 BitFan users write test content   →   subnet DB layer   →   validators label it
                                                               ↓
-miners publish models to HF  →  Chutes  →  validators evaluate  →  set_weights
+miners publish models to HF  →  validators download and run them  →  set_weights
 ```
 
 ---
@@ -44,7 +44,7 @@ Every model runs identical code. Miners supply weights and nothing else. The inf
 
 The corpus contains text written to violate policy, some of it written to manipulate a classifier. Items are therefore judged one at a time, never concatenated, so an instruction buried in one post cannot reach the verdict on another.
 
-Validators verify eligibility themselves, from chain commitments, Hugging Face, and Chutes. The subnet's own database is not trusted for it.
+Validators verify eligibility themselves, from chain commitments and Hugging Face. The subnet's own database is not trusted for it.
 
 ---
 
@@ -87,24 +87,18 @@ You need a Fan Group with **at least 50 registered members** — accounts that h
 Register your Fan Group, then connect your **Talisman** wallet (or another Substrate wallet — polkadot-js, SubWallet, Nova) with the **Connect Wallet** button in the bitfan.ai site header and sign the ownership proof, which binds your mining hotkey to your leader account. That is a platform step, not a subnet command, and nothing else works until it is done.
 
 ```bash
-# 1. Render the canonical wrapper to deploy on Chutes
-uv run prometheon model render --config ~/prometheon-mainnet.toml \
-    --hf-repo <you>/<model> --hf-revision <40-char-sha> \
-    --chutes-user <you> --chute-id <uuid> --output wrapper.py
-
-# 2. Commit it on chain — this is the submission
+# 1. Commit the model on chain — this is the submission
 uv run prometheon model commit --config ~/prometheon-mainnet.toml
 
-# 3. Check what a validator will conclude about your deployment
+# 2. Check what a validator will conclude about your deployment
 uv run prometheon model verify --config ~/prometheon-mainnet.toml
 
-# 4. Pull released datasets to train against
+# 3. Pull released datasets to train against
 uv run prometheon dataset pull --config ~/prometheon-mainnet.toml --date 2026-08-05
 ```
 
 Your Hugging Face repository holds **weights, config and tokenizer — no executable code at all**. Any other file and your deployment is not scored. See [`docs/miner.md`](./docs/miner.md).
 
-**Authorise the subnet to call your model** with `chutes share`. You keep your credential, and no key is ever handed to a validator. You are the chute owner, so you pay for your own GPU hours.
 
 ---
 
@@ -115,7 +109,7 @@ A validator runs **one cycle per day**, starting at 04:00 UTC against the previo
 ```bash
 cp configs/mainnet.example.toml ~/prometheon-mainnet.toml   # then edit [wallet]
 export OPENAI_API_KEY="…"        # you pay for ground-truth labelling
-export CHUTES_API_KEY="…"        # the subnet-issued key for calling miners' models
+# no inference key: validators download each model and run it on their own GPU
 
 uv run prometheon validator run --config ~/prometheon-mainnet.toml
 ```
@@ -131,7 +125,6 @@ Each stage is runnable on its own for debugging. See [`docs/validator.md`](./doc
 | [`content_policy.md`](./content_policy.md) | The authority for every verdict |
 | [`docs/miner.md`](./docs/miner.md) | Publishing, deploying, and committing a model |
 | [`docs/validator.md`](./docs/validator.md) | Running the daily cycle |
-| [`docs/canonical-wrapper.md`](./docs/canonical-wrapper.md) | The contract every model is built against |
 | [`docs/db-api-contract.md`](./docs/db-api-contract.md) | The `/v2` interface the subnet DB layer implements |
 | [`docs/scoring.md`](./docs/scoring.md) | How emissions are computed |
 

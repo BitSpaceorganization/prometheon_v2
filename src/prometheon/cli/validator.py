@@ -16,8 +16,6 @@ import time
 from pathlib import Path
 from typing import Final
 
-import httpx
-
 from prometheon.chain import subtensor as chain
 from prometheon.cli._common import (
     EXIT_OK,
@@ -42,7 +40,6 @@ from prometheon.dbclient.client import DbClient
 from prometheon.dbclient.models import EvaluationSubmission
 from prometheon.errors import ConfigError
 from prometheon.labelling.client import OpenAICompatibleClient
-from prometheon.registry.chutes import ChutesClient
 from prometheon.registry.huggingface import HuggingFaceClient
 from prometheon.registry.validation import ModelRegistry
 
@@ -142,7 +139,7 @@ def save_submitted_allocation(config: Config, *, day: dt.date, result: CycleResu
 def cmd_resubmit(args: argparse.Namespace) -> int:
     """Re-post the last cycle's vector without recomputing it.
 
-    Deliberately cheap: no labelling, no evaluation, no OpenAI or Chutes spend.
+    Deliberately cheap: no labelling, no evaluation, no GPU time, no spend.
     It reads what the last cycle decided and sends it again, resolved against a
     *fresh* metagraph by the same code path the cycle itself uses -- so a miner
     that deregistered since is dropped here too, rather than being paid because
@@ -206,9 +203,6 @@ def cmd_run(args: argparse.Namespace) -> int:
     # for. The labelling client reads it again from the same variable when it is
     # built; checking twice is cheaper than discovering it four hours in.
     require_env(config.labelling.api_key_env, purpose="label the day's corpus as ground truth")
-    chutes_key = require_env(
-        config.evaluation.chutes_api_key_env, purpose="call miners' deployed models"
-    )
 
     wallet = open_wallet(config)
     hotkey = wallet.hotkey.ss58_address
@@ -226,23 +220,20 @@ def cmd_run(args: argparse.Namespace) -> int:
             max_retries=config.db.max_retries,
         ) as db,
         HuggingFaceClient() as huggingface,
-        ChutesClient(api_key=chutes_key) as chutes,
         OpenAICompatibleClient(config.labelling) as labeller,
-        httpx.Client(
-            timeout=httpx.Timeout(config.evaluation.request_timeout_seconds)
-        ) as evaluation_client,
     ):
         result = run_cycle(
             config=config,
             day=day,
             db=db,
             subtensor=subtensor,
-            registry=ModelRegistry(huggingface=huggingface, chutes=chutes),
+            registry=ModelRegistry(
+                huggingface=huggingface,
+                max_weight_bytes=config.evaluation.max_weight_bytes,
+            ),
             labeller=labeller,
-            evaluation_client=evaluation_client,
             policy=policy,
             policy_version=policy_version,
-            chutes_api_key=chutes_key,
             now=started,
             progress=note,
         )

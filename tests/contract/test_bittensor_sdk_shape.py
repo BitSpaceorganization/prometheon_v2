@@ -433,9 +433,7 @@ def test_the_commitment_block_is_readable_and_keyed_by_hotkey() -> None:
 
 
 def test_a_commitment_round_trips_through_the_sdk_boundary() -> None:
-    commitment = ModelCommitment(
-        hf_repo="acme/guard", hf_revision=REVISION, chute_id="b4e8a2f1-6c3d-4e5a-9b7f-1d2c3e4f5a6b"
-    )
+    commitment = ModelCommitment(hf_repo="acme/guard", hf_revision=REVISION)
     client = _Client(set_commitment=_response(success=True, message="ok"))
 
     payload = publish_commitment(client, wallet=object(), netuid=42, commitment=commitment)
@@ -456,5 +454,5 @@ def test_a_rejected_commitment_raises_rather_than_reporting_success() -> None:
             client,
             wallet=object(),
             netuid=42,
-            commitment=ModelCommitment(hf_repo="acme/guard", hf_revision=REVISION, chute_id="x1"),
+            commitment=ModelCommitment(hf_repo="acme/guard", hf_revision=REVISION),
         )

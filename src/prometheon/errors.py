@@ -146,38 +146,10 @@ class ManifestViolationError(RegistryError):
     code: str = "registry.manifest_violation"
 
 
-class WrapperHashMismatchError(RegistryError):
-    """The deployed chute source is not the canonical wrapper."""
-
-    code: str = "registry.wrapper_hash_mismatch"
-
-
 class RevisionFormatError(RegistryError):
     """A revision must be a 40-character hex SHA, never a branch or tag."""
 
     code: str = "registry.revision_not_sha"
-
-
-class CommitmentMismatchError(RegistryError):
-    """The deployed wrapper declares a repo or revision the chain does not."""
-
-    code: str = "registry.commitment_mismatch"
-
-
-class ImageMismatchError(RegistryError):
-    """The deployment runs an image the subnet did not publish.
-
-    File hashes prove which bytes are on disk; they prove nothing about the
-    interpreter that loads them. Pinning the image is what makes "every model
-    runs identical code" a fact rather than a description, and the id is the
-    only handle the platform exposes.
-    """
-
-    code: str = "registry.image_mismatch"
-
-
-class ChuteNotRunningError(RegistryError):
-    code: str = "registry.chute_not_running"
 
 
 class ModelTooLargeError(RegistryError):
@@ -294,11 +266,9 @@ class ScoringError(PrometheonError):
 __all__ = [
     "CanonicalEncodingError",
     "ChainError",
-    "ChuteNotRunningError",
     "CommitRevealEnabledError",
     "CommitmentDecodeError",
     "CommitmentError",
-    "CommitmentMismatchError",
     "ConfigError",
     "DbLayerError",
     "DuplicateModelError",
@@ -308,6 +278,7 @@ __all__ = [
     "LabellingError",
     "ManifestViolationError",
     "ModelResponseError",
+    "ModelTooLargeError",
     "NotAuthorizedError",
     "PrometheonError",
     "RegistryError",
@@ -322,5 +293,4 @@ __all__ = [
     "SubtensorError",
     "WeightSubmissionError",
     "WeightsVersionMismatchError",
-    "WrapperHashMismatchError",
 ]

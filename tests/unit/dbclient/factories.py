@@ -81,7 +81,6 @@ def make_commitment(hotkey: str, *, revision: str | None = None) -> ModelCommitm
         hotkey=hotkey,
         hf_repo=f"miner/model-{serial}",
         revision_sha=revision or f"{serial:040x}",
-        chute_id=f"chute-{serial}",
         committed_at=CYCLE_AT - 86_400,
         block=1_000 + serial,
     )

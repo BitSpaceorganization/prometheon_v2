@@ -43,7 +43,6 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Final
 
-from prometheon.canonical.integrity import is_valid_revision, require_valid_revision
 from prometheon.chain.commitment import ModelCommitment
 from prometheon.errors import (
     CommitmentDecodeError,
@@ -56,6 +55,7 @@ from prometheon.errors import (
 )
 from prometheon.registry.huggingface import HuggingFaceClient, require_valid_repo_id
 from prometheon.registry.loadability import ArchitectureUnsupportedError, require_loadable
+from prometheon.revision import is_valid_revision, require_valid_revision
 
 
 class InvalidReason(str, Enum):
@@ -161,8 +161,6 @@ def _outcome(
     )
 
 
-
-
 def _duplicate_losers(entries: Sequence[MinerEntry]) -> dict[int, MinerEntry]:
     """Position in ``entries`` -> the miner that committed the same model first.
 
@@ -172,7 +170,7 @@ def _duplicate_losers(entries: Sequence[MinerEntry]) -> dict[int, MinerEntry]:
 
     A Hugging Face model repo is a git repo. ``git clone --mirror`` followed by
     a push into another namespace preserves every commit SHA byte for byte, so
-    a copycat can commit ``(copycat/guard, <the original's SHA>, own_chute)``
+    a copycat can commit ``(copycat/guard, <the original's SHA>)``
     and pass checks 1-6 honestly: the file manifest matches, the engine hash
     matches, and the deployed wrapper truthfully declares the copycat's own
     repo. Only the repo string differs, so keying on it put the original and
@@ -184,8 +182,8 @@ def _duplicate_losers(entries: Sequence[MinerEntry]) -> dict[int, MinerEntry]:
     something that happens by accident, so this has no realistic false positive.
 
     **Known hazard: priority is the block of the *current* commitment, and the
-    chain resets that on every re-commit.** A miner who redeploys their chute
-    and re-commits the same revision under a new ``chute_id`` gets a fresh,
+    chain resets that on every re-commit.** A miner who re-commits the same
+    revision after republishing gets a fresh,
     higher block, so a copycat who mirrored them in the meantime now sorts
     first and takes the claim.
 
@@ -236,9 +234,7 @@ class ModelRegistry:
     lives in config with the others that move emissions.
     """
 
-    def __init__(
-        self, *, huggingface: HuggingFaceClient, max_weight_bytes: int = 0
-    ) -> None:
+    def __init__(self, *, huggingface: HuggingFaceClient, max_weight_bytes: int = 0) -> None:
         self._huggingface = huggingface
         self._max_weight_bytes = max_weight_bytes
 
@@ -408,8 +404,6 @@ class ModelRegistry:
             repo_verdicts[key] = exc
             raise
         repo_verdicts[key] = None
-
-
 
 
 def eligible_miners(results: Iterable[MinerValidation]) -> list[MinerValidation]:

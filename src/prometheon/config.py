@@ -233,9 +233,6 @@ class ValidatorRuntimeConfig(BaseModel):
 
 class MinerRuntimeConfig(BaseModel):
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", frozen=True)
-
-    chutes_user: str = Field(default="", max_length=128)
-    chute_id: str = Field(default="", max_length=128)
     hf_repo: str = Field(default="", max_length=256)
     #: The 40-character commit SHA to serve. Settable here because
     #: `model commit` tells a miner to "set them under [miner] in the config

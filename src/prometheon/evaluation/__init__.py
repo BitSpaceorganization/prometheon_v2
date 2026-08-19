@@ -23,6 +23,7 @@ from prometheon.evaluation.corpus import (
     corpus_order_key,
     iter_batches,
 )
+from prometheon.evaluation.engine import ModerationEngine, ModerationResult, Verdict
 from prometheon.evaluation.result import (
     ItemVerdict,
     MinerEvaluation,
@@ -30,15 +31,14 @@ from prometheon.evaluation.result import (
 )
 from prometheon.evaluation.runner import (
     DEFAULT_BATCH_SIZE,
-    DEFAULT_TRANSPORT_RETRIES,
     MinerTarget,
-    build_request_payload,
+    build_engine,
+    download_checkpoint,
     evaluate_miner,
 )
 
 __all__ = [
     "DEFAULT_BATCH_SIZE",
-    "DEFAULT_TRANSPORT_RETRIES",
     "EvaluationCorpus",
     "ItemSource",
     "ItemVerdict",
@@ -47,9 +47,13 @@ __all__ = [
     "MinerEvaluation",
     "MinerEvaluationBuilder",
     "MinerTarget",
+    "ModerationEngine",
+    "ModerationResult",
+    "Verdict",
     "build_corpus",
-    "build_request_payload",
+    "build_engine",
     "corpus_order_key",
+    "download_checkpoint",
     "evaluate_miner",
     "iter_batches",
 ]

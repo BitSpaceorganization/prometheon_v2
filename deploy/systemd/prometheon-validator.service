@@ -7,7 +7,7 @@ Wants=network-online.target
 [Service]
 Type=oneshot
 WorkingDirectory=/opt/prometheon_v2
-# OPENAI_API_KEY and CHUTES_API_KEY, one KEY=value per line, mode 0600.
+# OPENAI_API_KEY, one KEY=value per line, mode 0600.
 EnvironmentFile=/etc/prometheon/validator.env
 ExecStart=/usr/local/bin/uv run prometheon validator run --config /etc/prometheon/mainnet.toml
 # A cycle is hours of labelling and evaluation. Do not let systemd kill it.

@@ -51,44 +51,37 @@ model is measured against, which is what the dataset half of the reward pays for
 
 ## 2. Build a model
 
-Any open-source causal language model that fits the RTX PRO 6000 pool the
-wrapper deploys to (96 GB VRAM per GPU, 1–8 GPUs). It is judged on one task:
-given the policy and one piece of content, answer `YES` or `NO`.
+Any open-source causal language model **whose weights fit 24 GiB**. It is
+judged on one task: given the policy and one piece of content, answer `YES` or
+`NO`.
 
-**The image pins `transformers>=4.44,<4.47`, so your architecture has to be one
-that release recognises.** A newer one is not rejected at commit time and not
-rejected at deploy time — it fails inside the container, at
-`AutoModelForCausalLM.from_pretrained`:
+That ceiling is not a style guide, it is the deal. **Validators download your
+model and run it on their own hardware**, so its size decides what validating
+this subnet costs. 24 GiB leaves headroom on a 32 GB card, which is the floor a
+validator is expected to own — an 8B checkpoint in fp16 sits comfortably inside
+it. A model over the line is refused at commit rather than quietly costing
+every validator an hour of bandwidth they cannot use.
 
-```text
-KeyError: 'qwen3'
-ValueError: The checkpoint you are trying to load has model type `qwen3` but
-Transformers does not recognize this architecture.
-```
+**The evaluation runtime pins `transformers>=4.44,<4.47`, so your architecture
+has to be one that release recognises.** `Qwen2.5` (`model_type: qwen2`) loads;
+`Qwen3` does not, however new and capable it is — it arrived in transformers
+4.51.
 
-From the outside that looks like nothing at all: the deploy succeeds, an
-instance is assigned, it reports `verified: true`, then dies during startup and
-is rescheduled — repeatedly, with no failure reason on the API. `chutes
-startup-logs` is what shows the real error.
-
-So `Qwen2.5` (`model_type: qwen2`) works and `Qwen3` does not, however new and
-capable it is.
-
-`prometheon model render` now refuses an architecture the image cannot load,
-before it writes a wrapper and long before you pay for a deploy:
+`prometheon model commit` and `model verify` both refuse an architecture the
+runtime cannot load, before anything is written on chain:
 
 ```text
 error [registry.architecture_unsupported] …declares model_type 'qwen3', which
 the deployment image's transformers does not recognise…
 ```
 
-It checks against a list frozen from the image's own `transformers`, not
+It checks against a list frozen from the runtime's own `transformers`, not
 whatever you have installed — a newer release locally would accept a newer
-architecture and you would still watch every instance die in the container.
+architecture that every validator would then fail to load.
 
-You are not writing inference code. Every model on the subnet runs the **same**
-hash-pinned engine, so a score difference is a model difference and nothing
-else. What you control is the weights.
+You are not writing inference code. Every model on the subnet is run by the
+**same engine, on the validator's machine**, so a score difference is a model
+difference and nothing else. What you control is the weights.
 
 The engine decides by comparing the probability mass the model puts on `YES`
 against `NO` at a single position. There is no free generation, so:
@@ -101,105 +94,50 @@ Train accordingly. What matters is calibration on the boundary cases in
 [`content_policy.md`](../content_policy.md), not instruction-following polish.
 
 **Your Hugging Face repository holds weights, and that is all it needs to
-hold.** The engine is not a file you copy in: it *is* the canonical wrapper you
-deploy on Chutes, which loads your weights from the repo at the revision you
-commit. One artefact, hashed in one place.
+hold.** No inference code, no wrapper, no deploy script. Validators run one
+engine — theirs — over every model on the subnet, in one process on one
+machine, which is what makes a score difference a weights difference.
 
-```bash
-uv run prometheon canonical          # prints the wrapper hash validators accept
-```
-
-A validator fetches the wrapper source from your Chutes deployment, normalises
-it, and compares the hash. Everything except the values you set in §3 is fixed,
-so two miners running the same wrapper hash identically however they filled
-those in — which is what makes a score difference a model difference.
+You never deploy anything. There is no endpoint to keep warm, no GPU bill for
+serving, and nothing to keep running between cycles: publish the weights,
+commit the revision, and the model is evaluated wherever validators are.
 
 ---
 
-## 3. Deploy behind the canonical wrapper
+## 3. Publish the weights
 
-Render the wrapper for your deployment:
+Push the model to a public Hugging Face repository containing **weights, config
+and tokenizer, and nothing else**. Any other file and the repository fails the
+manifest, which a validator checks before it downloads anything:
+
+```text
+config.json  generation_config.json  tokenizer.json  tokenizer_config.json
+special_tokens_map.json  added_tokens.json  vocab.json  merges.txt
+tokenizer.model  chat_template.jinja  model.safetensors
+model-00001-of-0000N.safetensors  model.safetensors.index.json
+README.md  LICENSE  .gitattributes  .gitignore
+```
+
+Weights must be `safetensors`. Benchmark scripts, training args, adapter files
+and original-format checkpoints all fail the manifest — most published
+moderation models carry at least one of them, so check before you commit.
+
+Two things worth confirming while you still have a choice, both of which a
+validator will check and neither of which produces a useful error later:
 
 ```bash
-uv run prometheon model render --config ~/prometheon-mainnet.toml \
-    --chutes-user <you> \
-    --hf-repo <you>/<model> \
-    --hf-revision <40-char-sha> \
-    --output wrapper.py
+# does the evaluation runtime know this architecture at all?
+python -c "import json,urllib.request as u; \
+  print(json.load(u.urlopen('https://huggingface.co/api/models/<you>/<model>'))['config']['model_type'])"
+
+# do the weights fit the ceiling?
+python -c "import json,urllib.request as u; \
+  d=json.load(u.urlopen('https://huggingface.co/api/models/<you>/<model>?blobs=true')); \
+  print(sum(s['size'] for s in d['siblings'] if s['rfilename'].endswith('.safetensors'))/1024**3, 'GiB')"
 ```
 
-The command hashes what it produced and refuses to write a wrapper no validator
-would accept, so a mistake costs a second rather than a day. It also prints the
-**chute id** you commit in §4 — derived from your Chutes account and hotkey, so
-it is known before the chute exists.
-
-You supply three values; the render fills them in and everything else is fixed:
-
-```python
-PROMETHEON_HF_REPO     = "you/model"      # --hf-repo
-PROMETHEON_HF_REVISION = "<40-char SHA>"  # --hf-revision
-PROMETHEON_CHUTES_USER = "you"            # --chutes-user
-```
-
-Your hotkey, read from `[wallet]`, names the chute. `--gpu-count` (1–8) and
-`--min-vram-gb` (16–140) size the instance. None of these change the wrapper
-hash. Everything else — the engine, the framing, the image, and the deployment
-target below — is fixed, and changing it makes you ineligible.
-
-**The revision must be a 40-character commit SHA, never a branch or tag.** A
-branch moves, and a commitment that can move after it is verified is not a
-commitment; the CLI rejects one before it reaches the chain.
-
-### The deployment is confidential, on the pro_6000 pool
-
-The wrapper pins two things you do not choose:
-
-- **`tee=True`** — the chute runs in a trusted execution enclave. Chutes accepts
-  only TEE chutes, and the subnet requires it: your weights are served from
-  hardware the host cannot read into.
-- **`include=["pro_6000"]`** — the RTX PRO 6000 pool, which is where TEE capacity
-  is available. The wrapper targets it so a deploy is scheduled rather than
-  refused for capacity.
-
-Deploy from your own Chutes account — you own the chute and pay for its GPU hours:
-
-```bash
-# `chutes deploy` imports the script to find the chute object, so the machine
-# you deploy from needs the wrapper's own dependencies, and the import pulls
-# your weights down first. Budget the disk and the wait.
-uv sync --extra wrapper
-
-# Name the file `miner.py`: the argument is a module path, so a name with a
-# hyphen in it cannot be imported.
-cp wrapper.py miner.py
-chutes deploy miner:chute --accept-fee
-```
-
-Three things about that command surprise people:
-
-- **It is `module:variable`, not a filename.** `chutes deploy wrapper.py` does
-  not work.
-- **It downloads the whole model to the deploying machine.** The wrapper calls
-  `snapshot_download` at import, so a 14B model means ~28GB and several minutes
-  before anything is uploaded. It is cached, so a retry is fast.
-- **It asks for confirmation.** Piping `y` keeps it scriptable:
-  `printf 'y\n' | chutes deploy miner:chute --accept-fee`.
-
-**Your Chutes account must be authorised on netuid 108 before this works.** The
-`prometheon` namespace is reserved, and a deploy into it from an unauthorised
-account is refused with *"You must be a registered miner on subnet='prometheon'
-netuid=108"* — being registered on chain is not by itself enough today. Ask the
-subnet owner to authorise your Chutes account for the netuid, and check
-`https://api.chutes.ai/users/me` afterwards: `netuids` should list `108`.
-
-### Reachability
-
-The chute is named **`prometheon-<hotkey>`**, which places it in the subnet's
-`prometheon` namespace. Validators call your model through the subnet's Chutes
-inference key, which is scoped to that namespace — so deploying under the
-canonical name is all that is required. You never share a credential and never
-hand one over. The caller pays per invocation; you pay for the GPU your chute
-occupies.
+`prometheon model verify` runs the validator's own checks against what you
+committed, and answers both properly.
 
 ---
 
@@ -209,7 +147,7 @@ This is the submission. Until it lands, you are not scored on a model.
 
 ```bash
 uv run prometheon model commit --config ~/prometheon-mainnet.toml \
-    --hf-repo <you>/<model> --hf-revision <sha> --chute-id <uuid>
+    --hf-repo <you>/<model> --hf-revision <sha>
 ```
 
 Add `--dry-run` to see the exact 128-byte payload without writing it.
@@ -246,16 +184,23 @@ fix:
 1. a commitment exists and decodes
 2. its revision is a 40-character commit SHA
 3. the Hugging Face repo holds model files and no executable code
-4. the deployed chute source hashes to an accepted wrapper
-5. the repo and revision *declared in that source* equal what you committed
-6. the chute is hot
-7. no earlier miner committed the same revision
+4. the architecture is one the evaluation runtime can load
+5. the weights fit the 24 GiB ceiling
+6. no earlier miner committed the same revision
 
-Check 5 is the one that catches the clever failure: committing an immutable SHA
-while serving a branch you can move afterwards. The revision is read out of the
-deployed source, which check 4 has already proven is the canonical wrapper.
+Checks 4 and 5 exist because every validator runs your model. Neither is about
+your judgement: a model that will not load, or will not fit, is work the whole
+subnet attempts and fails at on the same day. Both are answered from the
+Hugging Face API before anything is downloaded.
 
-Check 7 groups on the **revision SHA alone**, not on the repo name. Mirroring
+A check that used to be here is gone, and its absence is the point. While
+miners served their own models, a commitment could pin an immutable SHA while
+the deployment served a branch you could move afterwards, so the deployed
+source had to be read and hashed to catch it. Validators resolve the SHA
+themselves now: what is scored is what you committed, because the validator is
+the one that fetched it.
+
+Check 6 groups on the **revision SHA alone**, not on the repo name. Mirroring
 someone's repository preserves its commit SHAs exactly, so a mirror and its
 original are the same model as far as this check is concerned, and the later
 commit loses.

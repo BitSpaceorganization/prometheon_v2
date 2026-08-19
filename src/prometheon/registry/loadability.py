@@ -104,7 +104,7 @@ def require_loadable(client: Any, repo: str, revision: str) -> str | None:
     raise ArchitectureUnsupportedError(
         f"{repo}@{revision} declares model_type {model_type!r}, which "
         "the deployment image's transformers does not recognise. That image cannot load "
-        "this checkpoint at all: the chute would deploy, report itself "
-        "verified, then die during startup and reschedule, with no failure reason on "
-        "the API. Choose a checkpoint whose architecture that image can load."
+        "this checkpoint at all: every validator would fail to load it, "
+        "on the same day, and the model would score zero everywhere. Choose a "
+        "checkpoint whose architecture that runtime can load."
     )

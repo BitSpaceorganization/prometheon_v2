@@ -233,7 +233,7 @@ production_items  = [ProductionContentItem(id="p1", content="hello",
                                            observed_at=1786000001)]
 eligible_miners   = [EligibleMiner(hotkey="5Grwva…GKutQY", qualified_user_count=12)]
 model_commitments = [ModelCommitment(hotkey="5Grwva…GKutQY", hf_repo="miner/model",
-                                     revision_sha="aaaa…aaaa", chute_id="chute-1",
+                                     revision_sha="aaaa…aaaa",
                                      committed_at=1785999000, block=4242)]
 ```
 
@@ -242,7 +242,7 @@ model_commitments = [ModelCommitment(hotkey="5Grwva…GKutQY", hf_repo="miner/mo
 | `test_item_digest(t1)` | `a1a6993cd3e2b94d2a92e577769bd8f6e2cc80c7d909fc1d52e2fc57167be5fb` |
 | `collection_hash([t1])` | `afb2b787d6f4f92acf239a7d0cd2a53037ae1df1f5c500b20fc63a31b6510748` |
 | `collection_hash([])` | `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` |
-| `snapshot_content_hash(…)` | `093c1302b549a9c06c543295ec35e5a3b06c91626831effbf17a53954d9bdab3` |
+| `snapshot_content_hash(…)` | `edfd1b49630d642d4df84b6e0d9c6a623c397e285020dc28b1896cbb055b7b4b` |
 | an entirely empty day | `f1afe099299e07dabf31b211b6dcee506d5d5fe95333978154c74c5becb77f92` |
 
 An empty collection hashes to the digest of the empty string, so a day with no

@@ -37,17 +37,18 @@ completing. Because every validator runs the same cycle at the same time against
 the same miners, a single crashing input is a subnet-wide outage rather than one
 operator's problem.
 
-**Escaping the canonical wrapper.** Any way for deployed code to differ from the
-canonical engine while still passing verification.
+**Escaping the evaluation contract.** Any way for a scored model to differ from
+the checkpoint the miner committed, or for a repository to get code executed on
+a validator's machine. Validators download and run miner-supplied weights, so
+the file manifest is a security boundary, not housekeeping.
 
-**Credential exposure.** Any path that leaks a validator's Chutes or OpenAI key,
-or a miner's Chutes credentials.
+**Credential exposure.** Any path that leaks a validator's OpenAI key.
 
 ### Not in scope
 
-- Denial of service against a miner's own chute. Miners pay for their own GPUs
-  and choose their own capacity.
-- Rate limits or availability of Hugging Face, Chutes, or the DB layer.
+- A model that is slow, large, or unhelpful. Those cost the miner score, which
+  is the mechanism working.
+- Rate limits or availability of Hugging Face or the DB layer.
 - Anything requiring a validator to run a modified build. A validator that
   changes its own scoring diverges and loses vtrust, which is the design working.
 - Findings that a model gives a wrong verdict. That is what the competition is
@@ -74,7 +75,7 @@ influence what it is measured against.
 copied per item so one item's activations cannot reach another's verdict.
 
 A validator verifies everything itself. Model eligibility is computed from the
-chain, Hugging Face, and Chutes. It is never taken on trust from the subnet's own
+chain and Hugging Face. It is never taken on trust from the subnet's own
 database, which is a service this code audits rather than believes.
 
 **No failure reads as success.** Each of these is distinguishable from the
@@ -86,10 +87,10 @@ this mistake, and their fixes carry comments saying so.
 
 ## Handling of secrets
 
-Validators hold an OpenAI-compatible key and a Chutes key; both are read from
-named environment variables and never written to logs, error messages, or the
-published record. Miners never hand a credential to anyone: `chutes share`
-authorises the subnet to call a deployment without either side exchanging a key.
+Validators hold one credential, an OpenAI-compatible key, read from a named
+environment variable and never written to logs, error messages, or the published
+record. Miners hold none at all: a submission is a public repository and a commit
+SHA, so there is no credential for either side to exchange or leak.
 
 There are no API keys for the subnet DB layer. Every request is signed with the
 caller's hotkey and checked against the metagraph, so access follows registration

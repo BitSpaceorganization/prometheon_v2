@@ -49,6 +49,7 @@ from prometheon.dbclient.models import (
 # Aliased: pytest tries to collect any module-level name starting with `Test`,
 # and warns when it cannot. This is a domain model, not a test class.
 from prometheon.dbclient.models import TestContentItem as ContentItem
+from prometheon.evaluation.engine import ModerationResult, Verdict
 from prometheon.labelling.client import OpenAICompatibleClient
 from prometheon.registry.validation import (
     UNKNOWN_COMMIT_BLOCK,
@@ -122,13 +123,9 @@ class FakeChain:
 
         hotkey = self._hotkeys[uid]
         if hotkey == MINER_A.ss58_address:
-            return encode_commitment(
-                ChainCommitment(hf_repo="a/guard", hf_revision=REVISION_A, chute_id="chute-a")
-            )
+            return encode_commitment(ChainCommitment(hf_repo="a/guard", hf_revision=REVISION_A))
         if hotkey == MINER_B.ss58_address:
-            return encode_commitment(
-                ChainCommitment(hf_repo="b/guard", hf_revision=REVISION_B, chute_id="chute-b")
-            )
+            return encode_commitment(ChainCommitment(hf_repo="b/guard", hf_revision=REVISION_B))
         return ""
 
     def set_weights(
@@ -162,36 +159,33 @@ class FakeChain:
 
 
 class StubRegistry(ModelRegistry):
-    """Eligibility without Hugging Face or Chutes.
+    """Eligibility without Hugging Face.
 
     Subclassed rather than replaced by a protocol so the cycle keeps calling the
     real type: if `ModelRegistry.validate` changes shape, this fails to
     construct rather than silently diverging.
     """
 
-    def __init__(self, endpoints: dict[str, str]) -> None:
-        self._endpoints = endpoints
+    def __init__(self, eligible: set[str]) -> None:
+        self._eligible = eligible
 
     def validate(self, entries: Any) -> list[MinerValidation]:
         results = []
         for entry in entries:
-            endpoint = self._endpoints.get(entry.hotkey, "")
             commitment = entry.commitment
-            eligible = bool(endpoint and commitment)
+            eligible = bool(commitment) and entry.hotkey in self._eligible
             results.append(
                 MinerValidation(
                     uid=entry.uid,
                     hotkey=entry.hotkey,
                     valid=eligible,
-                    reason=None if eligible else InvalidReason.CHUTE_NOT_RUNNING,
+                    reason=None if eligible else InvalidReason.COMMITMENT_MISSING,
                     detail="",
                     hf_repo=commitment.hf_repo if commitment else "",
                     hf_revision=commitment.hf_revision if commitment else "",
-                    chute_id=commitment.chute_id if commitment else "",
                     commit_block=entry.commit_block,
-                    chute_slug="prometheon-slug",
-                    endpoint_url=endpoint,
-                    wrapper_digest="0" * 64,
+                    model_type="qwen2" if eligible else "",
+                    weight_bytes=8 * 1024**3 if eligible else 0,
                 )
             )
         return results
@@ -233,30 +227,64 @@ def _labeller(truth: dict[str, bool]) -> OpenAICompatibleClient:
     )
 
 
-def _models(accuracy: dict[str, float]) -> httpx.Client:
-    """Each miner's `/moderate`, answering correctly a fixed fraction of the time."""
+class _FakeEngine:
+    """A model that answers a fixed fraction of each batch correctly.
 
-    def handler(request: httpx.Request) -> httpx.Response:
-        host = request.url.host
-        body = json.loads(request.content)
-        rate = accuracy.get(host, 1.0)
+    Stands in for a loaded checkpoint rather than for an HTTP endpoint: what
+    the cycle now depends on is `load`, `moderate`, `unload`, so that is what
+    this provides.
+    """
+
+    def __init__(self, accuracy: float) -> None:
+        self.accuracy = accuracy
+        self.loaded = False
+        self.unloaded = False
+
+    def load(self) -> None:
+        self.loaded = True
+
+    def unload(self) -> None:
+        self.unloaded = True
+
+    def moderate(self, policy: str, items: Any) -> Any:
         verdicts = []
-        for index, item in enumerate(body["items"]):
-            # Deterministic: the first `rate` fraction of each batch is right.
-            correct = index < len(body["items"]) * rate
-            truthful = item["id"].startswith("t")
-            verdicts.append({"id": item["id"], "violates": truthful if correct else not truthful})
-        return httpx.Response(
-            200,
-            json={
-                "wrapper_version": "prometheon-moderation/1",
-                "policy_version": body["policy_version"],
-                "verdicts": verdicts,
-                "usage": {"prompt_tokens": 100 * len(verdicts), "completion_tokens": len(verdicts)},
-            },
+        for index, (item_id, _content) in enumerate(items):
+            # Deterministic: the first `accuracy` fraction of each batch is right.
+            correct = index < len(items) * self.accuracy
+            truthful = item_id.startswith("t")
+            verdicts.append(
+                Verdict(item_id=item_id, violates=truthful if correct else not truthful)
+            )
+        return ModerationResult(
+            verdicts=tuple(verdicts),
+            prompt_tokens=100 * len(verdicts),
+            completion_tokens=len(verdicts),
         )
 
-    return httpx.Client(transport=httpx.MockTransport(handler))
+
+def _install_engines(
+    monkeypatch: pytest.MonkeyPatch, accuracy: dict[str, float]
+) -> dict[str, _FakeEngine]:
+    """Install fake local evaluation in place of downloading and loading.
+
+    Patched at the cycle's own names, so the cycle is exercised exactly as it
+    runs: it still resolves a target, asks for a path, builds an engine, and
+    hands it the corpus.
+    """
+    built: dict[str, _FakeEngine] = {}
+
+    def fake_download(target: Any, **_kwargs: Any) -> str:
+        return f"/fake/{target.hotkey}"
+
+    def fake_build(model_path: str, *, dtype: str, device: str) -> _FakeEngine:
+        hotkey = model_path.rsplit("/", 1)[-1]
+        engine = _FakeEngine(accuracy.get(hotkey, 1.0))
+        built[hotkey] = engine
+        return engine
+
+    monkeypatch.setattr("prometheon.cli.cycle.download_checkpoint", fake_download)
+    monkeypatch.setattr("prometheon.cli.cycle.build_engine", fake_build)
+    return built
 
 
 @pytest.fixture
@@ -300,7 +328,6 @@ def world(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
             hotkey=MINER_A.ss58_address,
             hf_repo="a/guard",
             revision_sha=REVISION_A,
-            chute_id="chute-a",
             committed_at=1,
             block=100,
         ),
@@ -308,7 +335,6 @@ def world(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
             hotkey=MINER_B.ss58_address,
             hf_repo="b/guard",
             revision_sha=REVISION_B,
-            chute_id="chute-b",
             committed_at=1,
             block=200,
         ),
@@ -336,14 +362,18 @@ def world(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         "chain": FakeChain(
             [MINER_A.ss58_address, MINER_B.ss58_address], owner=VALIDATOR.ss58_address
         ),
-        "endpoints": {
-            MINER_A.ss58_address: "https://a.chutes.invalid",
-            MINER_B.ss58_address: "https://b.chutes.invalid",
-        },
+        "eligible": {MINER_A.ss58_address, MINER_B.ss58_address},
     }
 
 
-def _run(config: Config, world: dict[str, Any], *, accuracy: dict[str, float]) -> Any:
+def _run(
+    config: Config,
+    world: dict[str, Any],
+    *,
+    accuracy: dict[str, float],
+    monkeypatch: pytest.MonkeyPatch,
+) -> Any:
+    _install_engines(monkeypatch, accuracy)
     with (
         DbClient(
             base_url="https://db.invalid",
@@ -352,19 +382,16 @@ def _run(config: Config, world: dict[str, Any], *, accuracy: dict[str, float]) -
             transport=world["layer"].transport,
         ) as db,
         _labeller(world["truth"]) as labeller,
-        _models(accuracy) as evaluation_client,
     ):
         return run_cycle(
             config=config,
             day=DAY,
             db=db,
             subtensor=world["chain"],
-            registry=StubRegistry(world["endpoints"]),
+            registry=StubRegistry(world["eligible"]),
             labeller=labeller,
-            evaluation_client=evaluation_client,
             policy=POLICY,
             policy_version="2026-08-01",
-            chutes_api_key="cpk_test",
             now=1_700_000_000,
         )
 
@@ -375,9 +402,14 @@ def _run(config: Config, world: dict[str, Any], *, accuracy: dict[str, float]) -
 
 
 def test_a_whole_cycle_produces_a_submittable_weight_vector(
-    config: Config, world: dict[str, Any]
+    config: Config, world: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    result = _run(config, world, accuracy={"a.chutes.invalid": 1.0, "b.chutes.invalid": 0.6})
+    result = _run(
+        config,
+        world,
+        accuracy={MINER_A.ss58_address: 1.0, MINER_B.ss58_address: 0.6},
+        monkeypatch=monkeypatch,
+    )
 
     assert len(result.corpus.items) == 50
     assert len(result.evaluations) == 2
@@ -406,7 +438,7 @@ def test_a_whole_cycle_produces_a_submittable_weight_vector(
 
 
 def test_the_cycle_reads_a_real_commit_block_for_every_miner(
-    config: Config, world: dict[str, Any]
+    config: Config, world: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The defect was that nothing populated this on the path that runs.
 
@@ -424,7 +456,12 @@ def test_the_cycle_reads_a_real_commit_block_for_every_miner(
         MINER_A.ss58_address: 4_242,
         MINER_B.ss58_address: 9_001,
     }
-    result = _run(config, world, accuracy={"a.chutes.invalid": 1.0, "b.chutes.invalid": 0.6})
+    result = _run(
+        config,
+        world,
+        accuracy={MINER_A.ss58_address: 1.0, MINER_B.ss58_address: 0.6},
+        monkeypatch=monkeypatch,
+    )
 
     blocks = {item.hotkey: item.commit_block for item in result.validations}
     assert blocks[MINER_A.ss58_address] == 4_242
@@ -433,7 +470,7 @@ def test_the_cycle_reads_a_real_commit_block_for_every_miner(
 
 
 def test_an_unreadable_commit_block_loses_ties_instead_of_winning_them(
-    config: Config, world: dict[str, Any]
+    config: Config, world: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The direction of the fallback is the point.
 
@@ -447,7 +484,12 @@ def test_an_unreadable_commit_block_loses_ties_instead_of_winning_them(
         raise RuntimeError("substrate said no")
 
     world["chain"].get_commitment_metadata = refuse
-    result = _run(config, world, accuracy={"a.chutes.invalid": 1.0, "b.chutes.invalid": 0.6})
+    result = _run(
+        config,
+        world,
+        accuracy={MINER_A.ss58_address: 1.0, MINER_B.ss58_address: 0.6},
+        monkeypatch=monkeypatch,
+    )
 
     assert all(item.commit_block == UNKNOWN_COMMIT_BLOCK for item in result.validations)
     assert any("duplicate-model tie" in note for note in result.notes)
@@ -489,9 +531,16 @@ def test_labelling_batches_are_deterministic_and_interleaved(
     assert runs > 1, f"test and production are still contiguous ({runs} transition)"
 
 
-def test_the_better_model_outranks_the_worse_one(config: Config, world: dict[str, Any]) -> None:
+def test_the_better_model_outranks_the_worse_one(
+    config: Config, world: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The subnet's core claim, asserted once over the real pipeline."""
-    result = _run(config, world, accuracy={"a.chutes.invalid": 1.0, "b.chutes.invalid": 0.5})
+    result = _run(
+        config,
+        world,
+        accuracy={MINER_A.ss58_address: 1.0, MINER_B.ss58_address: 0.5},
+        monkeypatch=monkeypatch,
+    )
 
     ranked = [score.hotkey for score in result.ranking.scores]
     assert ranked[0] == MINER_A.ss58_address
@@ -499,14 +548,19 @@ def test_the_better_model_outranks_the_worse_one(config: Config, world: dict[str
 
 
 def test_a_miner_is_never_scored_on_its_own_test_content(
-    config: Config, world: dict[str, Any]
+    config: Config, world: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Self-exclusion, observed through the corpus each miner actually saw.
 
     Ten of the twenty test items are miner A's, so A must be scored on forty
     items and B on the other forty.
     """
-    result = _run(config, world, accuracy={"a.chutes.invalid": 1.0, "b.chutes.invalid": 1.0})
+    result = _run(
+        config,
+        world,
+        accuracy={MINER_A.ss58_address: 1.0, MINER_B.ss58_address: 1.0},
+        monkeypatch=monkeypatch,
+    )
 
     by_hotkey = {item.hotkey: item for item in result.evaluations}
     assert by_hotkey[MINER_A.ss58_address].total == 40
@@ -521,10 +575,15 @@ def test_a_miner_is_never_scored_on_its_own_test_content(
 
 
 def test_the_published_record_describes_the_weights_that_were_sent(
-    config: Config, world: dict[str, Any]
+    config: Config, world: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A record that disagrees with the vector is worse than no record."""
-    result = _run(config, world, accuracy={"a.chutes.invalid": 1.0, "b.chutes.invalid": 0.6})
+    result = _run(
+        config,
+        world,
+        accuracy={MINER_A.ss58_address: 1.0, MINER_B.ss58_address: 0.6},
+        monkeypatch=monkeypatch,
+    )
     rows = build_results(result)
 
     assert {row.hotkey for row in rows} == {MINER_A.ss58_address, MINER_B.ss58_address}
@@ -536,39 +595,49 @@ def test_the_published_record_describes_the_weights_that_were_sent(
 
 
 def test_the_corpus_hash_is_stable_across_two_identical_runs(
-    config: Config, world: dict[str, Any]
+    config: Config, world: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Two validators with the same data must publish the same corpus hash."""
-    first = _run(config, world, accuracy={"a.chutes.invalid": 1.0, "b.chutes.invalid": 1.0})
-    second = _run(config, world, accuracy={"a.chutes.invalid": 1.0, "b.chutes.invalid": 1.0})
+    first = _run(
+        config,
+        world,
+        accuracy={MINER_A.ss58_address: 1.0, MINER_B.ss58_address: 1.0},
+        monkeypatch=monkeypatch,
+    )
+    second = _run(
+        config,
+        world,
+        accuracy={MINER_A.ss58_address: 1.0, MINER_B.ss58_address: 1.0},
+        monkeypatch=monkeypatch,
+    )
     assert first.corpus_hash == second.corpus_hash
     assert first.split.weights == second.split.weights
 
 
-def test_an_unreachable_model_does_not_stop_the_cycle(
-    config: Config, world: dict[str, Any]
+def test_a_model_that_cannot_be_run_does_not_stop_the_cycle(
+    config: Config, world: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """One miner's dead deployment must cost that miner, and nobody else."""
+    """One miner's unusable checkpoint must cost that miner, and nobody else.
 
-    def half_dead(request: httpx.Request) -> httpx.Response:
-        if request.url.host == "b.chutes.invalid":
-            raise httpx.ConnectError("connection refused")
-        body = json.loads(request.content)
-        return httpx.Response(
-            200,
-            json={
-                "wrapper_version": "prometheon-moderation/1",
-                "policy_version": body["policy_version"],
-                "verdicts": [
-                    {"id": item["id"], "violates": item["id"].startswith("t")}
-                    for item in body["items"]
-                ],
-                "usage": {
-                    "prompt_tokens": 100 * len(body["items"]),
-                    "completion_tokens": len(body["items"]),
-                },
-            },
-        )
+    Every validator hits the same failure at the same time, so an exception
+    escaping here would take the whole subnet's submission down over one
+    miner's repository.
+    """
+
+    class _BrokenEngine(_FakeEngine):
+        def load(self) -> None:
+            raise RuntimeError("CUDA out of memory")
+
+    def fake_build(model_path: str, *, dtype: str, device: str) -> _FakeEngine:
+        hotkey = model_path.rsplit("/", 1)[-1]
+        if hotkey == MINER_B.ss58_address:
+            return _BrokenEngine(1.0)
+        return _FakeEngine(1.0)
+
+    monkeypatch.setattr(
+        "prometheon.cli.cycle.download_checkpoint", lambda target, **_k: f"/fake/{target.hotkey}"
+    )
+    monkeypatch.setattr("prometheon.cli.cycle.build_engine", fake_build)
 
     with (
         DbClient(
@@ -578,19 +647,16 @@ def test_an_unreachable_model_does_not_stop_the_cycle(
             transport=world["layer"].transport,
         ) as db,
         _labeller(world["truth"]) as labeller,
-        httpx.Client(transport=httpx.MockTransport(half_dead)) as evaluation_client,
     ):
         result = run_cycle(
             config=config,
             day=DAY,
             db=db,
             subtensor=world["chain"],
-            registry=StubRegistry(world["endpoints"]),
+            registry=StubRegistry(world["eligible"]),
             labeller=labeller,
-            evaluation_client=evaluation_client,
             policy=POLICY,
             policy_version="2026-08-01",
-            chutes_api_key="cpk_test",
             now=1_700_000_000,
         )
 

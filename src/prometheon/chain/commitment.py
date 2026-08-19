@@ -59,9 +59,9 @@ import re
 from dataclasses import dataclass
 from typing import Any, Final
 
-from prometheon.canonical.integrity import is_valid_revision
 from prometheon.chain.subtensor import parse_extrinsic_response
 from prometheon.errors import CommitmentDecodeError, CommitmentError
+from prometheon.revision import is_valid_revision
 
 #: The largest ``Raw`` variant substrate will store for a commitment.
 COMMITMENT_MAX_BYTES: Final[int] = 128

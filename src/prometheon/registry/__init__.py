@@ -3,15 +3,10 @@
 Nothing here is taken on trust. The DB layer supplies the list of miners to
 consider; every claim about what those miners published and deployed is
 re-derived from the chain commitment, the public Hugging Face API, and the
-Chutes API. Two validators running this module against the same block reach the
+Hugging Face API. Two validators running this module against the same block reach the
 same verdicts, so the model half of emission stays auditable.
 """
 
-from prometheon.registry.chutes import (
-    ChuteInfo,
-    ChutesClient,
-    require_hot,
-)
 from prometheon.registry.huggingface import (
     HuggingFaceClient,
     RepoSnapshot,
@@ -27,8 +22,6 @@ from prometheon.registry.validation import (
 )
 
 __all__ = [
-    "ChuteInfo",
-    "ChutesClient",
     "HuggingFaceClient",
     "InvalidReason",
     "MinerEntry",

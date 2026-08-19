@@ -7,7 +7,7 @@ anything the miner or the DB layer says:
 2. Is ``miner.py`` byte-for-byte the canonical engine?
 
 The manifest is *read out of the canonical wrapper template* rather than
-restated in this module. The deployed chute refuses to start on a file the
+restated in this module. A validator refuses to run a repository holding a file the
 wrapper's manifest excludes; a validator carrying its own copy of that list
 would, the moment the two drifted, either reject repositories that deploy fine
 or accept repositories that cannot.
@@ -27,7 +27,6 @@ from typing import Final
 
 import httpx
 
-from prometheon.canonical.integrity import require_valid_revision
 from prometheon.errors import (
     ManifestViolationError,
     RegistryError,
@@ -38,6 +37,7 @@ from prometheon.registry._http import (
     DEFAULT_TIMEOUT_SECONDS,
     RegistryHttpClient,
 )
+from prometheon.revision import require_valid_revision
 from prometheon.version import __version__
 
 DEFAULT_HF_ENDPOINT: Final[str] = "https://huggingface.co"
@@ -218,9 +218,7 @@ class HuggingFaceClient(RegistryHttpClient):
         require_valid_repo_id(repo)
         require_valid_revision(revision)
         what = f"Hugging Face repo {repo}@{revision}"
-        payload = self.get_json(
-            f"/api/models/{repo}/revision/{revision}?blobs=true", what=what
-        )
+        payload = self.get_json(f"/api/models/{repo}/revision/{revision}?blobs=true", what=what)
         siblings = payload.get("siblings")
         if not isinstance(siblings, list):
             return 0

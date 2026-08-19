@@ -13,7 +13,7 @@ The order of the stages is a contract:
    *chain* says what they committed. Eligibility to earn and the model being
    scored come from different authorities, so a DB layer that invents a
    commitment cannot get a model scored: the commitment is read from chain and
-   verified against Hugging Face and Chutes independently.
+   verified against Hugging Face independently.
 3. **Label, then evaluate.** Ground truth is fixed before any model sees the
    corpus, so no model can influence what it is measured against.
 4. **Score, then submit.** Weights and the published record are computed from
@@ -32,8 +32,6 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from fractions import Fraction
 from typing import Any
-
-import httpx
 
 from prometheon.chain import subtensor as chain
 
@@ -58,7 +56,7 @@ from prometheon.dbclient.models import (
     corpus_content_hash,
 )
 from prometheon.dbclient.models import ModelCommitment as FrozenCommitment
-from prometheon.errors import CommitmentError, SubtensorError
+from prometheon.errors import CommitmentError, EvaluationError, SubtensorError
 from prometheon.evaluation.corpus import (
     EvaluationCorpus,
     ItemSource,
@@ -67,7 +65,12 @@ from prometheon.evaluation.corpus import (
     corpus_order_key,
 )
 from prometheon.evaluation.result import MinerEvaluation
-from prometheon.evaluation.runner import MinerTarget, evaluate_miner
+from prometheon.evaluation.runner import (
+    MinerTarget,
+    build_engine,
+    download_checkpoint,
+    evaluate_miner,
+)
 from prometheon.labelling.batch import LabelledCorpus, label_items
 from prometheon.labelling.client import ChatCompletionClient
 from prometheon.labelling.prompt import LabelItem
@@ -124,10 +127,8 @@ def run_cycle(
     subtensor: Any,
     registry: ModelRegistry,
     labeller: ChatCompletionClient,
-    evaluation_client: httpx.Client,
     policy: str,
     policy_version: str,
-    chutes_api_key: str,
     now: int,
     progress: Any = None,
 ) -> CycleResult:
@@ -159,7 +160,7 @@ def run_cycle(
         snapshot, metagraph=metagraph, subtensor=subtensor, netuid=config.chain.netuid
     )
 
-    say(f"verifying {len(entries)} commitments against Hugging Face and Chutes")
+    say(f"verifying {len(entries)} commitments against Hugging Face")
     validations = tuple(registry.validate(entries))
     valid = [result for result in validations if result.valid]
     say(f"{len(valid)} of {len(validations)} models are eligible")
@@ -186,24 +187,40 @@ def run_cycle(
     # --- 4. every eligible model over its own view of the corpus ---------
     evaluations: list[MinerEvaluation] = []
     for position, result in enumerate(valid, start=1):
-        say(f"evaluating {position}/{len(valid)}: {result.hotkey}")
+        say(f"evaluating {position}/{len(valid)}: {result.hotkey} ({result.hf_repo})")
+        target = MinerTarget(
+            hotkey=result.hotkey,
+            hf_repo=result.hf_repo,
+            hf_revision=result.hf_revision,
+        )
+        # A download that fails is the miner's failure, not the cycle's: every
+        # validator would hit it at once, so it is scored rather than raised.
+        try:
+            model_path = download_checkpoint(target)
+        except EvaluationError as exc:
+            evaluations.append(
+                _unevaluable(
+                    target, corpus.for_miner(result.hotkey), reason=str(exc), config=config
+                )
+            )
+            continue
+
         evaluations.append(
             evaluate_miner(
-                client=evaluation_client,
-                target=MinerTarget(
-                    hotkey=result.hotkey,
-                    chute_id=result.chute_id,
-                    moderate_url=result.moderate_url,
+                engine=build_engine(
+                    model_path,
+                    dtype=config.evaluation.torch_dtype,
+                    device=config.evaluation.device,
                 ),
+                target=target,
                 # Self-exclusion: a miner is never scored on content its own
                 # users wrote. Done here rather than inside the runner so the
                 # corpus stays one shared object.
                 items=corpus.for_miner(result.hotkey),
                 policy=policy,
                 policy_version=policy_version,
-                api_key=chutes_api_key,
                 batch_size=config.evaluation.batch_size,
-                transport_retries=config.evaluation.transport_retries,
+                deadline_seconds=config.evaluation.model_timeout_seconds,
             )
         )
 
@@ -379,6 +396,25 @@ def build_results(result: CycleResult) -> tuple[MinerResult, ...]:
 # ---------------------------------------------------------------------------
 
 
+def _unevaluable(
+    target: MinerTarget, items: Any, *, reason: str, config: Config
+) -> MinerEvaluation:
+    """A model that could not be fetched, scored rather than skipped.
+
+    Every validator would fail the same download at the same time, so raising
+    here would take the subnet's submission down over one miner's repository.
+    Scoring it wrong is the same treatment a model that loads and answers badly
+    receives, which is the point: unavailable is a property of the submission.
+    """
+    from prometheon.evaluation.corpus import iter_batches
+    from prometheon.evaluation.result import MinerEvaluationBuilder
+
+    builder = MinerEvaluationBuilder(target.hotkey)
+    for batch in iter_batches(items, config.evaluation.batch_size):
+        builder.record_failed_batch(batch, reason=reason)
+    return builder.build()
+
+
 def _require_burn_target(metagraph: MetagraphView, burn_hotkey: str, *, netuid: int) -> None:
     """Refuse at minute zero if the burn target cannot hold a weight.
 
@@ -465,10 +501,9 @@ def _chain_entries(
             # `revision_sha`, the chain codec calls it `hf_revision`. Two
             # distinct types share the name `ModelCommitment`, which is why
             # they are imported under aliases at the top of this module.
-            if (declared.hf_repo, declared.revision_sha, declared.chute_id) != (
+            if (declared.hf_repo, declared.revision_sha) != (
                 commitment.hf_repo,
                 commitment.hf_revision,
-                commitment.chute_id,
             ):
                 # Recorded, not acted on. The chain wins either way; the note
                 # exists so a DB layer drifting from the chain is visible in the
