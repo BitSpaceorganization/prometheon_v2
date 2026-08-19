@@ -4,25 +4,32 @@ How a day's work becomes one weight vector. Every constant here lives in
 `[scoring]` in your config, so a validator can read the numbers that decide
 emissions without reading the code.
 
-A fixed share of miner emission (`miner_burn_share_bp`, **60%** by default)
+A fixed share of miner emission (`miner_burn_share_bp`, **40%** by default)
 burns to the subnet owner (uid 0) before any miner is paid. Miners compete for
-the remaining **40%** — the miner pool — which splits in half:
+the remaining **60%** — the miner pool — which splits two to one:
 
 ```text
 100% miner emission
-├─ 60%  burn                    — withheld to the owner (uid 0) every day
-└─ 40%  miner pool
-   ├─ 50%  dataset contribution — did you supply usable evaluation data?
-   └─ 50%  model performance    — is your model the best judge of it?
+├─ 40%  burn                    — withheld to the owner (uid 0) every day
+└─ 60%  miner pool
+   ├─ ⅔  dataset contribution  — did you supply usable evaluation data?
+   └─ ⅓  model performance     — is your model the best judge of it?
 ```
 
-So dataset contribution and model performance are each 20% of total emission.
+So dataset contribution is **40%** of total emission and model performance
+**20%**. `dataset_share_bp = 6667` is that two-to-one split expressed in basis
+points of the pool; it lands at 40.002%/19.998%, since an exact two thirds is
+not representable there.
+
+Data is weighted the more heavily of the two deliberately: it is what every
+model is measured against, it accrues daily from real users, and it is the half
+a miner can earn without a deployed model at all.
 All of it is computed inside one cycle and combined into a **single**
 `set_weights`; the chain sees one final weight vector, burn included.
 
 ---
 
-## Dataset contribution (50%)
+## Dataset contribution (⅔ of the pool, 40% of total)
 
 A miner's users submit test content they believe violates policy. After
 labelling, some of it does and some of it does not.
@@ -55,7 +62,7 @@ rather than burning the remainder.
 
 ---
 
-## Model performance (50%)
+## Model performance (⅓ of the pool, 20% of total)
 
 ### Accuracy
 
@@ -126,7 +133,7 @@ discriminating must not contribute randomness to close rankings.
 rank 1 → 30%   of total miner emission
 rank 2 → 15%
 rank 3 →  5%
-             = the 50% model half
+             = the model third of the pool
 ```
 
 Ranking is by score descending, with ties broken on accuracy descending and
@@ -163,10 +170,10 @@ the full miner emission is distributed.
 
 | Situation | Result |
 |---|---|
-| No dataset-eligible miners | the 50% dataset pool burns |
-| No model-eligible miners | the 50% model pool burns |
-| No model scored above zero | the 50% model pool burns |
-| No model met the measurement floor | the 50% model pool burns |
+| No dataset-eligible miners | the dataset two thirds burns |
+| No model-eligible miners | the model third burns |
+| No model scored above zero | the model third burns |
+| No model met the measurement floor | the model third burns |
 | Neither half has a claimant | the whole miner emission burns |
 
 **Everything above happens behind one entry gate.** A hotkey is scored at all

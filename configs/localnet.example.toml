@@ -39,8 +39,8 @@ chutes_api_key_env = "CHUTES_API_KEY"
 
 [scoring]
 # 60% of miner emission burns to the owner (uid 0); miners compete for the 40%.
-miner_burn_share_bp = 6000
-dataset_share_bp = 5000
+miner_burn_share_bp = 4000
+dataset_share_bp = 6667
 dataset_top_n = 10
 model_rank_shares_bp = [3000, 1500, 500]
 # A model scored on fewer items than this is not ranked at all. Accuracy over a
