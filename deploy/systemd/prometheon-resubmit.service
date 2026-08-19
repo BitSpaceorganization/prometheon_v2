@@ -1,0 +1,18 @@
+[Unit]
+Description=Prometheon validator — re-post the last computed weights
+Documentation=https://github.com/BitSpaceorganization/prometheon_v2
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/prometheon_v2
+EnvironmentFile=/etc/prometheon/validator.env
+ExecStart=/usr/local/bin/uv run prometheon validator resubmit --config /etc/prometheon/mainnet.toml
+TimeoutStartSec=15min
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=prometheon-resubmit
+
+[Install]
+WantedBy=multi-user.target

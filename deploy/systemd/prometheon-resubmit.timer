@@ -1,0 +1,16 @@
+[Unit]
+Description=Re-post Prometheon weights so they keep counting between cycles
+# Weights stop counting once activity_cutoff passes: 720 blocks (~2.4 h) on
+# netuid 108, against a cycle that runs every 24 h. Hourly sits well inside
+# that, and well above the 100-block (~20 min) weights rate limit. A re-post
+# that lands inside the rate limit is skipped, not failed.
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=60min
+AccuracySec=1min
+Persistent=true
+Unit=prometheon-resubmit.service
+
+[Install]
+WantedBy=timers.target

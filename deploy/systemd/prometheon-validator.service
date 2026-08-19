@@ -1,0 +1,23 @@
+[Unit]
+Description=Prometheon validator — one daily cycle
+Documentation=https://github.com/BitSpaceorganization/prometheon_v2
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/prometheon_v2
+# OPENAI_API_KEY and CHUTES_API_KEY, one KEY=value per line, mode 0600.
+EnvironmentFile=/etc/prometheon/validator.env
+ExecStart=/usr/local/bin/uv run prometheon validator run --config /etc/prometheon/mainnet.toml
+# A cycle is hours of labelling and evaluation. Do not let systemd kill it.
+TimeoutStartSec=infinity
+# The day's snapshot can lag 04:00 UTC. Retry rather than losing the day.
+Restart=on-failure
+RestartSec=15min
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=prometheon-validator
+
+[Install]
+WantedBy=multi-user.target
