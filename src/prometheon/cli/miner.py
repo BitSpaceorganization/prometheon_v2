@@ -109,12 +109,7 @@ def cmd_render(args: argparse.Namespace) -> int:
     # container discovers it hours later, as a startup crash with no failure
     # reason on the API -- indistinguishable from missing GPU capacity.
     with HuggingFaceClient() as huggingface:
-        checked = require_loadable(huggingface, hf_repo, hf_revision)
-    if checked is None:
-        note(
-            "transformers is not installed here, so the architecture was not checked; "
-            "`uv sync --extra wrapper` installs the version the image pins"
-        )
+        require_loadable(huggingface, hf_repo, hf_revision)
 
     image_id = image_id_for(IMAGE_USERNAME, IMAGE_NAME, IMAGE_TAG)
     source = render_wrapper(

@@ -38,12 +38,6 @@ _MODEL_TYPES_ASSET: Final[Path] = (
     Path(__file__).resolve().parent / "assets" / "transformers_model_types.txt"
 )
 
-#: The architectures the deployment image can load, frozen from its pinned
-#: transformers. See the file's header for how to regenerate it.
-_MODEL_TYPES_FILE: Final[Path] = (
-    Path(__file__).parent / "assets" / "transformers-4.46-model-types.txt"
-)
-
 
 class ArchitectureUnsupportedError(RegistryError):
     """The pinned transformers cannot load this checkpoint's architecture."""
@@ -97,12 +91,10 @@ def require_loadable(client: Any, repo: str, revision: str) -> str | None:
     declares none -- an absent field is not evidence of a bad model, and this
     check does not guess.
 
-    Returns ``None`` when transformers is not installed and nothing could be
-    checked. That is the common case on a machine that only drives the CLI, and
-    it must be reported as *unchecked* rather than as a pass: claiming a
-    checkpoint loads when nothing looked is the failure this module exists to
-    prevent. Without the guard the membership test ran against ``None`` and
-    raised ``TypeError``, turning "cannot check" into a crash.
+    Never returns ``None``: the list is frozen and shipped, so there is always
+    something to check against. It once could, back when the answer came from
+    whatever transformers happened to be installed locally, and callers still
+    have to be read with that in mind.
     """
     known = known_model_types()
     model_type = model_type_of(client, repo, revision)
