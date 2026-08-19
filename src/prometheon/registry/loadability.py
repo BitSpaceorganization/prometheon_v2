@@ -23,9 +23,8 @@ committing on chain, before paying for a deploy.
 from __future__ import annotations
 
 import json
-from typing import Any, Final
-
 from pathlib import Path
+from typing import Any, Final
 
 from prometheon.errors import RegistryError
 
@@ -81,23 +80,32 @@ def known_model_types() -> frozenset[str]:
     )
 
 
-def require_loadable(client: Any, repo: str, revision: str) -> str:
+def require_loadable(client: Any, repo: str, revision: str) -> str | None:
     """Raise unless the image's transformers can load this checkpoint.
 
     Returns the ``model_type`` that was checked, or ``""`` when the repository
     declares none -- an absent field is not evidence of a bad model, and this
     check does not guess.
+
+    Returns ``None`` when transformers is not installed and nothing could be
+    checked. That is the common case on a machine that only drives the CLI, and
+    it must be reported as *unchecked* rather than as a pass: claiming a
+    checkpoint loads when nothing looked is the failure this module exists to
+    prevent. Without the guard the membership test ran against ``None`` and
+    raised ``TypeError``, turning "cannot check" into a crash.
     """
     known = known_model_types()
+    if known is None:
+        return None
 
     model_type = model_type_of(client, repo, revision)
     if not model_type or model_type in known:
         return model_type
 
     raise ArchitectureUnsupportedError(
-        f"{repo}@{revision} declares model_type {model_type!r}, which the installed "
-        "transformers does not recognise. The deployment image pins the same range, so "
-        "this checkpoint cannot be loaded there: the chute would deploy, report itself "
+        f"{repo}@{revision} declares model_type {model_type!r}, which "
+        "the deployment image's transformers does not recognise. That image cannot load "
+        "this checkpoint at all: the chute would deploy, report itself "
         "verified, then die during startup and reschedule, with no failure reason on "
-        "the API. Choose a checkpoint whose architecture that transformers knows."
+        "the API. Choose a checkpoint whose architecture that image can load."
     )

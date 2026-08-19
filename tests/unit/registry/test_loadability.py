@@ -94,33 +94,38 @@ class TestRefusingWhatTheImageCannotLoad:
         """Only refuse what is known to be unloadable; the manifest owns the rest."""
         assert require_loadable(FakeClient({}), "r", "a" * 40) == ""
 
-    def test_nothing_is_claimed_when_transformers_is_absent(self, monkeypatch: Any) -> None:
-        """`None` means unchecked, not passed.
 
-        Reporting a pass nothing verified is how the original failure stayed
-        invisible.
-        """
-        monkeypatch.setattr(
-            "prometheon.registry.loadability.known_model_types", lambda: None, raising=True
-        )
-        assert require_loadable(FakeClient({"model_type": "qwen3"}), "r", "a" * 40) is None
+class TestTheFrozenMappingIsTheImages:
+    """The list is frozen on purpose, and that is the load-bearing decision.
 
-
-class TestAgainstTheInstalledTransformers:
-    """Asserts something either way, rather than skipping.
-
-    transformers is an optional extra, so this cannot require it. But skipping
-    would leave the default path — the one every miner takes — untested. Both
-    outcomes are contracts, so both are asserted.
+    Reading the *installed* transformers would answer the wrong question. A
+    miner running 4.51 locally would see `qwen3` accepted and still watch every
+    instance die inside a container pinned to 4.46. The check has to describe
+    the image, so it ships with the package instead of being discovered at
+    runtime.
     """
 
-    def test_the_default_path_consults_the_real_library(self) -> None:
+    def test_it_ships_and_is_not_empty(self) -> None:
         known = known_model_types()
-        if known is None:
-            # Absent: the contract is "unchecked", never "fine". Returning the
-            # model_type here would claim a checkpoint loads when nothing looked.
-            assert require_loadable(FakeClient({"model_type": "qwen3"}), "r", "a" * 40) is None
-        else:
-            # Present: it must be the real mapping, not a hand-written guess.
-            assert "llama" in known
-            assert len(known) > 100
+        assert len(known) > 100
+
+    def test_it_matches_the_pin_that_broke_us(self) -> None:
+        known = known_model_types()
+        assert "qwen2" in known, "Qwen2.5 loads on the pinned image"
+        assert "qwen3" not in known, "Qwen3 arrived in transformers 4.51; the image pins <4.47"
+
+    def test_it_is_not_read_from_the_local_environment(self) -> None:
+        """Whatever is installed here must not change the answer."""
+        import sys
+        from types import SimpleNamespace
+
+        fake = SimpleNamespace(CONFIG_MAPPING_NAMES={"qwen3": "X"})
+        saved = sys.modules.get("transformers.models.auto.configuration_auto")
+        sys.modules["transformers.models.auto.configuration_auto"] = fake  # type: ignore[assignment]
+        try:
+            assert "qwen3" not in known_model_types()
+        finally:
+            if saved is None:
+                sys.modules.pop("transformers.models.auto.configuration_auto", None)
+            else:
+                sys.modules["transformers.models.auto.configuration_auto"] = saved
