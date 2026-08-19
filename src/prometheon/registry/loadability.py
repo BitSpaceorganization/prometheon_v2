@@ -23,6 +23,7 @@ committing on chain, before paying for a deploy.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any, Final
 
 from prometheon.errors import RegistryError
@@ -30,6 +31,12 @@ from prometheon.errors import RegistryError
 #: `config.json` is small. A checkpoint shipping a huge one is not one this can
 #: reason about anyway.
 _MAX_CONFIG_BYTES: Final[int] = 1 << 20
+
+#: The architectures the deployment image can load, frozen from its pinned
+#: transformers. See the file's header for how to regenerate it.
+_MODEL_TYPES_FILE: Final[Path] = (
+    Path(__file__).parent / "assets" / "transformers-4.46-model-types.txt"
+)
 
 
 class ArchitectureUnsupportedError(RegistryError):
@@ -54,26 +61,38 @@ def model_type_of(client: Any, repo: str, revision: str) -> str:
     return model_type if isinstance(model_type, str) else ""
 
 
-def known_model_types() -> frozenset[str] | None:
-    """Every ``model_type`` the installed transformers recognises.
+def known_model_types() -> frozenset[str]:
+    """Every ``model_type`` the *image's* transformers recognises.
 
-    ``None`` when transformers is absent, which is the common case on a machine
-    that only drives the CLI. Callers report that as *unchecked* rather than as
-    a pass: claiming a checkpoint loads when nothing verified it is how this
-    failure stayed invisible in the first place.
+    Read from a frozen list rather than from the installed package, and that is
+    the whole point. The image pins its own `transformers`, so the question is
+    never "can this machine load the checkpoint" but "can the container". A
+    miner running a newer release locally would see a newer architecture
+    accepted here and still watch every instance die inside the container --
+    which is precisely the failure this exists to prevent.
+
+    Regenerate the list when the pin in `pyproject.toml` moves; the file says
+    how.
     """
-    try:
-        from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
-    except Exception:  # pragma: no cover - depends on the optional extra
-        return None
-    return frozenset(CONFIG_MAPPING_NAMES)
+    text = _MODEL_TYPES_FILE.read_text(encoding="utf-8")
+    return frozenset(
+        line.strip() for line in text.splitlines() if line.strip() and not line.startswith("#")
+    )
 
 
 def require_loadable(client: Any, repo: str, revision: str) -> str | None:
-    """Raise unless the pinned transformers can load this checkpoint.
+    """Raise unless the image's transformers can load this checkpoint.
 
-    Returns the checked ``model_type``, or ``None`` when transformers is absent
-    and nothing could be checked.
+    Returns the ``model_type`` that was checked, or ``""`` when the repository
+    declares none -- an absent field is not evidence of a bad model, and this
+    check does not guess.
+
+    Returns ``None`` when transformers is not installed and nothing could be
+    checked. That is the common case on a machine that only drives the CLI, and
+    it must be reported as *unchecked* rather than as a pass: claiming a
+    checkpoint loads when nothing looked is the failure this module exists to
+    prevent. Without the guard the membership test ran against ``None`` and
+    raised ``TypeError``, turning "cannot check" into a crash.
     """
     known = known_model_types()
     if known is None:
@@ -84,9 +103,9 @@ def require_loadable(client: Any, repo: str, revision: str) -> str | None:
         return model_type
 
     raise ArchitectureUnsupportedError(
-        f"{repo}@{revision} declares model_type {model_type!r}, which the installed "
-        "transformers does not recognise. The deployment image pins the same range, so "
-        "this checkpoint cannot be loaded there: the chute would deploy, report itself "
+        f"{repo}@{revision} declares model_type {model_type!r}, which "
+        "the deployment image's transformers does not recognise. That image cannot load "
+        "this checkpoint at all: the chute would deploy, report itself "
         "verified, then die during startup and reschedule, with no failure reason on "
-        "the API. Choose a checkpoint whose architecture that transformers knows."
+        "the API. Choose a checkpoint whose architecture that image can load."
     )
