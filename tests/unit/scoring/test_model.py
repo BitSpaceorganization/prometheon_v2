@@ -341,7 +341,7 @@ class TestAZeroScoreIsNeverPaid:
     """
 
     def test_a_model_that_answered_nothing_earns_nothing(self) -> None:
-        """A chute returning HTTP 500 to every batch scores exactly zero."""
+        """A model that fails every batch scores exactly zero."""
         dead = [ModelEvaluation(hotkey="hk-broken", correct_count=0, scored_count=1000)]
         allocation = allocate_model_pool(
             score_models(dead, scoring=DEFAULTS).scores,
@@ -350,7 +350,7 @@ class TestAZeroScoreIsNeverPaid:
         )
         assert allocation == {}
 
-    def test_a_dead_chute_does_not_take_emission_off_the_honest_field(self) -> None:
+    def test_a_dead_model_does_not_take_emission_off_the_honest_field(self) -> None:
         """It used to collect 500bp of total miner emission for doing nothing."""
         field = [
             ModelEvaluation("hk-a", 850, 1000, 100_000, 1000),

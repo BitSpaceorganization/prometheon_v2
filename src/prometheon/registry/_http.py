@@ -1,10 +1,9 @@
 """Shared HTTP plumbing for the registry's independent verification calls.
 
 The registry is the one place in the validator that must not trust anything it
-is told: every fact about a miner's model is re-fetched from Hugging Face and
-Chutes. That makes the transport itself part of the trust boundary, so it lives
-here once rather than being re-implemented per provider, where the two copies
-would drift.
+is told: every fact about a miner's model is re-fetched from Hugging Face. That
+makes the transport itself part of the trust boundary, so it lives here rather
+than being inlined into the client that happens to need it.
 
 Three properties carry that:
 
@@ -12,7 +11,7 @@ Three properties carry that:
   day of emission, but an unbounded retry loop would let one unreachable host
   stall the whole cycle. Retries apply only to statuses that mean "try again".
   A 404 is a verdict.
-- Every body has a byte ceiling. Repo and chute contents are miner-supplied,
+- Every body has a byte ceiling. Repository contents are miner-supplied,
   and reading an unbounded response into memory is a denial of service any
   miner could trigger, so bodies stream and stop at a cap.
 - The transport is injectable. Tests drive the real request/response envelope
@@ -36,8 +35,8 @@ import httpx
 
 from prometheon.errors import RegistryError
 
-#: Default ceiling for a JSON body. Generous for a revision listing or a chute
-#: info blob, and far below anything that would threaten a validator's memory.
+#: Default ceiling for a JSON body. Generous for a revision listing, and far
+#: below anything that would threaten a validator's memory.
 #: A repo whose file listing exceeds this is refused before the manifest check
 #: would have refused it for having too many files anyway.
 MAX_JSON_BYTES: Final[int] = 4 << 20
@@ -67,12 +66,10 @@ def _raise_for_status(response: httpx.Response, what: str) -> None:
     if code in _RETRYABLE_STATUS:
         raise _RetryableStatusError(code)
     if code == 404:
-        # Chutes answers 404, not 403, for a private chute the caller may not
-        # read. "Does not exist" alone therefore accused miners of a missing
-        # deployment when the real fault was a missing key or an unshared chute.
-        raise RegistryError(
-            f"{what} does not exist, or is not readable with the credentials used (HTTP 404)"
-        )
+        # A private or gated repository can answer 404 rather than 403, so
+        # "does not exist" alone accused miners of a missing repository when the
+        # real fault was one nobody outside their account can read.
+        raise RegistryError(f"{what} does not exist, or is not publicly readable (HTTP 404)")
     if code in (401, 403):
         raise RegistryError(f"{what} is not publicly readable (HTTP {code})")
     if code >= 400:

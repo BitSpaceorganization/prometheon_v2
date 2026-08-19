@@ -176,11 +176,11 @@ def allocate_model_pool(
     models more rather than burning the difference.
 
     **A zero score is never paid a rank share.** Without that filter, a model
-    that answered nothing all day still collects. A miner whose chute returns
+    that answered nothing all day still collects. A miner whose model returns
     HTTP 500 to every batch scores exactly zero, and with no honest competitor
     above it, took the entire model half; with two honest models present it
     still took 500bp of total miner emission off them for doing nothing. Worse,
-    when the whole field scores zero (the validator's egress to Chutes is down,
+    when the whole field scores zero (the validator's GPU failed every load,
     or every deployment is broken), ranking falls through to the
     hotkey-ascending tie-break, so half of miner emission would be distributed
     in lexicographic hotkey order, identically on every validator, which means

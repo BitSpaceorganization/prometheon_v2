@@ -1,64 +1,54 @@
 """The on-chain model commitment: a compact, versioned, 128-byte-safe encoding.
 
 A commitment answers one question. *Which model is this hotkey being scored on
-today?* It answers with three values: the Hugging Face repo, the 40-hex
-revision SHA, and the Chutes deployment id. Freezing them on chain is what
-makes the day's evaluation reproducible by anyone: a third party reads the
-commitment, fetches that revision, and recomputes.
+today?* It answers with two values: the Hugging Face repo and the 40-hex
+revision SHA. Freezing them on chain is what makes the day's evaluation
+reproducible by anyone: a third party reads the commitment, fetches that
+revision, and recomputes.
+
+**Format 2 carries no deployment id.** Format 1 named a Chutes chute, because
+the miner served the model and validators called it. Validators now download
+the weights and run them, so there is nothing to address and nothing to prove
+about a deployment -- the repo and the revision are the whole submission. A
+format 1 payload is refused rather than partially read: it describes a
+deployment that is no longer evaluated, and silently scoring its repo would
+score a model the miner never resubmitted under the current rules.
 
 The 128-byte budget drives the rest of the design. Substrate stores a
 commitment as a ``Raw`` blob and the largest variant is ``Raw128``, so anything
 longer is rejected by the chain, not by us. Size costs twice over, because the
 commitments pallet also charges every write against a per-hotkey byte quota
 that resets each epoch, so a bloated payload buys fewer corrections on the day
-a miner needs one. A naive JSON dump does not fit::
+a miner needs one.
 
-    {"chute_id":"b4e8a2f1-6c3d-4e5a-9b7f-1d2c3e4f5a6b","hf_repo":"prometheon-labs/
-     moderation-guard-8b","hf_revision":"<40 hex>"}          = 156 bytes
-
-156 bytes for 111 bytes of information, of which 45 are field names repeated in
-every commitment on the subnet. Two substitutions recover the headroom:
-
-- The revision is 160 bits of entropy wearing 40 characters of hex. Base64url
-  of the raw 20 bytes is 27 characters, so 13 are saved.
-- A Chutes deployment id is a UUID: 128 bits wearing 36 characters. Base64url
-  of the raw 16 bytes is 22 characters, so 14 are saved.
+The revision is 160 bits of entropy wearing 40 characters of hex. Base64url of
+the raw 20 bytes is 27 characters, so 13 are saved.
 
 Layout, all ASCII::
 
-    P 2 <ver> <mode> <revision:27> <chute> <hf_repo…>
-    │ │   │      │          │         │        └─ variable, runs to the end
-    │ │   │      │          │         └────────── mode 'u': 22 chars, fixed
-    │ │   │      │          │                     mode 't': literal + ':'
-    │ │   │      │          └──────────────────── base64url of 20 raw bytes
-    │ │   │      └─────────────────────────────── 'u' compact UUID | 't' literal
-    │ │   └────────────────────────────────────── format version, '1'
-    └─┴────────────────────────────────────────── magic
+    P 2 <ver> <revision:27> <hf_repo…>
+    │ │   │         │           └─ variable, runs to the end
+    │ │   │         └───────────── base64url of 20 raw bytes
+    │ │   └─────────────────────── format version, '2'
+    └─┴─────────────────────────── magic
 
-Size budget (mode ``u``)::
+Size budget::
 
-    magic + version + mode                4
+    magic + version                       3
     revision                             27
-    chute id                             22
     ──────────────────────────────────── ──
-    fixed cost                           53   leaving 75 bytes for hf_repo
+    fixed cost                           30   leaving 98 bytes for hf_repo
 
-The worked example above encodes to **88 bytes**. Mode ``t`` costs one
-terminator plus the literal id, leaving 60 bytes of repo for a 36-character id.
-
-``hf_repo`` runs last so it needs no length prefix or terminator. The fields
-ahead of it are either fixed-width or terminated by a character no legal repo
-id, chute id, or base64url digit contains.
+``hf_repo`` runs last so it needs no length prefix or terminator: everything
+ahead of it is fixed-width.
 
 Nothing here is signed. The extrinsic that writes a commitment is already
 signed by the hotkey, so authorship is chain-attested; a 64-byte SR25519
 signature would also consume half the budget to prove something the chain
 proves for free.
 
-The encoding is canonical: one commitment has exactly one valid encoding. Mode
-``t`` carrying a value that mode ``u`` could have compacted is rejected on
-decode, so two validators reading the same commitment cannot disagree about
-what a re-encode should look like.
+The encoding is canonical: one commitment has exactly one valid encoding, so
+two validators reading the same commitment cannot disagree about what it says.
 """
 
 from __future__ import annotations
@@ -66,34 +56,26 @@ from __future__ import annotations
 import base64
 import binascii
 import re
-import uuid
 from dataclasses import dataclass
 from typing import Any, Final
 
-from prometheon.canonical.integrity import is_valid_revision
 from prometheon.chain.subtensor import parse_extrinsic_response
 from prometheon.errors import CommitmentDecodeError, CommitmentError
+from prometheon.revision import is_valid_revision
 
 #: The largest ``Raw`` variant substrate will store for a commitment.
 COMMITMENT_MAX_BYTES: Final[int] = 128
 
 _MAGIC: Final[str] = "P2"
-_FORMAT_VERSION: Final[str] = "1"
+_FORMAT_VERSION: Final[str] = "2"
 
-#: ``chute_id`` compacted from a canonical UUID to 16 raw bytes.
-_MODE_UUID: Final[str] = "u"
-#: ``chute_id`` kept as literal text, terminated by :data:`_TERMINATOR`.
-_MODE_TEXT: Final[str] = "t"
+#: Format 1 named a Chutes deployment. Kept only so its payloads can be
+#: refused by name rather than as "unreadable".
+_CHUTES_ERA_VERSION: Final[str] = "1"
 
-_HEADER_CHARS: Final[int] = 4
+_HEADER_CHARS: Final[int] = 3
 _REVISION_CHARS: Final[int] = 27
-_UUID_CHARS: Final[int] = 22
 _REVISION_BYTES: Final[int] = 20
-_UUID_BYTES: Final[int] = 16
-
-#: Legal in neither a repo id, a chute id, nor the base64url alphabet, which is
-#: what makes the literal-mode field unambiguously terminated.
-_TERMINATOR: Final[str] = ":"
 
 #: Hugging Face allows ``namespace/name`` or a bare canonical name, each
 #: starting alphanumeric. Anything else is not a repo we could fetch anyway.
@@ -101,15 +83,10 @@ _HF_REPO_RE: Final[re.Pattern[str]] = re.compile(
     r"^[A-Za-z0-9][A-Za-z0-9._-]{0,95}(?:/[A-Za-z0-9][A-Za-z0-9._-]{0,95})?$"
 )
 
-#: Chutes deployment ids are UUIDs. The class is kept slightly wider than that
-#: so a platform id-scheme change does not need a format bump. It still
-#: excludes the terminator.
-_CHUTE_ID_RE: Final[re.Pattern[str]] = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
-
 
 @dataclass(frozen=True)
 class ModelCommitment:
-    """The three values a miner freezes on chain for a cycle.
+    """The two values a miner freezes on chain for a cycle.
 
     Validated on construction, so an instance in hand is always publishable.
     Every rejection happens at the boundary rather than at submission time,
@@ -118,7 +95,6 @@ class ModelCommitment:
 
     hf_repo: str
     hf_revision: str
-    chute_id: str
 
     def __post_init__(self) -> None:
         if not _HF_REPO_RE.match(self.hf_repo or ""):
@@ -131,10 +107,6 @@ class ModelCommitment:
                 "hf_revision must be a 40-character lowercase hex SHA "
                 f"(a branch or tag is not a commitment), got {self.hf_revision!r}"
             )
-        if not _CHUTE_ID_RE.match(self.chute_id or ""):
-            raise CommitmentError(
-                f"chute_id must be 1-64 characters of [A-Za-z0-9._-], got {self.chute_id!r}"
-            )
 
 
 def encode_commitment(commitment: ModelCommitment) -> str:
@@ -145,13 +117,7 @@ def encode_commitment(commitment: ModelCommitment) -> str:
     long repo id.
     """
     revision_field = _b64url_encode(bytes.fromhex(commitment.hf_revision))
-    uuid_bytes = _compactable_uuid_bytes(commitment.chute_id)
-    if uuid_bytes is None:
-        mode, chute_field = _MODE_TEXT, commitment.chute_id + _TERMINATOR
-    else:
-        mode, chute_field = _MODE_UUID, _b64url_encode(uuid_bytes)
-
-    text = f"{_MAGIC}{_FORMAT_VERSION}{mode}{revision_field}{chute_field}{commitment.hf_repo}"
+    text = f"{_MAGIC}{_FORMAT_VERSION}{revision_field}{commitment.hf_repo}"
     size = len(text.encode("ascii"))
     if size > COMMITMENT_MAX_BYTES:
         raise CommitmentError(
@@ -188,32 +154,30 @@ def decode_commitment(payload: str | bytes) -> ModelCommitment:
         )
 
     version = text[2]
+    if version == _CHUTES_ERA_VERSION:
+        raise CommitmentDecodeError(
+            "this is a format 1 commitment, which named a Chutes deployment. Models are "
+            "now downloaded and run by validators, so there is no deployment to score: "
+            "re-commit with `prometheon model commit` to publish a format 2 payload"
+        )
     if version != _FORMAT_VERSION:
         raise CommitmentDecodeError(
             f"commitment format version {version!r} is not readable by this build "
             f"(which reads {_FORMAT_VERSION!r}); upgrade the validator"
         )
 
-    mode = text[3]
     revision = _b64url_decode(
         text[_HEADER_CHARS : _HEADER_CHARS + _REVISION_CHARS],
         expected_bytes=_REVISION_BYTES,
         field="hf_revision",
     ).hex()
-    rest = text[_HEADER_CHARS + _REVISION_CHARS :]
-
-    if mode == _MODE_UUID:
-        chute_id, hf_repo = _decode_uuid_mode(rest)
-    elif mode == _MODE_TEXT:
-        chute_id, hf_repo = _decode_text_mode(rest)
-    else:
-        raise CommitmentDecodeError(f"unknown chute_id encoding mode {mode!r}")
+    hf_repo = text[_HEADER_CHARS + _REVISION_CHARS :]
 
     if not hf_repo:
         raise CommitmentDecodeError("commitment carries no hf_repo")
 
     try:
-        return ModelCommitment(hf_repo=hf_repo, hf_revision=revision, chute_id=chute_id)
+        return ModelCommitment(hf_repo=hf_repo, hf_revision=revision)
     except CommitmentError as exc:
         raise CommitmentDecodeError(f"commitment decoded to invalid values: {exc}") from exc
 
@@ -379,47 +343,6 @@ def _as_ascii(payload: str | bytes) -> str:
     if not text.isascii():
         raise CommitmentDecodeError("commitment contains non-ASCII characters")
     return text
-
-
-def _decode_uuid_mode(rest: str) -> tuple[str, str]:
-    if len(rest) < _UUID_CHARS:
-        raise CommitmentDecodeError(
-            f"commitment is truncated: compact chute_id needs {_UUID_CHARS} characters, "
-            f"found {len(rest)}"
-        )
-    raw = _b64url_decode(rest[:_UUID_CHARS], expected_bytes=_UUID_BYTES, field="chute_id")
-    return str(uuid.UUID(bytes=raw)), rest[_UUID_CHARS:]
-
-
-def _decode_text_mode(rest: str) -> tuple[str, str]:
-    chute_id, separator, hf_repo = rest.partition(_TERMINATOR)
-    if not separator:
-        raise CommitmentDecodeError(f"literal chute_id is not terminated by {_TERMINATOR!r}")
-    if _compactable_uuid_bytes(chute_id) is not None:
-        # Rejecting this keeps one commitment to one encoding. Without it two
-        # validators could re-encode the same on-chain value differently.
-        raise CommitmentDecodeError(
-            f"chute_id {chute_id!r} is a canonical UUID and must use the compact "
-            f"{_MODE_UUID!r} mode"
-        )
-    return chute_id, hf_repo
-
-
-def _compactable_uuid_bytes(chute_id: str) -> bytes | None:
-    """The 16 raw bytes of ``chute_id``, or ``None`` if it must stay literal.
-
-    Only the canonical lowercase hyphenated spelling compacts. ``uuid.UUID``
-    also parses braced, uppercase, and unhyphenated forms, but those would
-    decode back to a *different* string than the miner committed, and the
-    decoded string is what gets compared against the deployed wrapper.
-    """
-    try:
-        parsed = uuid.UUID(chute_id)
-    except (AttributeError, TypeError, ValueError):
-        return None
-    if str(parsed) != chute_id:
-        return None
-    return parsed.bytes
 
 
 def _b64url_encode(raw: bytes) -> str:

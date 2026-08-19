@@ -34,8 +34,6 @@ batch_size = 10
 
 [evaluation]
 batch_size = 10
-request_timeout_seconds = 30.0
-chutes_api_key_env = "CHUTES_API_KEY"
 
 [scoring]
 # 60% of miner emission burns to the owner (uid 0); miners compete for the 40%.
@@ -58,8 +56,6 @@ dry_run = true
 submit_results = false
 
 [miner]
-chutes_user = ""
-chute_id = ""
 hf_repo = ""
 # The 40-character commit SHA, not a branch.
 hf_revision = ""

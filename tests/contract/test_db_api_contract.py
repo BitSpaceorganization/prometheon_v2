@@ -41,7 +41,7 @@ SIGNED_BYTES = (
 
 TEST_ITEM_DIGEST = "a1a6993cd3e2b94d2a92e577769bd8f6e2cc80c7d909fc1d52e2fc57167be5fb"
 TEST_COLLECTION_HASH = "afb2b787d6f4f92acf239a7d0cd2a53037ae1df1f5c500b20fc63a31b6510748"
-WORKED_CONTENT_HASH = "093c1302b549a9c06c543295ec35e5a3b06c91626831effbf17a53954d9bdab3"
+WORKED_CONTENT_HASH = "edfd1b49630d642d4df84b6e0d9c6a623c397e285020dc28b1896cbb055b7b4b"
 EMPTY_DAY_CONTENT_HASH = "f1afe099299e07dabf31b211b6dcee506d5d5fe95333978154c74c5becb77f92"
 
 
@@ -64,7 +64,6 @@ def _commitment() -> models.ModelCommitment:
         hotkey=HOTKEY,
         hf_repo="miner/model",
         revision_sha="a" * 40,
-        chute_id="chute-1",
         committed_at=1_785_999_000,
         block=4242,
     )

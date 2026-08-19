@@ -62,7 +62,7 @@ So:
 The behaviour, and preferably the consequence of it being wrong:
 
 ```python
-def test_a_dead_chute_does_not_take_emission_off_the_honest_field() -> None:
+def test_a_dead_model_does_not_take_emission_off_the_honest_field() -> None:
 def test_an_unsynced_metagraph_does_not_read_as_a_deregistered_field() -> None:
 ```
 
@@ -106,7 +106,6 @@ disagreement about the data.
 
 If you change the canonical engine or wrapper, you are invalidating every
 deployed model on the subnet. Read the migration policy in
-[`docs/canonical-wrapper.md`](docs/canonical-wrapper.md) first, and add the old
 hash to `LEGACY_WRAPPER_HASHES` for the window.
 
 ---

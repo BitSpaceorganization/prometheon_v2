@@ -12,20 +12,6 @@ from pathlib import Path
 
 import pytest
 
-from prometheon.canonical.hashes import (
-    ACCEPTED_WRAPPER_HASHES,
-    IMAGE_NAME,
-    IMAGE_TAG,
-    IMAGE_USERNAME,
-    accepted_image_ids,
-    chute_id_for,
-    image_id_for,
-)
-from prometheon.canonical.integrity import (
-    canonical_wrapper_hash,
-    render_wrapper,
-    wrapper_hash,
-)
 from prometheon.cli.main import build_parser
 from prometheon.cli.validator import _policy_version
 from prometheon.config import Config, ScoringConfig, load_config
@@ -132,116 +118,7 @@ class TestTheShippedPolicyIsUsable:
 #: Every other assertion in this file compares one computed hash against
 #: another computed hash, which proves the code agrees with itself and nothing
 #: more. That is exactly how a subnet-breaking defect passed 796 tests: the
-#: wrapper hash was derived from `ast.dump`, whose output changed in CPython
-#: 3.12 and again in 3.13, so the same source hashed to three different values
-#: across the supported range while every test stayed green.
-#:
-#: These two lines are the only place the expected value exists independently
-#: of the code that produces it. Changing either one changes what every
-#: validator on the network accepts, so a diff that touches them is a
-#: subnet-wide migration and must follow docs/canonical-wrapper.md.
 EXPECTED_SCRIPT_HASH = "ea4dab57ccd0c228337318d141c4eb1eff973ce44b36f02d1bba8a9792d08af7"
-
-
-class TestTheCanonicalArtifactsAgree:
-    """If these drift, every deployed model on the subnet becomes invalid at once."""
-
-    def test_the_wrapper_hash_is_the_published_value(self) -> None:
-        """Pinned against a literal, and run on every Python in the CI matrix.
-
-        This is the test that would have caught the `ast.dump` instability.
-        """
-        assert canonical_wrapper_hash() == EXPECTED_SCRIPT_HASH
-
-    def test_normalisation_does_not_depend_on_the_interpreter(self) -> None:
-        """The property the literals above defend, stated directly.
-
-        `normalise_source` must emit only node types and fields this package
-        names itself. A field that exists on one CPython release and not
-        another (`type_params`, added 3.12) must never reach the output.
-        """
-        from prometheon.canonical.integrity import normalise_source
-
-        rendered = render_wrapper(
-            hf_repo="a/b", hf_revision="0" * 40, chutes_user="u", hotkey="5H", image_id="i"
-        )
-        normalised = normalise_source(rendered)
-        for moved in ("type_params", "type_comment", "type_ignores", "kind="):
-            assert moved not in normalised, f"{moved} is version-dependent and must not be emitted"
-
-    def test_an_unknown_construct_is_refused_rather_than_hashed(self) -> None:
-        """The allowlist doubles as a check on what a deployment may contain."""
-        from prometheon.canonical.integrity import normalise_source
-        from prometheon.errors import RegistryError
-
-        with pytest.raises(RegistryError, match="canonical wrapper grammar"):
-            normalise_source("match x:\n    case 1:\n        pass\n")
-
-    def test_a_rendered_wrapper_hashes_to_the_canonical_value(self) -> None:
-        rendered = render_wrapper(
-            hf_repo="example/model",
-            hf_revision="0" * 40,
-            chutes_user="example",
-            hotkey="5Hot",
-            image_id="img-1",
-        )
-        assert wrapper_hash(rendered) == canonical_wrapper_hash()
-
-    def test_the_miner_supplied_values_do_not_change_the_hash(self) -> None:
-        """Normalisation is what lets four values vary without breaking the pin."""
-        first = wrapper_hash(
-            render_wrapper(
-                hf_repo="a/one",
-                hf_revision="a" * 40,
-                chutes_user="alice",
-                hotkey="5Alice",
-                image_id="img-1",
-                gpu_count=1,
-                min_vram_gb=16,
-            )
-        )
-        second = wrapper_hash(
-            render_wrapper(
-                hf_repo="b/two",
-                hf_revision="b" * 40,
-                chutes_user="bob",
-                hotkey="5Bob",
-                image_id="img-1",
-                # A different GPU choice must not change the hash either: it is
-                # the miner's to make and they pay for it.
-                gpu_count=8,
-                min_vram_gb=140,
-            )
-        )
-        assert first == second == canonical_wrapper_hash()
-
-    def test_the_canonical_hash_is_one_validators_accept(self) -> None:
-        assert canonical_wrapper_hash() in ACCEPTED_WRAPPER_HASHES
-
-    def test_the_subnet_image_is_configured(self) -> None:
-        """An unconfigured image means no deployment can be verified at all.
-
-        `accepted_image_ids()` is empty until the account strings are set, and
-        the registry treats an empty set as "refuse everything" — the safe
-        direction, since the Chutes API exposes no image contents and an
-        unverified image is an unknown runtime. This fails loudly rather than
-        letting a build ship that would zero the whole field.
-        """
-        assert IMAGE_USERNAME and IMAGE_NAME and IMAGE_TAG
-        assert accepted_image_ids() == frozenset(
-            {image_id_for(IMAGE_USERNAME, IMAGE_NAME, IMAGE_TAG)}
-        )
-
-    def test_the_chute_id_is_derivable_before_the_chute_exists(self) -> None:
-        """Which is why the script names the chute from the hotkey.
-
-        A miner must commit `chute_id` before deploying, and a miner-chosen name
-        made that impossible: the id did not exist yet. Derived, it is knowable
-        in advance and checkable afterwards.
-        """
-        assert chute_id_for("alice", "5Hot") == chute_id_for("alice", "5Hot")
-        assert chute_id_for("alice", "5Hot") != chute_id_for("bob", "5Hot")
-        assert chute_id_for("alice", "5Hot") != chute_id_for("alice", "5Cold")
 
 
 class TestTheDocumentedCommandsExist:

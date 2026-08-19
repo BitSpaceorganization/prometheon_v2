@@ -25,7 +25,7 @@ REPO = "prometheon-labs/moderation-guard-8b"
 
 
 def realistic() -> ModelCommitment:
-    return ModelCommitment(hf_repo=REPO, hf_revision=REVISION, chute_id=CHUTE_UUID)
+    return ModelCommitment(hf_repo=REPO, hf_revision=REVISION)
 
 
 class TestSizeBudget:
@@ -33,62 +33,52 @@ class TestSizeBudget:
         size = commitment_size_bytes(realistic())
         assert size <= COMMITMENT_MAX_BYTES
         # Headroom matters: a longer repo name must not push a miner over.
-        assert size == 88
+        # Format 2 costs 30 fixed bytes where format 1 cost 53, because the
+        # deployment id and its mode byte are gone.
+        assert size == 65
 
-    def test_naive_json_would_not_have_fitted(self) -> None:
-        """The reason the encoding exists at all."""
+    def test_the_encoding_still_earns_its_keep_against_naive_json(self) -> None:
+        """Two fields do fit as JSON, which three did not. That is not the case
+        for keeping the encoding.
+
+        The budget is charged twice: the chain refuses anything over 128 bytes,
+        and the commitments pallet also bills every write against a per-hotkey
+        quota that resets each epoch. A payload 40% smaller buys more
+        corrections on the day a miner needs one, and leaves room for a repo id
+        that JSON would push over.
+        """
         import json
 
         naive = json.dumps(
-            {"chute_id": CHUTE_UUID, "hf_repo": REPO, "hf_revision": REVISION},
+            {"hf_repo": REPO, "hf_revision": REVISION},
             sort_keys=True,
             separators=(",", ":"),
         )
-        assert len(naive.encode()) > COMMITMENT_MAX_BYTES
+        encoded = commitment_size_bytes(realistic())
 
-    def test_repo_of_seventyfive_characters_still_fits(self) -> None:
-        repo = "a" * 37 + "/" + "b" * 37  # 75 characters
-        assert len(repo) == 75
-        commitment = ModelCommitment(hf_repo=repo, hf_revision=REVISION, chute_id=CHUTE_UUID)
+        assert encoded < len(naive.encode())
+        assert encoded < len(naive.encode()) * 0.7
+
+    def test_a_repo_filling_the_whole_budget_still_fits(self) -> None:
+        repo = "a" * 48 + "/" + "b" * 49  # 98 characters, the remaining room
+        assert len(repo) == 98
+        commitment = ModelCommitment(hf_repo=repo, hf_revision=REVISION)
         assert commitment_size_bytes(commitment) == COMMITMENT_MAX_BYTES
 
     def test_oversize_repo_is_rejected_with_the_overshoot_named(self) -> None:
-        repo = "a" * 45 + "/" + "b" * 45
-        commitment = ModelCommitment(hf_repo=repo, hf_revision=REVISION, chute_id=CHUTE_UUID)
+        repo = "a" * 60 + "/" + "b" * 60
+        commitment = ModelCommitment(hf_repo=repo, hf_revision=REVISION)
         with pytest.raises(CommitmentError, match="over the chain's 128-byte limit"):
             encode_commitment(commitment)
-
-    def test_a_literal_chute_id_costs_more_than_a_uuid(self) -> None:
-        compact = commitment_size_bytes(realistic())
-        literal = commitment_size_bytes(
-            ModelCommitment(hf_repo=REPO, hf_revision=REVISION, chute_id="chute-alpha-1")
-        )
-        # 22 fixed characters versus 13 + terminator.
-        assert compact - literal == 8
 
 
 class TestRoundTrip:
     @pytest.mark.parametrize(
-        "chute_id",
-        [
-            CHUTE_UUID,
-            "00000000-0000-0000-0000-000000000000",
-            "ffffffff-ffff-ffff-ffff-ffffffffffff",
-            "chute-alpha-1",
-            "a",
-            "B4E8A2F1-6C3D-4E5A-9B7F-1D2C3E4F5A6B",  # uppercase: stays literal
-        ],
-    )
-    def test_chute_id_survives_a_round_trip(self, chute_id: str) -> None:
-        original = ModelCommitment(hf_repo=REPO, hf_revision=REVISION, chute_id=chute_id)
-        assert decode_commitment(encode_commitment(original)) == original
-
-    @pytest.mark.parametrize(
         "repo",
-        ["gpt2", "org/name", "a.b_c-d/E.F_G-H", "n" * 60, "x" * 37 + "/" + "y" * 37],
+        ["org/name", "single", "a" * 40 + "/" + "b" * 40, "org/name.with.dots", "org/name-1_2"],
     )
     def test_repo_survives_a_round_trip(self, repo: str) -> None:
-        original = ModelCommitment(hf_repo=repo, hf_revision=REVISION, chute_id=CHUTE_UUID)
+        original = ModelCommitment(hf_repo=repo, hf_revision=REVISION)
         assert decode_commitment(encode_commitment(original)).hf_repo == repo
 
     @pytest.mark.parametrize(
@@ -96,7 +86,7 @@ class TestRoundTrip:
         ["0" * 40, "f" * 40, REVISION, "0123456789abcdef" * 2 + "01234567"],
     )
     def test_revision_survives_a_round_trip(self, revision: str) -> None:
-        original = ModelCommitment(hf_repo=REPO, hf_revision=revision, chute_id=CHUTE_UUID)
+        original = ModelCommitment(hf_repo=REPO, hf_revision=revision)
         assert decode_commitment(encode_commitment(original)).hf_revision == revision
 
     def test_encoding_is_canonical(self) -> None:
@@ -125,19 +115,29 @@ class TestConstructionValidation:
     )
     def test_a_moving_reference_is_not_a_commitment(self, revision: str) -> None:
         with pytest.raises(CommitmentError, match="40-character lowercase hex SHA"):
-            ModelCommitment(hf_repo=REPO, hf_revision=revision, chute_id=CHUTE_UUID)
+            ModelCommitment(hf_repo=REPO, hf_revision=revision)
 
     @pytest.mark.parametrize(
         "repo", ["", "-leading-dash", "a/b/c", "org/na me", "org/name:tag", "/name", "org/"]
     )
     def test_malformed_repo_is_rejected(self, repo: str) -> None:
         with pytest.raises(CommitmentError, match="hf_repo"):
-            ModelCommitment(hf_repo=repo, hf_revision=REVISION, chute_id=CHUTE_UUID)
+            ModelCommitment(hf_repo=repo, hf_revision=REVISION)
 
-    @pytest.mark.parametrize("chute_id", ["", "has space", "has:colon", "x" * 65, "sl/ash"])
-    def test_malformed_chute_id_is_rejected(self, chute_id: str) -> None:
-        with pytest.raises(CommitmentError, match="chute_id"):
-            ModelCommitment(hf_repo=REPO, hf_revision=REVISION, chute_id=chute_id)
+
+class TestTheChutesEraFormatIsRefused:
+    """Format 1 named a deployment. Reading its repo anyway would score a model
+    the miner never resubmitted under the rules that now apply."""
+
+    def test_a_format_1_payload_is_refused_by_name(self) -> None:
+        payload = "P21uQMBpgk9CUake768oHr5MVE79PhgfRYn8ey3VWmdZnF-IvhO1QQowner/model"
+        with pytest.raises(CommitmentDecodeError, match="format 1"):
+            decode_commitment(payload)
+
+    def test_the_refusal_says_what_to_do_about_it(self) -> None:
+        payload = "P21uQMBpgk9CUake768oHr5MVE79PhgfRYn8ey3VWmdZnF-IvhO1QQowner/model"
+        with pytest.raises(CommitmentDecodeError, match="re-commit"):
+            decode_commitment(payload)
 
 
 class TestDecodeRejection:
@@ -155,31 +155,14 @@ class TestDecodeRejection:
         with pytest.raises(CommitmentDecodeError, match="upgrade the validator"):
             decode_commitment(future)
 
-    def test_unknown_mode(self) -> None:
-        payload = encode_commitment(realistic())
-        with pytest.raises(CommitmentDecodeError, match="unknown chute_id encoding mode"):
-            decode_commitment(payload[:3] + "z" + payload[4:])
-
     def test_truncated_header(self) -> None:
         with pytest.raises(CommitmentDecodeError, match="truncated"):
             decode_commitment("P21u" + "A" * 10)
 
-    def test_truncated_compact_chute_id(self) -> None:
-        payload = encode_commitment(realistic())
-        with pytest.raises(CommitmentDecodeError, match="truncated"):
-            decode_commitment(payload[:45])
-
-    def test_missing_literal_terminator(self) -> None:
-        payload = encode_commitment(
-            ModelCommitment(hf_repo=REPO, hf_revision=REVISION, chute_id="chute-alpha-1")
-        )
-        with pytest.raises(CommitmentDecodeError, match="not terminated"):
-            decode_commitment(payload.replace(":", "-"))
-
     def test_missing_repo(self) -> None:
         payload = encode_commitment(realistic())
         with pytest.raises(CommitmentDecodeError, match="no hf_repo"):
-            decode_commitment(payload[:53])
+            decode_commitment(payload[:30])
 
     def test_repo_that_would_not_be_fetchable(self) -> None:
         payload = encode_commitment(realistic())
@@ -202,21 +185,15 @@ class TestDecodeRejection:
     def test_non_canonical_base64_padding_bits_are_rejected(self) -> None:
         """The last character of a 20-byte field carries bits that must be zero."""
         payload = encode_commitment(realistic())
-        last = payload[30]
-        # The 27th character holds 4 significant bits and 2 that must be zero.
+        last = payload[29]
+        # The 27th and final character of the revision field holds 4
+        # significant bits and 2 that must be zero.
         # 'B' and 'C' both set one of those two, so each decodes to the same 20
         # bytes while being a second spelling of them.
         alternative = "B" if last != "B" else "C"
-        mutated = payload[:30] + alternative + payload[31:]
+        mutated = payload[:29] + alternative + payload[30:]
         with pytest.raises(CommitmentDecodeError, match="canonically base64url"):
             decode_commitment(mutated)
-
-    def test_literal_mode_may_not_carry_a_compactable_uuid(self) -> None:
-        """Otherwise the same commitment would have two valid payloads."""
-        compact = encode_commitment(realistic())
-        smuggled = compact[:3] + "t" + compact[4:31] + CHUTE_UUID + ":" + REPO
-        with pytest.raises(CommitmentDecodeError, match="must use the compact"):
-            decode_commitment(smuggled)
 
     def test_hex_form_that_is_not_ascii_underneath(self) -> None:
         with pytest.raises(CommitmentDecodeError, match="hex-encoded"):

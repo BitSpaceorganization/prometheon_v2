@@ -7,19 +7,24 @@ a miner sees names the first thing they can fix.
 
     1. a commitment exists and decodes
     2. its revision is a 40-character commit SHA
-    3. the Hugging Face repo passes the manifest and carries the canonical engine
-    3b. the chute is named ``prometheon-<hotkey>`` for the committing hotkey
-    4. the deployed chute source normalises to an accepted wrapper hash
-    5. the repo and revision *declared in that source* equal the commitment
-    6. the chute is hot
-    7. no earlier miner committed the same revision SHA
+    3. the Hugging Face repo passes the manifest: weights, config and tokenizer
+    4. the architecture is one the evaluation image's transformers can load
+    5. the weights fit the size ceiling every validator has to run them on
+    6. no earlier miner committed the same revision SHA
 
-Check 5 is the one to understand. Reading the pinned repo and revision out of
-the deployed source, rather than out of chute metadata, is what stops a miner
-committing an immutable SHA on chain while serving a branch that they can move
-after verification passes. Metadata does not reliably carry the revision at all;
-the source does, and the wrapper hash in check 4 is what makes the source
-trustworthy to read.
+An attack this pipeline no longer has to defend against is worth naming.
+While miners served their own models, a commitment could pin an immutable SHA
+on chain while the deployment served a branch the miner could move after
+verification passed, so the *deployed source* had to be read and hashed to
+catch it. Validators now fetch the checkpoint at the committed SHA themselves.
+There is no deployment to lie about: what is scored is what was committed,
+because the validator is the one that resolved it.
+
+Checks 4 and 5 are the ones to understand now. Both exist because every
+validator must run every eligible model on its own hardware, so a model that
+cannot load, or cannot fit, is not a private mistake by one miner -- it is work
+the whole subnet attempts and fails at simultaneously. Both are answered from
+the Hugging Face API before anything is downloaded.
 
 Check 7 resolves duplicates across *every* well-formed commitment, including the
 ones that failed an earlier check. A copy must not become eligible because the
@@ -33,46 +38,24 @@ in separate groups and flagged neither.
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from enum import Enum
 from typing import Final
 
-from prometheon.canonical.hashes import (
-    ACCEPTED_WRAPPER_HASHES,
-    CHUTE_NAME_PREFIX,
-    IMAGE_USERNAME,
-    accepted_image_ids,
-)
-from prometheon.canonical.integrity import (
-    extract_declared_variables,
-    is_valid_revision,
-    require_valid_revision,
-    wrapper_hash,
-)
 from prometheon.chain.commitment import ModelCommitment
 from prometheon.errors import (
-    ChuteNotRunningError,
     CommitmentDecodeError,
     CommitmentError,
-    CommitmentMismatchError,
     DuplicateModelError,
-    ImageMismatchError,
     ManifestViolationError,
+    ModelTooLargeError,
     RegistryError,
     RevisionFormatError,
-    WrapperHashMismatchError,
-)
-from prometheon.registry.chutes import (
-    MODERATE_PATH,
-    ChuteInfo,
-    ChutesClient,
-    require_valid_chute_id,
 )
 from prometheon.registry.huggingface import HuggingFaceClient, require_valid_repo_id
-
-_DECLARED_REPO: Final[str] = "PROMETHEON_HF_REPO"
-_DECLARED_REVISION: Final[str] = "PROMETHEON_HF_REVISION"
+from prometheon.registry.loadability import ArchitectureUnsupportedError, require_loadable
+from prometheon.revision import is_valid_revision, require_valid_revision
 
 
 class InvalidReason(str, Enum):
@@ -87,13 +70,13 @@ class InvalidReason(str, Enum):
     COMMITMENT_MALFORMED = CommitmentDecodeError.code
     REVISION_NOT_SHA = RevisionFormatError.code
     MANIFEST_VIOLATION = ManifestViolationError.code
-    IMAGE_MISMATCH = ImageMismatchError.code
-    WRAPPER_HASH_MISMATCH = WrapperHashMismatchError.code
-    COMMITMENT_MISMATCH = CommitmentMismatchError.code
-    CHUTE_NOT_RUNNING = ChuteNotRunningError.code
+    #: The architecture is one the evaluation runtime cannot load at all.
+    ARCHITECTURE_UNSUPPORTED = ArchitectureUnsupportedError.code
+    #: The weights exceed what every validator is expected to be able to run.
+    MODEL_TOO_LARGE = ModelTooLargeError.code
     DUPLICATE_MODEL = DuplicateModelError.code
-    #: Hugging Face or Chutes could not be reached. Not the miner's fault, but
-    #: an unverifiable model is still not a scorable one.
+    #: Hugging Face could not be reached. Not the miner's fault, but an
+    #: unverifiable model is still not a scorable one.
     UPSTREAM_UNAVAILABLE = RegistryError.code
 
 
@@ -148,25 +131,11 @@ class MinerValidation:
     detail: str
     hf_repo: str
     hf_revision: str
-    chute_id: str
     commit_block: int
-    chute_slug: str
-    endpoint_url: str
-    wrapper_digest: str
-
-    @property
-    def moderate_url(self) -> str:
-        """Where evaluation sends batches. Empty unless the miner is eligible.
-
-        The gate is ``valid``. Gating on whether an endpoint was discovered was
-        wrong: check 7 runs *after* the reachability check, so a duplicate came
-        back ``valid=False`` carrying a live, addressable URL, and this
-        docstring's promise was false for exactly the verdict that most needs
-        it. Scoring a copy is what check 7 exists to prevent.
-        """
-        if not self.valid or not self.endpoint_url:
-            return ""
-        return f"{self.endpoint_url}{MODERATE_PATH}"
+    #: What the checkpoint declares itself to be, once check 4 has read it.
+    model_type: str = ""
+    #: Total weight bytes, as the API reported them for check 5.
+    weight_bytes: int = 0
 
 
 def _outcome(
@@ -175,9 +144,8 @@ def _outcome(
     *,
     reason: InvalidReason | None,
     detail: str,
-    chute_slug: str = "",
-    endpoint_url: str = "",
-    wrapper_digest: str = "",
+    model_type: str = "",
+    weight_bytes: int = 0,
 ) -> MinerValidation:
     return MinerValidation(
         uid=entry.uid,
@@ -187,66 +155,10 @@ def _outcome(
         detail=detail,
         hf_repo=commitment.hf_repo if commitment is not None else "",
         hf_revision=commitment.hf_revision if commitment is not None else "",
-        chute_id=commitment.chute_id if commitment is not None else "",
         commit_block=entry.commit_block,
-        chute_slug=chute_slug,
-        endpoint_url=endpoint_url,
-        wrapper_digest=wrapper_digest,
+        model_type=model_type,
+        weight_bytes=weight_bytes,
     )
-
-
-def _hash_hostile_source(source: str) -> str:
-    """``wrapper_hash`` with every failure a hostile string can cause contained.
-
-    The source being hashed is fetched from a miner's own deployment, so it is
-    attacker-controlled and must be treated as such. ``normalise_source`` walks
-    the parse tree with ``ast.dump``, which recurses. A *perfectly valid* deeply
-    nested expression (``x = 1+1+1+...``, 40 KB, far under the source size cap)
-    parses fine and then blows the C stack.
-
-    ``RecursionError`` is a ``RuntimeError``, not a ``RegistryError``, so it
-    escaped the caller's handler, escaped ``validate()``, and aborted
-    eligibility for **every miner in the cycle**. One miner could stop the whole
-    subnet's daily scoring at no cost to themselves; they are ineligible either
-    way.
-
-    ``ValueError`` matters too: on Python 3.10 and 3.11, which this package
-    supports, ``ast.parse`` on source containing a NUL byte raises ``ValueError``
-    rather than ``SyntaxError``, so it slipped past the same handler.
-
-    Anything that cannot be hashed is not the canonical wrapper, so all of these
-    map to the same verdict.
-    """
-    try:
-        return wrapper_hash(source)
-    except RegistryError:
-        raise
-    except RecursionError as exc:
-        raise WrapperHashMismatchError(
-            "deployed source could not be normalised: it nests too deeply to "
-            f"parse safely ({exc}). The canonical wrapper does not"
-        ) from exc
-    except Exception as exc:
-        raise WrapperHashMismatchError(
-            f"deployed source could not be normalised: {type(exc).__name__}: {exc}"
-        ) from exc
-
-
-def _extract_hostile_source(source: str) -> Mapping[str, str]:
-    """``extract_declared_variables`` with the same containment.
-
-    Reached only for source that already hashed to an accepted wrapper, so a
-    failure here is close to impossible. But it walks the same attacker-supplied
-    tree, and "close to impossible" is not a reason to let it abort the cycle.
-    """
-    try:
-        return extract_declared_variables(source)
-    except RegistryError:
-        raise
-    except Exception as exc:
-        raise WrapperHashMismatchError(
-            f"deployed source could not be read for its variables: {type(exc).__name__}: {exc}"
-        ) from exc
 
 
 def _duplicate_losers(entries: Sequence[MinerEntry]) -> dict[int, MinerEntry]:
@@ -258,7 +170,7 @@ def _duplicate_losers(entries: Sequence[MinerEntry]) -> dict[int, MinerEntry]:
 
     A Hugging Face model repo is a git repo. ``git clone --mirror`` followed by
     a push into another namespace preserves every commit SHA byte for byte, so
-    a copycat can commit ``(copycat/guard, <the original's SHA>, own_chute)``
+    a copycat can commit ``(copycat/guard, <the original's SHA>)``
     and pass checks 1-6 honestly: the file manifest matches, the engine hash
     matches, and the deployed wrapper truthfully declares the copycat's own
     repo. Only the repo string differs, so keying on it put the original and
@@ -270,8 +182,8 @@ def _duplicate_losers(entries: Sequence[MinerEntry]) -> dict[int, MinerEntry]:
     something that happens by accident, so this has no realistic false positive.
 
     **Known hazard: priority is the block of the *current* commitment, and the
-    chain resets that on every re-commit.** A miner who redeploys their chute
-    and re-commits the same revision under a new ``chute_id`` gets a fresh,
+    chain resets that on every re-commit.** A miner who re-commits the same
+    revision after republishing gets a fresh,
     higher block, so a copycat who mirrored them in the meantime now sorts
     first and takes the claim.
 
@@ -314,11 +226,17 @@ def _duplicate_losers(entries: Sequence[MinerEntry]) -> dict[int, MinerEntry]:
 
 
 class ModelRegistry:
-    """Runs the eligibility pipeline against live Hugging Face and Chutes state."""
+    """Runs the eligibility pipeline against live Hugging Face state.
 
-    def __init__(self, *, huggingface: HuggingFaceClient, chutes: ChutesClient) -> None:
+    ``max_weight_bytes`` is the ceiling from ``[evaluation]``. It is a
+    constructor argument rather than a module constant because it describes the
+    hardware validators agreed to run, which is a subnet policy decision and
+    lives in config with the others that move emissions.
+    """
+
+    def __init__(self, *, huggingface: HuggingFaceClient, max_weight_bytes: int = 0) -> None:
         self._huggingface = huggingface
-        self._chutes = chutes
+        self._max_weight_bytes = max_weight_bytes
 
     def validate(self, entries: Sequence[MinerEntry]) -> list[MinerValidation]:
         """Verdicts for every entry, in the order given."""
@@ -357,7 +275,6 @@ class ModelRegistry:
             )
         try:
             require_valid_repo_id(commitment.hf_repo)
-            require_valid_chute_id(commitment.chute_id)
         except RegistryError as exc:
             return _outcome(
                 entry,
@@ -389,136 +306,59 @@ class ModelRegistry:
                 entry, commitment, reason=InvalidReason.UPSTREAM_UNAVAILABLE, detail=str(exc)
             )
 
+        # 4 -- the evaluation runtime can load this architecture at all.
+        #
+        # Answered from `config.json`, before anything is downloaded. An
+        # architecture the pinned transformers does not know is not a slow
+        # model or a bad model: it is one that raises at load, on every
+        # validator, every day, until the miner commits something else.
         try:
-            info = self._chutes.fetch_chute(commitment.chute_id)
-            source = self._chutes.deployed_source(info)
+            model_type = require_loadable(
+                self._huggingface, commitment.hf_repo, commitment.hf_revision
+            )
+        except ArchitectureUnsupportedError as exc:
+            return _outcome(
+                entry,
+                commitment,
+                reason=InvalidReason.ARCHITECTURE_UNSUPPORTED,
+                detail=str(exc),
+            )
         except RegistryError as exc:
             return _outcome(
                 entry, commitment, reason=InvalidReason.UPSTREAM_UNAVAILABLE, detail=str(exc)
             )
 
-        # 3b -- the chute is *this* miner's, by name.
+        # 5 -- the weights fit the hardware every validator is expected to have.
         #
-        # The canonical name is `prometheon-<hotkey>`, and the platform reports
-        # it exactly. This is what binds a deployment to the hotkey that
-        # committed it, and it replaces the old rule that the *slug* had to
-        # start with the namespace prefix. The slug cannot carry that binding:
-        # Chutes derives it from the deploying account, so a real mainnet
-        # deployment is `<account>-prometheon-<hotkey>`, and the extra label
-        # pushes it past the 63-character DNS limit, truncating the hotkey. A
-        # rule strict enough to reject `<attacker>-prometheon-x` also rejected
-        # every genuine mainnet slug, so no miner could ever be scored.
-        #
-        # Matching the name instead is strictly stronger than what it replaces:
-        # the old check proved only that a slug began with `prometheon-`, for
-        # any hotkey, truncated. This pins the exact committing hotkey.
-        expected_name = f"{CHUTE_NAME_PREFIX}{entry.hotkey}"
-        if info.name != expected_name:
-            return _outcome(
-                entry,
-                commitment,
-                reason=InvalidReason.COMMITMENT_MISMATCH,
-                detail=(
-                    f"chute {info.chute_id} is named {info.name!r}, but a deployment for "
-                    f"hotkey {entry.hotkey} must be named {expected_name!r}"
-                ),
-                chute_slug=info.slug,
-            )
-
-        # 4 -- the deployed source is the canonical wrapper.
+        # Also answered from the API rather than by downloading. A model over
+        # the ceiling is not one validator's problem: every validator on the
+        # subnet would pull it and fail to fit it, at the same time, having
+        # already paid for the bandwidth.
         try:
-            digest = _hash_hostile_source(source)
+            weight_bytes = self._huggingface.weight_bytes(
+                commitment.hf_repo, commitment.hf_revision
+            )
         except RegistryError as exc:
             return _outcome(
                 entry,
                 commitment,
-                reason=InvalidReason.WRAPPER_HASH_MISMATCH,
-                detail=f"deployed source is not parseable Python: {exc}",
-                chute_slug=info.slug,
-            )
-        if digest not in ACCEPTED_WRAPPER_HASHES:
-            return _outcome(
-                entry,
-                commitment,
-                reason=InvalidReason.WRAPPER_HASH_MISMATCH,
-                detail=(
-                    f"deployed source of chute {info.chute_id} normalises to {digest}, "
-                    "which is not an accepted wrapper hash"
-                ),
-                chute_slug=info.slug,
-                wrapper_digest=digest,
-            )
-
-        # 5 -- what is deployed is what was committed, read from the source.
-        try:
-            declared = _extract_hostile_source(source)
-        except RegistryError as exc:
-            return _outcome(
-                entry,
-                commitment,
-                reason=InvalidReason.WRAPPER_HASH_MISMATCH,
-                detail=f"deployed source could not be read for its variables: {exc}",
-                chute_slug=info.slug,
-                wrapper_digest=digest,
-            )
-        mismatch = self._commitment_mismatch(commitment, declared)
-        if mismatch is not None:
-            return _outcome(
-                entry,
-                commitment,
-                reason=InvalidReason.COMMITMENT_MISMATCH,
-                detail=mismatch,
-                chute_slug=info.slug,
-                wrapper_digest=digest,
-            )
-
-        # 6 -- the deployment runs the image the subnet published.
-        #
-        # The one thing about a runtime a validator can check. Everything above
-        # proves which *bytes* are deployed; this is what makes them run
-        # somewhere the miner did not assemble. The API exposes an image's
-        # identity and never its contents, so an id from an account other than
-        # the subnet's is not the subnet's image whatever it is called.
-        accepted = accepted_image_ids()
-        if not accepted:
-            return _outcome(
-                entry,
-                commitment,
-                reason=InvalidReason.IMAGE_MISMATCH,
-                detail=(
-                    "no subnet image is configured, so no deployment can be verified to "
-                    "run one. Refusing every model rather than accepting an image nobody "
-                    "chose: the Chutes API exposes no image contents, so an unverified "
-                    "image is an unknown runtime"
-                ),
-                chute_slug=info.slug,
-                wrapper_digest=digest,
-            )
-        if info.image_id not in accepted or info.image_username != IMAGE_USERNAME:
-            return _outcome(
-                entry,
-                commitment,
-                reason=InvalidReason.IMAGE_MISMATCH,
-                detail=(
-                    f"chute {info.chute_id} runs image {info.image_id or '(none reported)'} "
-                    f"owned by {info.image_username or '(unknown)'}; this subnet scores only "
-                    f"deployments running an image published by {IMAGE_USERNAME}"
-                ),
-                chute_slug=info.slug,
-                wrapper_digest=digest,
-            )
-
-        # 7 -- the deployment can actually answer.
-        try:
-            endpoint = self._reachable_endpoint(info)
-        except ChuteNotRunningError as exc:
-            return _outcome(
-                entry,
-                commitment,
-                reason=InvalidReason.CHUTE_NOT_RUNNING,
+                reason=InvalidReason.UPSTREAM_UNAVAILABLE,
                 detail=str(exc),
-                chute_slug=info.slug,
-                wrapper_digest=digest,
+                model_type=model_type or "",
+            )
+        if self._max_weight_bytes and weight_bytes > self._max_weight_bytes:
+            return _outcome(
+                entry,
+                commitment,
+                reason=InvalidReason.MODEL_TOO_LARGE,
+                detail=(
+                    f"{commitment.hf_repo}@{commitment.hf_revision} carries "
+                    f"{weight_bytes / 1024**3:.1f} GiB of weights, over the "
+                    f"{self._max_weight_bytes / 1024**3:.1f} GiB ceiling every validator "
+                    "must be able to load"
+                ),
+                model_type=model_type or "",
+                weight_bytes=weight_bytes,
             )
 
         # 8 -- an earlier commitment of the same model wins.
@@ -531,9 +371,8 @@ class ModelRegistry:
                     f"{commitment.hf_repo}@{commitment.hf_revision} was committed first by "
                     f"uid {duplicate_of.uid} ({duplicate_of.hotkey})"
                 ),
-                chute_slug=info.slug,
-                endpoint_url=endpoint,
-                wrapper_digest=digest,
+                model_type=model_type or "",
+                weight_bytes=weight_bytes,
             )
 
         return _outcome(
@@ -541,9 +380,8 @@ class ModelRegistry:
             commitment,
             reason=None,
             detail="verified",
-            chute_slug=info.slug,
-            endpoint_url=endpoint,
-            wrapper_digest=digest,
+            model_type=model_type or "",
+            weight_bytes=weight_bytes,
         )
 
     # -- steps ------------------------------------------------------------
@@ -566,36 +404,6 @@ class ModelRegistry:
             repo_verdicts[key] = exc
             raise
         repo_verdicts[key] = None
-
-    def _commitment_mismatch(
-        self, commitment: ModelCommitment, declared: Mapping[str, str]
-    ) -> str | None:
-        """The first disagreement between the deployed source and the chain."""
-        deployed_repo = declared.get(_DECLARED_REPO, "")
-        deployed_revision = declared.get(_DECLARED_REVISION, "")
-        if deployed_repo != commitment.hf_repo:
-            return (
-                f"deployed wrapper serves repo {deployed_repo!r}, "
-                f"the chain commits {commitment.hf_repo!r}"
-            )
-        if deployed_revision != commitment.hf_revision:
-            return (
-                f"deployed wrapper serves revision {deployed_revision!r}, "
-                f"the chain commits {commitment.hf_revision!r}"
-            )
-        return None
-
-    def _reachable_endpoint(self, info: ChuteInfo) -> str:
-        if not info.hot:
-            raise ChuteNotRunningError(
-                f"chute {info.chute_id} ({info.slug}) is not hot, so it cannot serve /moderate"
-            )
-        try:
-            return self._chutes.endpoint_url(info.slug)
-        except RegistryError as exc:
-            # A chute we cannot address is a chute that cannot be evaluated,
-            # which is the same outcome for the miner as one that is not hot.
-            raise ChuteNotRunningError(str(exc)) from exc
 
 
 def eligible_miners(results: Iterable[MinerValidation]) -> list[MinerValidation]:
