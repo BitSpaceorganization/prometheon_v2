@@ -66,6 +66,31 @@ class TestTheShippedConfigsLoad:
         missing = [name for name in ScoringConfig.model_fields if name not in text]
         assert not missing, f"{path.name} does not mention {missing}"
 
+    @pytest.mark.parametrize("path", _configs(), ids=lambda p: p.name)
+    def test_the_labelling_temperature_suits_the_model_it_ships_with(self, path: Path) -> None:
+        """A shipped config must survive its own first cycle.
+
+        The blocker: the examples named a gpt-5 reasoning model and left
+        `temperature` unset, so it defaulted to 0 -- which that line rejects
+        outright::
+
+            Unsupported value: 'temperature' does not support 0 with this
+            model. Only the default (1) value is supported.
+
+        Every validator copying the example therefore died at labelling, hours
+        into a cycle and after paying for the snapshot. `temperature = 0` is
+        still the right default for a model that accepts it, because it is what
+        stops ground truth wandering between validators; it just cannot be the
+        shipped one here.
+        """
+        labelling = load_config(path).labelling
+        if not labelling.model.startswith("gpt-5"):
+            return
+        assert labelling.temperature != 0, (
+            f"{path.name} pairs model={labelling.model!r} with temperature=0, "
+            "which that model rejects with HTTP 400"
+        )
+
 
 class TestTheShippedPolicyIsUsable:
     def test_it_exists(self) -> None:

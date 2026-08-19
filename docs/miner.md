@@ -129,8 +129,26 @@ The wrapper pins two things you do not choose:
 Deploy from your own Chutes account — you own the chute and pay for its GPU hours:
 
 ```bash
-chutes deploy wrapper.py --accept-fee
+# `chutes deploy` imports the script to find the chute object, so the machine
+# you deploy from needs the wrapper's own dependencies, and the import pulls
+# your weights down first. Budget the disk and the wait.
+uv sync --extra wrapper
+
+# Name the file `miner.py`: the argument is a module path, so a name with a
+# hyphen in it cannot be imported.
+cp wrapper.py miner.py
+chutes deploy miner:chute --accept-fee
 ```
+
+Three things about that command surprise people:
+
+- **It is `module:variable`, not a filename.** `chutes deploy wrapper.py` does
+  not work.
+- **It downloads the whole model to the deploying machine.** The wrapper calls
+  `snapshot_download` at import, so a 14B model means ~28GB and several minutes
+  before anything is uploaded. It is cached, so a retry is fast.
+- **It asks for confirmation.** Piping `y` keeps it scriptable:
+  `printf 'y\n' | chutes deploy miner:chute --accept-fee`.
 
 **Your Chutes account must be authorised on netuid 108 before this works.** The
 `prometheon` namespace is reserved, and a deploy into it from an unauthorised

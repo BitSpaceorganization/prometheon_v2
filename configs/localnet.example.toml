@@ -25,6 +25,11 @@ max_retries = 0
 model = "gpt-5.6-sol"
 base_url = "http://127.0.0.1:8601/v1"
 api_key_env = "OPENAI_API_KEY"
+# The gpt-5 reasoning line accepts only its own default of 1 and rejects an
+# explicit 0 with HTTP 400, so a config that leaves this unset fails every
+# cycle at labelling. Set 0 only if you switch `model` to one that allows it:
+# 0 is what keeps ground truth from wandering between validators.
+temperature = 1.0
 batch_size = 10
 
 [evaluation]
@@ -56,3 +61,5 @@ submit_results = false
 chutes_user = ""
 chute_id = ""
 hf_repo = ""
+# The 40-character commit SHA, not a branch.
+hf_revision = ""
