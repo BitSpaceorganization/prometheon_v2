@@ -158,6 +158,12 @@ def evaluate_miner(
     return builder.build()
 
 
-def build_engine(model_path: str, *, dtype: str, device: str) -> Any:
-    """An engine for one checkpoint, with numerics pinned from config."""
-    return ModerationEngine(model_path, dtype=dtype, device=device)
+def build_engine(model_path: str, *, dtype: str, device: str, revision: str | None = None) -> Any:
+    """An engine for one checkpoint, with numerics pinned from config.
+
+    ``revision`` is threaded through even though ``model_path`` is a snapshot
+    already resolved at that commit: an unpinned load is only safe because of
+    something that happened earlier, and a pin that is visible at the call site
+    stays correct if that stops being true.
+    """
+    return ModerationEngine(model_path, dtype=dtype, device=device, revision=revision)
