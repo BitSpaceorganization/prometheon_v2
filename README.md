@@ -18,7 +18,7 @@ Miners compete to build the best moderation model, and they supply the data it i
 2. **The subnet collects a day of content**: that test content, plus a sample of real production content.
 3. **Validators label it** against [`content_policy.md`](./content_policy.md), producing the day's ground truth.
 4. **Miners publish a moderation model** to Hugging Face, committing `(hf_repo, revision_sha)` on chain. Nothing is deployed and nothing is served: weights are the whole submission.
-5. **Validators run every model** over the labelled corpus and set one weight vector.
+5. **Validators run every model themselves**, on their own GPUs, over the labelled corpus, and set one weight vector.
 
 Two things are rewarded, in equal measure: **contributing usable evaluation data**, and **building the model that judges it best**.
 
@@ -103,6 +103,11 @@ Your Hugging Face repository holds **weights, config and tokenizer — no execut
 ---
 
 ## Validators
+
+**Validating requires GPUs: 8 × RTX 5090 (256 GB total) or better.** Every
+eligible model is downloaded and run over the whole corpus daily, so this is the
+cost of validating rather than a suggestion. See [`docs/validator.md`](./docs/validator.md#hardware).
+
 
 A validator runs **one cycle per day**, starting at 04:00 UTC against the previous day's data.
 
