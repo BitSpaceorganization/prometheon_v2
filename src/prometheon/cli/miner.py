@@ -146,10 +146,11 @@ def cmd_verify(args: argparse.Namespace) -> int:
                 ("hotkey", result.hotkey),
                 ("hf_repo", result.hf_repo),
                 ("hf_revision", result.hf_revision),
-                ("model_type", result.model_type),
-                ("weight_bytes", str(result.weight_bytes)),
-                ("wrapper", result.wrapper_digest or "-"),
-                ("endpoint", result.moderate_url or "-"),
+                ("model_type", result.model_type or "-"),
+                (
+                    "weights",
+                    f"{result.weight_bytes / 1024**3:.1f} GiB" if result.weight_bytes else "-",
+                ),
                 ("eligible", "yes" if result.valid else "no"),
             ]
         )
