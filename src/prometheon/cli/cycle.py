@@ -211,6 +211,7 @@ def run_cycle(
                     model_path,
                     dtype=config.evaluation.torch_dtype,
                     device=config.evaluation.device,
+                    revision=result.hf_revision,
                 ),
                 target=target,
                 # Self-exclusion: a miner is never scored on content its own

@@ -131,8 +131,22 @@ class ModerationEngine:
     attributable to the model rather than to constructing an object.
     """
 
-    def __init__(self, model_path: str, *, dtype: str = "float16", device: str = "auto") -> None:
+    def __init__(
+        self,
+        model_path: str,
+        *,
+        dtype: str = "float16",
+        device: str = "auto",
+        revision: str | None = None,
+    ) -> None:
         self._model_path = model_path
+        #: The commit the checkpoint was resolved at, passed through to
+        #: `from_pretrained` even though ``model_path`` is normally a local
+        #: snapshot that has already been pinned. Defence in depth: if a caller
+        #: ever hands this a repo id instead of a path, an unpinned load would
+        #: silently fetch whatever the branch points at today, which is the one
+        #: thing the commitment exists to prevent.
+        self._revision = revision
         self._dtype_name = dtype
         self._device_name = device
         self._model: Any = None
@@ -146,11 +160,16 @@ class ModerationEngine:
         dtype = resolve_dtype(self._dtype_name)
         device = resolve_device(self._device_name)
 
-        self._tokenizer = AutoTokenizer.from_pretrained(self._model_path)
+        # `revision` is passed explicitly rather than conditionally, so the pin
+        # is visible both to a reader and to static analysis. `None` is the
+        # library default and is correct for the usual case, where model_path is
+        # a local snapshot already resolved at the committed commit.
+        self._tokenizer = AutoTokenizer.from_pretrained(self._model_path, revision=self._revision)
         self._model = AutoModelForCausalLM.from_pretrained(
             self._model_path,
             torch_dtype=dtype,
             device_map=device if device != "cpu" else None,
+            revision=self._revision,
         )
         if device == "cpu":
             self._model = self._model.to("cpu")

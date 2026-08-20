@@ -118,6 +118,14 @@ module = [
     "bittensor_wallet.*",
     "substrateinterface.*",
     "tomli",
+    # The evaluation runtime, installed only by the `wrapper` extra. They are
+    # imported inside functions so the CLI works without a torch build, and
+    # `mypy src/prometheon` runs in an environment that deliberately does not
+    # have them.
+    "torch",
+    "transformers",
+    "transformers.*",
+    "huggingface_hub",
 ]
 ignore_missing_imports = true
 # Not followed into. Two reasons, and the bare module name is listed alongside

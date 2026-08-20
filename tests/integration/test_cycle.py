@@ -276,7 +276,7 @@ def _install_engines(
     def fake_download(target: Any, **_kwargs: Any) -> str:
         return f"/fake/{target.hotkey}"
 
-    def fake_build(model_path: str, *, dtype: str, device: str) -> _FakeEngine:
+    def fake_build(model_path: str, **_kwargs: Any) -> _FakeEngine:
         hotkey = model_path.rsplit("/", 1)[-1]
         engine = _FakeEngine(accuracy.get(hotkey, 1.0))
         built[hotkey] = engine
@@ -628,7 +628,7 @@ def test_a_model_that_cannot_be_run_does_not_stop_the_cycle(
         def load(self) -> None:
             raise RuntimeError("CUDA out of memory")
 
-    def fake_build(model_path: str, *, dtype: str, device: str) -> _FakeEngine:
+    def fake_build(model_path: str, **_kwargs: Any) -> _FakeEngine:
         hotkey = model_path.rsplit("/", 1)[-1]
         if hotkey == MINER_B.ss58_address:
             return _BrokenEngine(1.0)
