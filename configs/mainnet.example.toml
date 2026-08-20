@@ -50,6 +50,9 @@ max_weight_bytes = 25769803776
 # different mass on YES and NO, so a near-tie can flip between two validators
 # that differ only in a default.
 torch_dtype = "float16"
+# "auto" takes CUDA when present and falls back to CPU, which is fine for a dry
+# run and unusable for a real cycle. Validating needs 8 x RTX 5090 or better:
+# every eligible model is downloaded and run over the whole corpus, daily.
 device = "auto"
 model_timeout_seconds = 3600.0
 

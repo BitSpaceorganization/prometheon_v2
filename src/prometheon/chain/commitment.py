@@ -6,7 +6,7 @@ revision SHA. Freezing them on chain is what makes the day's evaluation
 reproducible by anyone: a third party reads the commitment, fetches that
 revision, and recomputes.
 
-**Format 2 carries no deployment id.** Format 1 named a Chutes chute, because
+**Format 2 carries no deployment id.** Format 1 named a hosted deployment, because
 the miner served the model and validators called it. Validators now download
 the weights and run them, so there is nothing to address and nothing to prove
 about a deployment -- the repo and the revision are the whole submission. A
@@ -69,9 +69,9 @@ COMMITMENT_MAX_BYTES: Final[int] = 128
 _MAGIC: Final[str] = "P2"
 _FORMAT_VERSION: Final[str] = "2"
 
-#: Format 1 named a Chutes deployment. Kept only so its payloads can be
-#: refused by name rather than as "unreadable".
-_CHUTES_ERA_VERSION: Final[str] = "1"
+#: Format 1 carried a third field naming a hosted deployment. Kept only so its
+#: payloads can be refused for what they are rather than as "unreadable".
+_LEGACY_VERSION: Final[str] = "1"
 
 _HEADER_CHARS: Final[int] = 3
 _REVISION_CHARS: Final[int] = 27
@@ -154,9 +154,9 @@ def decode_commitment(payload: str | bytes) -> ModelCommitment:
         )
 
     version = text[2]
-    if version == _CHUTES_ERA_VERSION:
+    if version == _LEGACY_VERSION:
         raise CommitmentDecodeError(
-            "this is a format 1 commitment, which named a Chutes deployment. Models are "
+            "this is a format 1 commitment, which named a hosted deployment. Models are "
             "now downloaded and run by validators, so there is no deployment to score: "
             "re-commit with `prometheon model commit` to publish a format 2 payload"
         )

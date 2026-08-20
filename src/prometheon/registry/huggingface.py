@@ -85,7 +85,7 @@ def require_valid_repo_id(repo: str) -> str:
 #: **Weights, config and tokenizer. No executable code of any kind.** The engine
 #: used to be published here as `miner.py` and hash-checked at load time, which
 #: made this list a security boundary: it had to enumerate the ways code could
-#: hide, and `chute_config.yml` — a permitted file whose *contents* nothing
+#: hide, and `deploy_config.yml` — a permitted file whose *contents* nothing
 #: checked — turned out to be one of them.
 #:
 #: The engine is in the deploy script now, inside the region validators hash. So

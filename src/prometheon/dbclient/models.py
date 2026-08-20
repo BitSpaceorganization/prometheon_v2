@@ -192,7 +192,7 @@ class ModelCommitment(_Strict):
     validators evaluate the *same* set: a commitment written at 03:59 must not
     change what one validator scores and another does not.
 
-    **``chute_id`` is gone, and its absence is enforced.** Responses are
+    **The deployment id is gone, and its absence is enforced.** Responses are
     validated with ``extra="forbid"``, so a DB layer still sending it makes the
     snapshot unparseable rather than being quietly ignored. That is deliberate:
     the field named a deployment validators no longer call, and a snapshot

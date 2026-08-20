@@ -6,11 +6,39 @@ You pay for two things: ground-truth labelling (an OpenAI-compatible key) and
 **the GPU that runs every miner's model**. Miners publish weights and pay for
 nothing at evaluation time.
 
-**You need a GPU.** Validators download each eligible model and run it locally,
-so a card with at least 32 GB is the floor — models are capped at 24 GiB of
-weights, and the rest is headroom for KV cache and activations. A cycle loads
-each model in turn and frees it before the next, so it is one model at a time,
-not all of them at once.
+## Hardware
+
+**Validating requires GPUs, and the floor is 8 × RTX 5090 (32 GB each, 256 GB
+total) or better.** This is not a recommendation. Validators download every
+eligible model and run it over the whole corpus, every day, and a machine that
+cannot finish scores the field on whatever it completed — which pays miners for
+the validator's hardware rather than for their models.
+
+Where the numbers come from:
+
+- **32 GB per card** is what a submitted model needs. Weights are capped at
+  24 GiB, and the remainder is KV cache and activations. One model fits one
+  card, which is what makes the cap meaningful.
+- **Eight cards** is what a *field* needs. The corpus is thousands of items and
+  every eligible model is run over all of it. One card is enough to evaluate one
+  model, not to get through a day.
+
+Fewer cards does not fail loudly. It runs, takes longer, and starts hitting
+`model_timeout_seconds` — at which point models are scored on the fraction they
+completed and the rest counts against them. A validator that is quietly too slow
+still submits weights, and those weights are wrong.
+
+**A known limit, stated plainly: the runtime evaluates models one at a time on
+one device.** `device` selects where (`auto`, `cuda:0`, `cpu`); it does not yet
+shard one model across cards or run several models in parallel. Eight cards is
+therefore headroom for a growing field and for the throughput the day requires,
+not something this version already exploits. Using it properly is future work,
+and the requirement is set for where the subnet is going rather than where the
+code is today.
+
+**CPU is not a fallback for a real cycle.** `device = "auto"` resolves to CPU
+when no CUDA device is present, which keeps a dry run possible on a laptop and
+is unusably slow for anything else.
 
 ---
 
@@ -226,5 +254,11 @@ Batching at 100 items amortises it; the default is already 100.
 
 Evaluation costs GPU time rather than API calls, and it is now **your** GPU
 time: each eligible model is downloaded once, cached by revision, loaded, run
-over the corpus, then freed before the next. That is the trade the design
-makes — miners pay nothing to be evaluated, and validating requires hardware.
+over the corpus, then freed before the next.
+
+That is the trade this design makes, and it is worth being explicit about who
+pays what. Miners pay nothing to be evaluated — no serving, no endpoint, no GPU
+bill between cycles. Validating carries the whole inference cost instead, which
+is why the hardware floor above is a requirement rather than advice. Bandwidth
+is the smaller half: models are capped at 24 GiB and cached by revision, so a
+field that does not re-commit costs one download each.

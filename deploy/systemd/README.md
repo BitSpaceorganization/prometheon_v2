@@ -1,5 +1,10 @@
 # systemd units for a validator
 
+**These assume a GPU host: 8 × RTX 5090 (256 GB) or better.** A cycle downloads
+and runs every eligible model, so a box without CUDA will run to completion and
+score the whole field on timeouts.
+
+
 Two timers, and you need both. The cycle scores a day; the re-post keeps that
 score counting until the next one.
 

@@ -236,7 +236,7 @@ def test_the_manifest_admits_model_files_and_nothing_executable() -> None:
 
     The engine used to be published here and hash-checked, which made this list
     a security boundary: it had to enumerate the ways code could hide, and
-    `chute_config.yml` — permitted by name, unchecked in content, applied to the
+    `deploy_config.yml` — permitted by name, unchecked in content, applied to the
     image builder — turned out to be one of them. With the engine in the deploy
     script the list becomes a description instead of a defence.
     """
@@ -245,7 +245,7 @@ def test_the_manifest_admits_model_files_and_nothing_executable() -> None:
     assert file_allowed("model-00001-of-00003.safetensors")
     assert file_allowed("tokenizer_config.json")
 
-    for smuggled in ("miner.py", "chute_config.yml", "setup.py", "run.sh", "__init__.py"):
+    for smuggled in ("miner.py", "deploy_config.yml", "setup.py", "run.sh", "__init__.py"):
         assert not file_allowed(smuggled), smuggled
 
 

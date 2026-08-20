@@ -20,7 +20,6 @@ from prometheon.errors import CommitmentDecodeError, CommitmentError
 pytestmark = pytest.mark.unit
 
 REVISION = "a0243b47c1f9e8d2b6045a7c3e1f8b9d0c2a4e6f"
-CHUTE_UUID = "b4e8a2f1-6c3d-4e5a-9b7f-1d2c3e4f5a6b"
 REPO = "prometheon-labs/moderation-guard-8b"
 
 
@@ -125,9 +124,9 @@ class TestConstructionValidation:
             ModelCommitment(hf_repo=repo, hf_revision=REVISION)
 
 
-class TestTheChutesEraFormatIsRefused:
-    """Format 1 named a deployment. Reading its repo anyway would score a model
-    the miner never resubmitted under the rules that now apply."""
+class TestTheLegacyFormatIsRefused:
+    """Format 1 named a hosted deployment. Reading its repo anyway would score a
+    model the miner never resubmitted under the rules that now apply."""
 
     def test_a_format_1_payload_is_refused_by_name(self) -> None:
         payload = "P21uQMBpgk9CUake768oHr5MVE79PhgfRYn8ey3VWmdZnF-IvhO1QQowner/model"
