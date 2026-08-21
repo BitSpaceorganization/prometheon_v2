@@ -82,7 +82,7 @@ dry_run = false
 submit_results = true
 
 [miner]
-# Miners only. Filled in by `prometheon model render`.
+# Miners only. The values `prometheon model commit` writes on chain.
 hf_repo = ""
 # The 40-character commit SHA, not a branch.
 hf_revision = ""

@@ -1,10 +1,10 @@
-"""Miner commands: render the wrapper, commit it, and check it before a cycle does.
+"""Miner commands: commit a model, and check it before a cycle does.
 
-The three exist as separate steps because they fail for different reasons and at
-different costs. Rendering is local and free. Committing writes to the chain and
-spends a slice of a per-epoch byte quota. Verification calls Hugging Face and
-Hugging Face, and it is the only one that can tell a miner what a *validator* will
-conclude, which is the answer that decides whether they earn anything.
+The two exist as separate steps because they fail for different reasons and at
+different costs. Committing writes to the chain and spends a slice of a
+per-epoch byte quota. Verification calls Hugging Face, and it is the only one
+that can tell a miner what a *validator* will conclude, which is the answer that
+decides whether they earn anything.
 
 ``verify`` runs the validator's own
 :class:`~prometheon.registry.validation.ModelRegistry` rather than a

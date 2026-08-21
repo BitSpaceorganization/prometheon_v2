@@ -31,9 +31,9 @@ from typing import Final, TypeVar
 
 from prometheon.errors import EvaluationError
 
-#: Mirrors the canonical wrapper's request model. Exceeding either limit makes
-#: the wrapper reject the whole request, which would score a batch of good
-#: items as incorrect; failing here instead names the offending item.
+#: Mirrors the evaluation engine's own limits. Exceeding either would make the
+#: engine reject the whole batch, scoring good items as incorrect; failing here
+#: instead names the offending item.
 MAX_ITEMS_PER_REQUEST: Final[int] = 100
 MAX_ITEM_ID_CHARS: Final[int] = 128
 MAX_CONTENT_CHARS: Final[int] = 32000
@@ -77,12 +77,12 @@ class LabelledItem:
         if len(self.item_id) > MAX_ITEM_ID_CHARS:
             raise EvaluationError(
                 f"item_id {self.item_id[:32]!r}... is {len(self.item_id)} characters, "
-                f"over the {MAX_ITEM_ID_CHARS} the canonical wrapper accepts"
+                f"over the {MAX_ITEM_ID_CHARS} the evaluation engine accepts"
             )
         if len(self.content) > MAX_CONTENT_CHARS:
             raise EvaluationError(
                 f"item {self.item_id!r} has {len(self.content)} characters of content, "
-                f"over the {MAX_CONTENT_CHARS} the canonical wrapper accepts"
+                f"over the {MAX_CONTENT_CHARS} the evaluation engine accepts"
             )
         if self.source is ItemSource.TEST and not self.contributor_hotkey:
             raise EvaluationError(

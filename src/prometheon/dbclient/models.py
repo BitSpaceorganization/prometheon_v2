@@ -58,8 +58,8 @@ MAX_PAGE_LIMIT: Final[int] = 1_000
 EMBARGO_DAYS: Final[int] = 2
 
 #: Longest content the DB layer will store or serve for one item. Matches the
-#: canonical wrapper's own limit, so a validator can never build a corpus item
-#: that every miner's model would reject as oversized.
+#: evaluation engine's own limit, so a validator can never build a corpus item
+#: that the engine would reject as oversized.
 MAX_CONTENT_CHARS: Final[int] = 32_000
 
 _HEX64_RE: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{64}$")

@@ -1,16 +1,16 @@
 """Independent verification of a miner's Hugging Face repository.
 
-Two questions are answered here, both from the public API and neither from
-anything the miner or the DB layer says:
+One question is answered here, from the public API and not from anything the
+miner or the DB layer says: **does the repository at this exact commit contain
+only permitted files, and are any of them weights?**
 
-1. Does the repository at this exact commit contain only permitted files?
-2. Is ``miner.py`` byte-for-byte the canonical engine?
-
-The manifest is *read out of the canonical wrapper template* rather than
-restated in this module. A validator refuses to run a repository holding a file the
-wrapper's manifest excludes; a validator carrying its own copy of that list
-would, the moment the two drifted, either reject repositories that deploy fine
-or accept repositories that cannot.
+There used to be a second question -- whether ``miner.py`` was byte-for-byte
+the canonical engine -- because miners served their own models and the engine
+travelled in the repository. Validators run the engine themselves now, so there
+is no miner-supplied code to hash and :data:`FILE_MANIFEST` stops being a
+security boundary. It is a description instead: these are model files, and a
+repository that is only ever read for weights has no business holding anything
+else.
 
 Revisions are always 40-character commit SHAs by the time they reach here. That
 is what makes "verified once" mean anything: a branch verified today serves
@@ -88,10 +88,9 @@ def require_valid_repo_id(repo: str) -> str:
 #: hide, and `deploy_config.yml` — a permitted file whose *contents* nothing
 #: checked — turned out to be one of them.
 #:
-#: The engine is in the deploy script now, inside the region validators hash. So
-#: this list stops being a defence and becomes a description: these are model
-#: files, and anything else does not belong in a repository that is only ever
-#: read for weights.
+#: The engine is the validator's own now, so this list stops being a defence and
+#: becomes a description: these are model files, and anything else does not
+#: belong in a repository that is only ever read for weights.
 FILE_MANIFEST: Final[frozenset[str]] = frozenset(
     {
         ".gitattributes",
@@ -254,7 +253,7 @@ class HuggingFaceClient(RegistryHttpClient):
     # -- verification -----------------------------------------------------
 
     def verify_manifest(self, snapshot: RepoSnapshot) -> None:
-        """Raise unless every file is permitted and the engine is present."""
+        """Raise unless every file is permitted and weights are present."""
         extra = sorted(name for name in snapshot.files if not file_allowed(name))
         if extra:
             shown = ", ".join(extra[:_MAX_REPORTED_FILES])
@@ -273,10 +272,9 @@ class HuggingFaceClient(RegistryHttpClient):
         """Check the file list. Returns the snapshot that passed.
 
         One check now, where there used to be two. The engine hash is gone
-        because the engine is no longer published here: it lives in the deploy
-        script, and the script's own hash covers it. Fetching a file from the
-        miner's repo to verify code that runs in the miner's container was
-        proving the wrong thing anyway.
+        because the engine is no longer published here: the validator runs its
+        own. Fetching a file from the miner's repo to verify code that ran in
+        the miner's container was proving the wrong thing anyway.
         """
         snapshot = self.list_files(repo, revision)
         self.verify_manifest(snapshot)

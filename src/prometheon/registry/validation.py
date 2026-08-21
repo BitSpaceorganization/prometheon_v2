@@ -1,6 +1,6 @@
 """The eligibility pipeline: which miners may be scored on their model.
 
-Seven checks run per miner, in a fixed order, and the first failure is the
+Six checks run per miner, in a fixed order, and the first failure is the
 reason reported. The order goes from cheapest and most local to most expensive
 and most remote, so a miner with no commitment costs no requests, and the reason
 a miner sees names the first thing they can fix.
@@ -26,7 +26,7 @@ cannot load, or cannot fit, is not a private mistake by one miner -- it is work
 the whole subnet attempts and fails at simultaneously. Both are answered from
 the Hugging Face API before anything is downloaded.
 
-Check 7 resolves duplicates across *every* well-formed commitment, including the
+Check 6 resolves duplicates across *every* well-formed commitment, including the
 ones that failed an earlier check. A copy must not become eligible because the
 miner it copied happened to be cold that day. Otherwise the cheapest strategy in
 the subnet is to publish someone else's model and wait for theirs to blink. It
@@ -171,9 +171,9 @@ def _duplicate_losers(entries: Sequence[MinerEntry]) -> dict[int, MinerEntry]:
     A Hugging Face model repo is a git repo. ``git clone --mirror`` followed by
     a push into another namespace preserves every commit SHA byte for byte, so
     a copycat can commit ``(copycat/guard, <the original's SHA>)``
-    and pass checks 1-6 honestly: the file manifest matches, the engine hash
-    matches, and the deployed wrapper truthfully declares the copycat's own
-    repo. Only the repo string differs, so keying on it put the original and
+    and pass checks 1-5 honestly: it is the same tree, so the file manifest
+    matches, the architecture is loadable, and the weights are the same size.
+    Only the repo string differs, so keying on it put the original and
     the mirror in different groups and neither was ever flagged. One model
     could then hold rank 1 and rank 2 and collect 4500 of the 5000bp model
     pool using a second hotkey.
@@ -361,7 +361,7 @@ class ModelRegistry:
                 weight_bytes=weight_bytes,
             )
 
-        # 8 -- an earlier commitment of the same model wins.
+        # 6 -- an earlier commitment of the same model wins.
         if duplicate_of is not None:
             return _outcome(
                 entry,

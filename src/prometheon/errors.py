@@ -245,7 +245,7 @@ class EvaluationError(PrometheonError):
 
 
 class ModelResponseError(EvaluationError):
-    """A model's response did not satisfy the wrapper contract.
+    """A model's response did not satisfy the engine contract.
 
     Per the scoring rules this is not fatal: the batch is scored as incorrect
     and evaluation continues with the next one.

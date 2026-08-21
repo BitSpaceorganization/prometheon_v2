@@ -113,34 +113,35 @@ class TestTheShippedPolicyIsUsable:
         assert _policy_version((ROOT / "content_policy.md").read_text(encoding="utf-8"))
 
 
-#: The published pins. Literals, not recomputed values.
-#:
-#: Every other assertion in this file compares one computed hash against
-#: another computed hash, which proves the code agrees with itself and nothing
-#: more. That is exactly how a subnet-breaking defect passed 796 tests: the
-EXPECTED_SCRIPT_HASH = "ea4dab57ccd0c228337318d141c4eb1eff973ce44b36f02d1bba8a9792d08af7"
-
-
 class TestTheDocumentedCommandsExist:
     """Docs that name a command the parser does not have send users nowhere.
 
-    Two had already drifted: the README documented `account link`, which is a
-    platform-side step with no subnet command, and `model deploy`, which is
-    called `model render`.
+    This has drifted more than once. The README documented `account link`,
+    which is a platform-side step with no subnet command, and `model deploy`
+    and `model render`, neither of which survived the move to validator-side
+    evaluation.
     """
 
     def _documented(self) -> set[tuple[str, ...]]:
+        """Every ``prometheon <group> <sub>`` named in a shipped file.
+
+        The example configs are scanned alongside the prose. They name commands
+        too, and because nothing checked them they went on advising
+        ``prometheon model render`` for months after that command was removed.
+        """
         import re
 
         found: set[tuple[str, ...]] = set()
-        for path in [ROOT / "README.md", *sorted((ROOT / "docs").glob("*.md"))]:
+        for path in [
+            ROOT / "README.md",
+            *sorted((ROOT / "docs").glob("*.md")),
+            *sorted((ROOT / "configs").glob("*.toml")),
+        ]:
             for match in re.finditer(
                 r"prometheon\s+([a-z-]+)(?:\s+([a-z-]+))?", path.read_text(encoding="utf-8")
             ):
                 group, sub = match.group(1), match.group(2)
-                if group in {"canonical"}:
-                    found.add((group,))
-                elif sub and sub not in {"--config", "--help"}:
+                if sub and sub not in {"--config", "--help"}:
                     found.add((group, sub))
         return found
 

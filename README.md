@@ -51,13 +51,13 @@ Validators verify eligibility themselves, from chain commitments and Hugging Fac
 ## Repository layout
 
 ```text
-src/prometheon/canonical/   the engine and wrapper every miner deploys, and their integrity checks
 src/prometheon/chain/       commitments, metagraph, weight submission
 src/prometheon/registry/    model eligibility: manifest, hashes, provenance, duplicates
 src/prometheon/dbclient/    the /v2 client, its contract, and an in-memory fake
 src/prometheon/labelling/   ground-truth labelling with injection-hardened batching
 src/prometheon/evaluation/  corpus assembly and model execution
 src/prometheon/scoring/     dataset and model rewards, allocation, burn
+src/prometheon/security/    canonical JSON encoding and hotkey signatures
 src/prometheon/cli/         the miner and validator command surface
 content_policy.md           the authority for every verdict
 configs/                    pre-pinned example configuration

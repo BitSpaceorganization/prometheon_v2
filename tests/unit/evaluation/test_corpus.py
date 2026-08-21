@@ -238,10 +238,10 @@ def test_production_content_may_not_carry_an_author() -> None:
         )
 
 
-def test_items_over_the_wrapper_limits_are_named_here() -> None:
-    with pytest.raises(EvaluationError, match="canonical wrapper accepts"):
+def test_items_over_the_engine_limits_are_named_here() -> None:
+    with pytest.raises(EvaluationError, match="evaluation engine accepts"):
         production_item("x" * (MAX_ITEM_ID_CHARS + 1))
-    with pytest.raises(EvaluationError, match="canonical wrapper accepts"):
+    with pytest.raises(EvaluationError, match="evaluation engine accepts"):
         LabelledItem(
             item_id="p1",
             content="x" * (MAX_CONTENT_CHARS + 1),
@@ -282,6 +282,6 @@ def test_no_items_means_no_batches() -> None:
 
 
 @pytest.mark.parametrize("size", [0, -1, 101])
-def test_batch_size_is_bounded_by_the_wrapper_contract(size: int) -> None:
+def test_batch_size_is_bounded_by_the_engine_contract(size: int) -> None:
     with pytest.raises(EvaluationError, match="batch size"):
         list(iter_batches([production_item("p1")], size))

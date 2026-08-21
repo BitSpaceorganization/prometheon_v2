@@ -1,4 +1,4 @@
-# Every model_type the deployment image's transformers recognises.
+# Every model_type the evaluation runtime's transformers recognises.
 # Frozen from transformers 4.46.3, the top of the range pyproject pins for
 # the wrapper extra (>=4.44,<4.47). Regenerate when that pin moves:
 #
@@ -6,8 +6,8 @@
 #     CONFIG_MAPPING_NAMES as m; print(chr(10).join(sorted(m)))"
 #
 # Frozen rather than read from the local install: a newer transformers on the
-# miner's machine would accept an architecture the image cannot load, and the
-# only symptom is every instance dying in the container.
+# miner's machine would accept an architecture the runtime cannot load, and the
+# only symptom is every validator raising at load on the same day.
 albert
 align
 altclip

@@ -72,7 +72,7 @@ runtime cannot load, before anything is written on chain:
 
 ```text
 error [registry.architecture_unsupported] …declares model_type 'qwen3', which
-the deployment image's transformers does not recognise…
+the evaluation runtime's transformers does not recognise…
 ```
 
 It checks against a list frozen from the runtime's own `transformers`, not

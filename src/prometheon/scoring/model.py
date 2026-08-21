@@ -46,7 +46,7 @@ class ModelEvaluation:
     """What one miner's deployed model did over the day's corpus.
 
     ``token_reading_count`` is separate from ``scored_count`` because a batch
-    that fails the wrapper contract is scored incorrect but reports no usage.
+    that fails is scored incorrect but reports no usage.
     Averaging its zero tokens in would make a broken model look cheap.
     """
 

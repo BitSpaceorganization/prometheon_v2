@@ -1,11 +1,12 @@
-"""Evaluating miners' deployed models over the day's corpus.
+"""Evaluating miners' committed models over the day's corpus.
 
 Three pieces, in the order a cycle uses them:
 
 - :mod:`~prometheon.evaluation.corpus` builds the shared, deterministically
   ordered corpus and the per-miner views that exclude a miner's own test items.
-- :mod:`~prometheon.evaluation.runner` calls one miner's ``/moderate`` endpoint
-  in batches and scores every failure as incorrect rather than skipping it.
+- :mod:`~prometheon.evaluation.runner` downloads one miner's checkpoint, runs
+  it here in batches, and scores every failure as incorrect rather than
+  skipping it.
 - :mod:`~prometheon.evaluation.result` holds the accumulated per-miner result
   and the per-item records published with it.
 
