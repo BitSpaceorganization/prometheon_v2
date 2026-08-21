@@ -12,11 +12,13 @@ Data is weighted twice as heavily as model performance. It is what every model
 is measured against, it accrues daily from real users, and it is the half you
 can earn with no deployed model at all.
 
-**One entry gate, two streams behind it.** A Fan Group with **at least 50
-registered members** — accounts that have joined the group — is what makes you a
-miner at all. It is a plain headcount, not an activity or anti-farming score. It
-is not a condition on one stream or the other; below it you are not on the
-eligible list, and a validator never looks at you.
+**One entry gate, two streams behind it.** A Fan Group makes you a miner when it
+clears **both** floors: **at least 50 registered members** — accounts that have
+joined the group — **and at least 25 active members**, members whose 7-day
+activity score clears the platform's active threshold. The registered headcount
+alone is not enough; the active floor is the anti-farming half, and it is what a
+sign-up farm fails. It is not a condition on one stream or the other — below the
+gate you are not on the eligible list, and a validator never looks at you.
 
 Above it, the two streams are independent. Contribute data and deploy no model
 and you earn the dataset half; deploy a model and your users submit nothing that
@@ -30,8 +32,9 @@ Everything else depends on this, and it happens on the platform rather than
 through any subnet command.
 
 1. Sign in at **[bitfan.ai](https://bitfan.ai)**.
-2. Create a Fan Group and grow it to **at least 50 registered members** —
-   accounts that have joined your group.
+2. Create a Fan Group and grow it to **at least 50 registered members**
+   (accounts that have joined your group), **at least 25 of them active** —
+   members whose 7-day activity score clears the platform's active threshold.
 3. Connect your **Talisman** wallet (or another Substrate wallet — polkadot-js,
    SubWallet, Nova) with the **Connect Wallet** button in the bitfan.ai site
    header, and sign the ownership proof it prompts for. The proved address is the
