@@ -38,7 +38,20 @@ dependencies = [
 # without a torch build.
 wrapper = [
     "transformers>=4.44,<4.47",
-    "torch>=2.4,<2.6",
+    # Raised from `<2.6`, which could not run the hardware `docs/validator.md`
+    # mandates. 2.5.1 builds kernels up to sm_90; an RTX 5090 is sm_120, and the
+    # failure is silent in the worst way: `torch.cuda.is_available()` still
+    # returns True, so `resolve_device("auto")` picks cuda and every forward
+    # then dies with "no kernel image is available for execution on the device".
+    # Each model is scored on a failed batch, so the cycle completes and submits
+    # a weight vector with every miner at zero. 2.7 is the first release that
+    # ships sm_120; the current PyPI wheel is cu130 and carries it.
+    "torch>=2.7,<3",
+    # `ModerationEngine.load` passes `device_map=`, which transformers refuses
+    # without accelerate installed. It was absent here, so *every* GPU load
+    # raised ImportError and scored the model zero — on a validator that had
+    # followed the install instructions exactly.
+    "accelerate>=0.26.0",
     "huggingface-hub>=0.25.0",
 ]
 
