@@ -40,15 +40,6 @@ S = items submitted
 score = V × (V / S)  =  V² / S
 ```
 
-> **Where `V` comes from.** Normally every submitted item is labelled and `V` is
-> counted from the verdicts. A validator may configure `trusted_authors` under
-> `[labelling]`, which accepts a named hotkey's test content as violating
-> *without labelling it* — those miners score `V = S` by construction, the
-> maximum this term can pay. It is empty by default. A validator that sets it is
-> asserting part of its own ground truth rather than measuring it, and will
-> score a day differently from one that does not. See
-> [validator.md](validator.md) for the full trade.
-
 The second factor is submission accuracy, and multiplying by it is what makes
 noise unprofitable:
 
