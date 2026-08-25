@@ -178,9 +178,28 @@ class OpenAICompatibleClient:
                         "than a working endpoint — check [labelling] base_url"
                     )
                 if not _is_retryable_status(response.status_code):
+                    snippet = _snippet(response)
+                    if _is_content_rejection(response.status_code, snippet):
+                        # The provider refused to read this batch's *content*,
+                        # not the request. That is a property of one item, so it
+                        # belongs to the batcher: LabelResponseError is what
+                        # makes it split, quarantine the offending item, and
+                        # exclude it -- the same path a malformed answer takes.
+                        #
+                        # Raising LabellingError here instead aborted the whole
+                        # cycle. The corpus is *sourced* to contain policy
+                        # violations, so tripping a provider safety filter is
+                        # expected traffic, and one such item took down the day
+                        # -- on every validator at once, since they all label
+                        # the same corpus. A single crafted submission was a
+                        # subnet-wide outage.
+                        raise LabelResponseError(
+                            f"labelling endpoint refused this batch's content with HTTP "
+                            f"{response.status_code}: {snippet}"
+                        )
                     raise LabellingError(
                         f"labelling endpoint rejected the request with HTTP "
-                        f"{response.status_code}: {_snippet(response)}"
+                        f"{response.status_code}: {snippet}"
                     )
                 last_failure = f"HTTP {response.status_code}: {_snippet(response)}"
                 delay = _retry_after_seconds(response)
@@ -197,6 +216,35 @@ class OpenAICompatibleClient:
 
 def _is_retryable_status(status_code: int) -> bool:
     return status_code in _RETRYABLE_STATUSES or status_code >= _SERVER_ERROR_FLOOR
+
+
+#: Markers a provider uses when it declines to process the *content* of a
+#: request. Matched only against HTTP 400: 401 and 403 are credentials and 404
+#: is a wrong model name, and every one of those is fatal for the whole cycle
+#: no matter what the body says.
+_CONTENT_REJECTION_MARKERS: Final[tuple[str, ...]] = (
+    "flagged",
+    "content_policy",
+    "content policy",
+    "safety",
+    "usage policies",
+    "moderation",
+    "invalid_prompt",
+)
+
+
+def _is_content_rejection(status_code: int, body: str) -> bool:
+    """Whether a 400 refused the batch's content rather than the request itself.
+
+    Deliberately narrow. A 400 can also mean a genuinely malformed request --
+    an unsupported sampling parameter, say -- and that must stay fatal, because
+    every batch would hit it and a cycle that splits its way through the whole
+    corpus would spend the day's budget discovering one config mistake.
+    """
+    if status_code != _CLIENT_ERROR_FLOOR:
+        return False
+    lowered = body.lower()
+    return any(marker in lowered for marker in _CONTENT_REJECTION_MARKERS)
 
 
 def _backoff_seconds(attempt: int) -> float:

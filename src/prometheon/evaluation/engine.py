@@ -401,6 +401,23 @@ class ModerationEngine:
         except torch.cuda.OutOfMemoryError:
             if size == 1:
                 raise
+            # Only record that it failed. Retrying *inside* this block cannot
+            # work: while an exception is being handled Python keeps it alive,
+            # and its traceback still references this frame -- so the expanded
+            # cache, the logits and the masks are all still reachable, and
+            # `empty_cache()` frees none of them. Each nested retry then stacked
+            # another live frame on top, so halving the window made the
+            # situation strictly worse and the recursion OOMed at every size
+            # down to one.
+            too_big = True
+        else:
+            too_big = False
+
+        if too_big:
+            # Out of the except block, so the exception and its traceback are
+            # gone and the failed attempt's tensors are unreachable. Drop the
+            # inputs we still hold before asking for the memory back.
+            del input_ids, attention_mask, position_ids
             torch.cuda.empty_cache()
             half = size // 2
             return self._decide_batch(
