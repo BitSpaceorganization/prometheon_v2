@@ -228,8 +228,9 @@ so memorisation is not a strategy. Yesterday's is yours to train on.
 own users wrote. Recognising your own items buys nothing, because they are not
 in your corpus.
 
-**Answering `YES` to everything.** Production content supplies the negatives, so
-a degenerate model is wrong on all of them. (Accuracy is prevalence-sensitive
+**Answering `YES` to everything.** Production content supplies negatives, and so
+does every test submission the labeller judged non-violating, so a degenerate
+model is wrong on all of them. (Accuracy is prevalence-sensitive
 and this stops being true if test positives ever come to swamp production
 negatives. Validators log that ratio every cycle and the metric moves to
 balanced accuracy before it bites. See [`scoring.md`](./scoring.md).)

@@ -200,9 +200,25 @@ def test_corpus_level_counts() -> None:
 # --- validation -------------------------------------------------------------
 
 
-def test_a_non_violating_test_item_is_refused_not_dropped() -> None:
-    with pytest.raises(EvaluationError, match="positives only"):
-        build(tests=[make_test_item("t1", violating=False)])
+def test_a_non_violating_test_item_is_kept_as_a_negative() -> None:
+    """Test content carries its verdict, negatives included.
+
+    Production used to be the only source of negatives, which left the corpus
+    at the mercy of how much production content a day happened to have. A test
+    item the labeller judged non-violating is a real negative and is admitted
+    as one; it still costs its author, because it counts in ``S`` and not in
+    ``V``.
+    """
+    corpus = build(
+        tests=[make_test_item("t1"), make_test_item("t2", violating=False)],
+        production=[production_item("p1")],
+    )
+
+    assert corpus.size == 3
+    assert (corpus.positives, corpus.negatives) == (1, 2)
+    assert corpus.test_items == 2
+    verdicts = {item.item_id: item.violating for item in corpus.items}
+    assert verdicts == {"t1": True, "t2": False, "p1": False}
 
 
 def test_sources_must_match_the_half_they_were_supplied_in() -> None:

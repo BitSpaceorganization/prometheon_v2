@@ -40,6 +40,15 @@ S = items submitted
 score = V × (V / S)  =  V² / S
 ```
 
+> **Where `V` comes from.** Normally every submitted item is labelled and `V` is
+> counted from the verdicts. A validator may configure `trusted_authors` under
+> `[labelling]`, which accepts a named hotkey's test content as violating
+> *without labelling it* — those miners score `V = S` by construction, the
+> maximum this term can pay. It is empty by default. A validator that sets it is
+> asserting part of its own ground truth rather than measuring it, and will
+> score a day differently from one that does not. See
+> [validator.md](validator.md) for the full trade.
+
 The second factor is submission accuracy, and multiplying by it is what makes
 noise unprofitable:
 
@@ -66,9 +75,15 @@ rather than burning the remainder.
 
 ### Accuracy
 
-Every eligible model is run over the whole corpus: test positives from *other*
-miners, plus production content carrying both labels. It is scored on how often
-it agreed with the ground truth.
+Every eligible model is run over the whole corpus: test content from *other*
+miners carrying whichever verdict labelling gave it, plus production content
+carrying both labels. It is scored on how often it agreed with the ground truth.
+
+Test content that came back non-violating is part of that corpus. A user
+submitted it believing it broke the policy and it did not, which makes it a
+negative example and one of the harder ones to get right. It still costs its
+author -- it counts in `S` and not in `V` -- but the model half is measured on
+it too, rather than it being discarded after being paid for.
 
 ```text
 accuracy = correct / total
@@ -76,7 +91,9 @@ accuracy = correct / total
 
 Raw accuracy, for now. It is prevalence-sensitive: as the number
 of eligible miners grows, test positives accumulate and the corpus tilts toward
-`YES`, which flatters a model that simply answers `YES`.
+`YES`, which flatters a model that simply answers `YES`. Admitting non-violating
+test content slows that drift -- it is the only negative supply that grows with
+the field rather than independently of it -- but does not stop it.
 
 That is survivable while the field is small and production content dominates,
 and it stops being survivable later. **The trigger to watch is the ratio of

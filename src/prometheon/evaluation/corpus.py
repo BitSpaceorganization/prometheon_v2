@@ -175,10 +175,24 @@ def build_corpus(
 ) -> EvaluationCorpus:
     """Combine the labelled halves of a snapshot into one ordered corpus.
 
-    Non-violating test items are rejected rather than dropped. Labelling is
-    contracted to have discarded them already, and silently dropping them here
-    would hide a labelling regression behind a corpus that merely looks smaller
-    than usual.
+    Test content carries whichever verdict labelling gave it, negatives
+    included. A test item a user submitted as violating that the labeller
+    judged otherwise is a real negative example, and it is the kind of boundary
+    case a moderation model most needs to get right.
+
+    They used to be rejected here, on the rule that test content supplied the
+    positives and production supplied the negatives. That made production the
+    *only* source of negatives, and production volume is not something the
+    subnet controls: a day with little of it is scored almost entirely on
+    positives, which rewards a model that answers YES to everything. One
+    measured day ran 9,789 positives against 17 negatives -- 576:1, far past the
+    point where a degenerate model outscores a competent one. Admitting the
+    non-violating test items took the same day to 81:1 using labels that had
+    already been paid for and were being discarded.
+
+    A non-violating test item still costs its author: it counts in ``S`` and not
+    in ``V``, which is the submission-accuracy term. What changes is only that
+    the model half gets to be measured on it too.
     """
     if not content_hash.strip():
         raise EvaluationError(
@@ -194,11 +208,6 @@ def build_corpus(
             raise EvaluationError(
                 f"item {item.item_id!r} was supplied as test content but is marked "
                 f"{item.source.value}"
-            )
-        if not item.violating:
-            raise EvaluationError(
-                f"test item {item.item_id!r} is labelled non-violating; test content "
-                "supplies positives only and must be filtered during labelling"
             )
         _add(collected, seen, item)
 

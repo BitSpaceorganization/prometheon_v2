@@ -568,22 +568,24 @@ def _label_items_for(snapshot: DaySnapshot) -> list[LabelItem]:
 
 
 def _labelled_test(snapshot: DaySnapshot, labelled: LabelledCorpus) -> list[LabelledItem]:
-    """Test items the labeller confirmed as violating.
+    """Test items with whichever verdict the labeller gave them.
 
-    Items labelled non-violating are dropped here rather than passed on: they
-    are the miner's submission accuracy penalty, not corpus positives, and
-    ``build_corpus`` rejects a non-violating test item outright.
+    Negatives included. An item a user submitted believing it broke the policy
+    and that the labeller judged otherwise is a real negative example, and the
+    hardest kind to get right. It still costs its author -- it counts in ``S``
+    and not in ``V`` -- but the model half is measured on it rather than it
+    being discarded after being paid for.
     """
     return [
         LabelledItem(
             item_id=item.id,
             content=item.content,
-            violating=True,
+            violating=bool(labelled.labels.get(item.id)),
             source=ItemSource.TEST,
             contributor_hotkey=item.author_hotkey,
         )
         for item in snapshot.test_items
-        if labelled.labels.get(item.id) is True
+        if item.id in labelled.labels
     ]
 
 
