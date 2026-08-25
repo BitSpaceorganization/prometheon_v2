@@ -136,12 +136,21 @@ only too long. It must never become a 500.
 | GET | `/v2/dataset/{date}/production` | public, after the embargo¹ | `ProductionContentPage` |
 | GET | `/v2/eligible-miners/{date}` | public | `EligibleMinerSet` |
 | GET | `/v2/models/{date}` | public | `ModelCommitmentSet` |
+| GET | `/v2/evaluations/{date}/{validator_hotkey}` | public | `EvaluationSubmission` |
 | POST | `/v2/evaluations` | validator (signed) | `EvaluationAccepted` |
 
 ¹ Content is embargoed until 00:00 UTC on day N+2 (§4). A signed **validator**
 bypasses the embargo — it reads the current day to score it — and is the only
 caller that reaches unreleased content. Snapshot, eligible-miner and model
 metadata name no embargoed content and are public immediately.
+
+Reading an evaluation is **public and unsigned**. The record carries its own
+SR25519 signature over `DOMAIN_EVALUATION`, so a reader verifies it against the
+`validator_hotkey` it names rather than trusting whoever served it — which is
+what lets a validator running `score_source = "endpoint"` mirror another
+validator's scores without trusting this layer. Serve it verbatim, signature
+included; re-encoding it so that the canonical JSON differs breaks every reader.
+`404 db.not_found` when that validator has published nothing for that day.
 
 `{date}` is `YYYY-MM-DD`, UTC.
 

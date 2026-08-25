@@ -149,6 +149,19 @@ class EvaluationConfig(BaseModel):
     model_timeout_seconds: float = Field(default=3600.0, gt=0)
 
 
+class ScoreSource(str, Enum):
+    """Where a validator's weight vector comes from."""
+
+    #: Score the day yourself: label the corpus, run every eligible model, and
+    #: reduce it here. Everything the subnet's trust model assumes.
+    LOCAL = "local"
+
+    #: Take a published, signed record from another validator and submit its
+    #: weights. Costs no labelling and no GPU, and makes this validator's
+    #: opinion a copy of somebody else's.
+    ENDPOINT = "endpoint"
+
+
 class ScoringConfig(BaseModel):
     """Every constant that moves emissions.
 
@@ -210,6 +223,48 @@ class ScoringConfig(BaseModel):
     #: Below this spread the efficiency term is noise rather than signal, so it
     #: switches off entirely instead of randomising close rankings.
     efficiency_min_cv_bp: int = Field(default=1000, ge=0, le=10000)
+
+    #: Where the weight vector comes from. ``local`` computes it here.
+    #:
+    #: ``endpoint`` fetches a signed record published by ``score_provider``
+    #: and submits its weights unchanged. That is a real option -- it needs no
+    #: labelling budget and no GPU -- and it is worth being blunt about what it
+    #: costs the subnet, because nothing downstream can tell the difference.
+    #:
+    #: A mirroring validator contributes no independent opinion. Consensus works
+    #: by validators disagreeing when one of them is wrong; a field where most
+    #: weight mirrors one provider cannot detect that provider being wrong,
+    #: because the agreement is manufactured rather than earned. The provider's
+    #: signature proves *who* computed the vector, never that the vector is
+    #: right.
+    #:
+    #: What it does still give you: the record is signed by the provider's
+    #: hotkey and verified here, so the DB layer cannot forge one, and the
+    #: snapshot hash is checked against the day being scored so a stale or
+    #: substituted record is refused rather than submitted.
+    score_source: ScoreSource = ScoreSource.LOCAL
+
+    #: The validator whose published record to mirror when ``score_source`` is
+    #: ``endpoint``. Required in that mode and ignored otherwise.
+    #:
+    #: Pinned by hotkey, not left to whoever answers: the record is verified
+    #: against *this* address, so a DB layer serving somebody else's record --
+    #: or its own -- fails the signature check instead of being submitted.
+    score_provider: str = ""
+
+    @model_validator(mode="after")
+    def _endpoint_mode_names_a_provider(self) -> ScoringConfig:
+        """A mirroring validator must say whose record it mirrors.
+
+        Refused at load rather than at submission: the alternative is a cycle
+        that runs to the end and then has nothing to send.
+        """
+        if self.score_source is ScoreSource.ENDPOINT and not self.score_provider.strip():
+            raise ValueError(
+                "score_source = 'endpoint' requires score_provider to name the "
+                "validator hotkey whose published record to mirror"
+            )
+        return self
 
     @field_validator("model_rank_shares_bp")
     @classmethod
@@ -282,6 +337,7 @@ __all__ = [
     "EvaluationConfig",
     "LabellingConfig",
     "MinerRuntimeConfig",
+    "ScoreSource",
     "ScoringConfig",
     "ValidatorRuntimeConfig",
     "WalletConfig",

@@ -247,6 +247,20 @@ class DbClient:
     def get_model_commitments(self, day: dt.date) -> ModelCommitmentSet:
         return self._get(f"{API_VERSION}/models/{day.isoformat()}", model=ModelCommitmentSet)
 
+    def get_evaluation(self, day: dt.date, validator_hotkey: str) -> EvaluationSubmission:
+        """One validator's published record for a day.
+
+        The read side of :meth:`submit_evaluation`. Returned verbatim, signature
+        included, because the caller has to verify it against the hotkey it
+        names rather than against whoever served it -- this client speaks to the
+        DB layer, and the DB layer is a service this code audits rather than
+        believes.
+        """
+        return self._get(
+            f"/v2/evaluations/{day.isoformat()}/{validator_hotkey}",
+            model=EvaluationSubmission,
+        )
+
     def submit_evaluation(self, submission: EvaluationSubmission) -> EvaluationAccepted:
         if not submission.signature:
             raise DbLayerError(

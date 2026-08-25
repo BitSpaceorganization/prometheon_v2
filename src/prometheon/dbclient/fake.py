@@ -76,6 +76,12 @@ _MINERS_RE: Final[re.Pattern[str]] = re.compile(
 _MODELS_RE: Final[re.Pattern[str]] = re.compile(r"^/v2/models/(?P<date>\d{4}-\d{2}-\d{2})$")
 _EVALUATIONS_PATH: Final[str] = "/v2/evaluations"
 
+#: ``/v2/evaluations/{date}/{validator_hotkey}`` -- the read side of the write
+#: above, which is what a validator mirroring another one's scores reads.
+_EVALUATION_READ_RE: Final[re.Pattern[str]] = re.compile(
+    r"^/v2/evaluations/(?P<date>\d{4}-\d{2}-\d{2})/(?P<hotkey>[1-9A-HJ-NP-Za-km-z]{46,48})$"
+)
+
 _SECONDS_PER_DAY: Final[int] = 86_400
 
 #: What the fake tells a client to wait before asking for an unbuilt snapshot
@@ -254,6 +260,8 @@ class FakeDbLayer:
                 error_code=DbErrorCode.BAD_REQUEST,
             )
 
+        if route.name == "evaluation_read":
+            return self._read_evaluation(route)
         if route.name == "evaluations":
             return self._post_evaluation(caller, request)
 
@@ -310,6 +318,29 @@ class FakeDbLayer:
                 total_count=total,
             ),
         )
+
+    def _read_evaluation(self, route: _Route) -> httpx.Response:
+        """Serve one validator's published record for a day.
+
+        Public and unsigned: the record is already signed by the validator that
+        produced it, so anyone can verify it without this layer vouching for
+        anything. Serving it is what lets a validator mirror another one's
+        scores instead of computing its own.
+        """
+        try:
+            day = _parse_day(route.day)
+        except _ResponseError as exc:
+            return _error_response(exc)
+        stored = self.evaluations.get((day, route.collection))
+        if stored is None:
+            return _error_response(
+                _ResponseError(
+                    f"no published evaluation for {route.day} by {route.collection}",
+                    status_code=404,
+                    error_code=DbErrorCode.NOT_FOUND,
+                )
+            )
+        return _json_response(200, stored.submission)
 
     def _post_evaluation(
         self, caller: AuthenticatedCaller, request: httpx.Request
@@ -455,6 +486,15 @@ def _route_of(target: str) -> _Route | None:
 
     if tail == _EVALUATIONS_PATH:
         return _Route(name="evaluations", method="POST", path=tail)
+    reading = _EVALUATION_READ_RE.match(tail)
+    if reading:
+        return _Route(
+            name="evaluation_read",
+            method="GET",
+            path=tail,
+            day=reading.group("date"),
+            collection=reading.group("hotkey"),
+        )
     snapshot = _SNAPSHOT_RE.match(tail)
     if snapshot:
         return _Route(name="snapshot", method="GET", path=tail, day=snapshot.group("date"))
