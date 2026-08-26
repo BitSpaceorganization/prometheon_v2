@@ -56,6 +56,7 @@ from __future__ import annotations
 import base64
 import binascii
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Final
 
@@ -305,10 +306,22 @@ def read_commitment_block(subtensor: Any, *, netuid: int, hotkey: str) -> int:
             f"could not read commitment metadata for {hotkey!r} on netuid={netuid}: {exc}"
         ) from exc
 
-    # The accessor is typed `str | CommitmentOfResponse`: the plain-string form
-    # carries the payload and no block at all. Absent rather than zero, because
-    # zero is a real block number and would win.
-    block = getattr(metadata, "block", None)
+    # Three shapes, and the mapping one is not hypothetical: the accessor is
+    # *typed* `str | CommitmentOfResponse`, but bittensor 10.5.0 returns a plain
+    # `dict` -- `{'deposit': ..., 'block': ..., 'info': ...}` -- against a live
+    # node. Reading it with `getattr` alone therefore missed on every hotkey and
+    # silently returned UNKNOWN_COMMIT_BLOCK for the whole subnet, which
+    # collapsed every duplicate contest onto the uid tiebreak. That is the
+    # "strictly better attack" `_duplicate_losers` exists to deny, and nothing
+    # reported it because an unknown block is a legitimate value.
+    #
+    # Mapping first: a dict has attributes too, and none of them is the block.
+    if isinstance(metadata, Mapping):
+        block = metadata.get("block")
+    else:
+        # The plain-string form carries the payload and no block at all. Absent
+        # rather than zero, because zero is a real block number and would win.
+        block = getattr(metadata, "block", None)
     if block is None:
         return UNKNOWN_COMMIT_BLOCK
     try:

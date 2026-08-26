@@ -14,8 +14,10 @@ from prometheon.chain.commitment import (
     encode_commitment,
     publish_commitment,
     read_commitment,
+    read_commitment_block,
 )
 from prometheon.errors import CommitmentDecodeError, CommitmentError
+from prometheon.registry.validation import UNKNOWN_COMMIT_BLOCK
 
 pytestmark = pytest.mark.unit
 
@@ -335,3 +337,71 @@ class TestReadOnAnAccessorSdk:
         subtensor = AccessorSubtensor(commitment=encode_commitment(realistic()))
         read_commitment(subtensor, netuid=42, hotkey="5Alice", uid=7)
         assert subtensor.read_uids == [7]
+
+
+class _MetadataSubtensor:
+    """A node that answers ``get_commitment_metadata`` with a chosen shape."""
+
+    def __init__(self, metadata: Any) -> None:
+        self.metadata = metadata
+        self.asked: list[tuple[int, str]] = []
+
+    def get_commitment_metadata(self, *, netuid: int, hotkey_ss58: str) -> Any:
+        self.asked.append((netuid, hotkey_ss58))
+        if isinstance(self.metadata, Exception):
+            raise self.metadata
+        return self.metadata
+
+
+class TestReadingTheCommitmentBlock:
+    """The value that settles a duplicate-model contest.
+
+    Every one of these is about the same failure: an unreadable block is a
+    *legitimate* value (``UNKNOWN_COMMIT_BLOCK``), so getting it wrong is
+    silent. The whole subnet sorted by uid for a while because of that.
+    """
+
+    def test_the_mapping_shape_the_live_sdk_actually_returns_is_read(self) -> None:
+        """bittensor 10.5.0 answers with a plain ``dict``.
+
+        The accessor's declared return type is ``str | CommitmentOfResponse``
+        and the contract test asserts ``CommitmentOfResponse`` carries a
+        ``block``, so the type looked covered. Against a real node it hands back
+        ``{'deposit': ..., 'block': ..., 'info': ...}``. Attribute access on
+        that misses, and every hotkey on the subnet read as unknown.
+        """
+        subtensor = _MetadataSubtensor({"deposit": 0, "block": 8926991, "info": {"fields": []}})
+
+        assert read_commitment_block(subtensor, netuid=108, hotkey="5Alice") == 8926991
+
+    def test_the_object_shape_still_works(self) -> None:
+        class Response:
+            block = 4242
+
+        assert read_commitment_block(_MetadataSubtensor(Response()), netuid=42, hotkey="5A") == 4242
+
+    def test_a_mapping_without_a_block_is_unknown_rather_than_zero(self) -> None:
+        """Zero is a real block number and would win every contest."""
+        subtensor = _MetadataSubtensor({"deposit": 0, "info": {"fields": []}})
+
+        assert read_commitment_block(subtensor, netuid=42, hotkey="5A") == UNKNOWN_COMMIT_BLOCK
+
+    def test_the_plain_string_shape_carries_no_block(self) -> None:
+        assert (
+            read_commitment_block(_MetadataSubtensor("0xdeadbeef"), netuid=42, hotkey="5A")
+            == UNKNOWN_COMMIT_BLOCK
+        )
+
+    def test_an_unreadable_block_loses_rather_than_wins(self) -> None:
+        """``UNKNOWN_COMMIT_BLOCK`` must sort after every real block."""
+        subtensor = _MetadataSubtensor({"block": None})
+
+        unknown = read_commitment_block(subtensor, netuid=42, hotkey="5A")
+        assert unknown == UNKNOWN_COMMIT_BLOCK
+        assert unknown > 8_926_991
+
+    def test_it_is_keyed_by_hotkey_not_uid(self) -> None:
+        """A uid is a recycled slot; a hotkey is identity."""
+        subtensor = _MetadataSubtensor({"block": 7})
+        read_commitment_block(subtensor, netuid=108, hotkey="5Bob")
+        assert subtensor.asked == [(108, "5Bob")]
