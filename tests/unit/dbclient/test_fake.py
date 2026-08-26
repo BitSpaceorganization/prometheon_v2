@@ -592,3 +592,48 @@ class TestSeeding:
         seeded.register(validator_keypair.ss58_address, CallerRole.MINER)
         with pytest.raises(NotAuthorizedError):
             client.get_snapshot(DAY)
+
+
+def test_a_published_evaluation_can_be_read_back(
+    seeded: FakeDbLayer, client: DbClient, validator_keypair: Keypair
+) -> None:
+    """The read side of POST /v2/evaluations.
+
+    A validator mirroring another one's scores needs the record back out, and it
+    is public because the record carries its own signature -- the DB layer
+    vouches for nothing.
+    """
+    submission = auth.sign_evaluation(
+        validator_keypair,
+        EvaluationSubmission(
+            date=DAY,
+            netuid=NETUID,
+            validator_hotkey=validator_keypair.ss58_address,
+            scoring_version="prometheon-scoring/2.1",
+            policy_version="2026-08-07",
+            snapshot_content_hash="a" * 64,
+            corpus_content_hash="b" * 64,
+            labelled_test_count=1,
+            labelled_production_count=1,
+            results=(),
+            burned_weight=1_000_000,
+            started_at=1,
+            completed_at=2,
+        ),
+    )
+    client.submit_evaluation(submission)
+    fetched = client.get_evaluation(DAY, validator_keypair.ss58_address)
+
+    assert fetched.validator_hotkey == validator_keypair.ss58_address
+    assert fetched.burned_weight == 1_000_000
+    # It round-trips with its signature intact, which is the only reason a
+    # reader can trust it without trusting the layer that served it.
+    auth.verify_evaluation(fetched)
+
+
+def test_reading_an_unpublished_evaluation_is_a_404(
+    seeded: FakeDbLayer, client: DbClient, validator_keypair: Keypair
+) -> None:
+    with pytest.raises(DbLayerError) as caught:
+        client.get_evaluation(DAY, validator_keypair.ss58_address)
+    assert caught.value.status_code == 404

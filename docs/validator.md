@@ -246,6 +246,97 @@ Turning it off makes your validator unauditable.
 
 ---
 
+## Two ways to run a validator
+
+There are two modes, and the choice is `score_source` under `[scoring]`.
+
+| | `local` (default) | `endpoint` |
+|---|---|---|
+| Labelling bill | yours | none |
+| GPU | 8 × RTX 5090 or better | none |
+| Cycle time | hours | seconds |
+| What you submit | what you measured | what somebody else measured |
+| Contribution to consensus | an independent opinion | a copy of one |
+
+### What mirroring costs the subnet
+
+Be clear about this before choosing it, because nothing downstream can tell a
+mirrored vector from an earned one.
+
+Consensus works by validators disagreeing when one of them is wrong. A field
+where most weight mirrors one provider **cannot detect that provider being
+wrong** — the agreement is manufactured rather than earned, and vtrust, which
+measures agreement, reads a captured subnet as a healthy one. The provider's
+signature proves *which hotkey* computed a vector. It never proves the vector is
+right.
+
+If you mirror, you are delegating your judgement to the provider you pin. That
+can be a reasonable thing to do — it is how you validate without a GPU budget —
+but it is a delegation, not a shortcut to the same outcome.
+
+### Running in `endpoint` mode
+
+```toml
+[scoring]
+score_source = "endpoint"
+score_provider = "5…"          # the validator hotkey whose record you mirror
+```
+
+`score_provider` is required in this mode and the config refuses to load without
+it, rather than running a cycle that has nothing to send at the end.
+
+You still need a registered hotkey with a validator permit, and you still need
+to re-post between cycles. You do **not** need `OPENAI_API_KEY`, the `wrapper`
+extra, or a GPU:
+
+```bash
+uv sync                      # no --extra wrapper
+uv run prometheon validator run --config ~/prometheon-mainnet.toml
+```
+
+`validator run` is still the one command you schedule. It notices the mode and
+fetches instead of computing. Set `dry_run = true` for the first run: it
+verifies the record and prints what it would submit without sending anything.
+
+```text
+day                2026-08-24
+provider           5Provider…
+scoring version    prometheon-scoring/2.1
+snapshot           f9fdd5edc6ab
+corpus             591dcacfaa2d
+weighted hotkeys   9
+burn               599980
+```
+
+Then the same two crontab entries as `local` mode — the daily fetch and the
+hourly re-post. A mirrored vector expires against `activity_cutoff` exactly like
+a computed one, so `validator resubmit` is not optional:
+
+```cron
+0  4 * * * cd /opt/prometheon_v2 && /usr/local/bin/uv run prometheon validator run \
+    --config /etc/prometheon/mainnet.toml >> /var/log/prometheon.log 2>&1
+30 * * * * cd /opt/prometheon_v2 && /usr/local/bin/uv run prometheon validator resubmit \
+    --config /etc/prometheon/mainnet.toml >> /var/log/prometheon.log 2>&1
+```
+
+### What is checked before a fetched vector is submitted
+
+A mirrored record is refused, not submitted, if any of these fail. The point is
+provenance — the only property that can be checked mechanically:
+
+| Check | Why |
+|---|---|
+| Published by the pinned `score_provider` | Otherwise the DB layer chooses whom you trust |
+| Signature verifies against that hotkey | The layer cannot mint a record for a key it does not hold |
+| Provider is registered and holds a permit | A deregistered validator's scores are not worth submitting |
+| Record's date and netuid match the cycle | Catches a stale or misrouted record |
+| Record's snapshot hash matches the one you fetched | Catches being served a different corpus for the same day |
+
+Each failure names which check it was. None of them tells you the numbers are
+*good* — only that they came from the validator you decided to follow.
+
+---
+
 ## Costs
 
 Labelling is the bill you control. It scales with corpus size, and the policy

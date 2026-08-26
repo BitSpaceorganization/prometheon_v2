@@ -48,6 +48,26 @@ model_rank_shares_bp = [3000, 1500, 500]
 model_min_scored_items = 100
 efficiency_lambda_bp = 1500
 efficiency_min_cv_bp = 1000
+# Where this validator's weight vector comes from.
+#
+#   "local"    score the day yourself: label the corpus, run every eligible
+#              model, reduce it here. This is what the subnet's trust model
+#              assumes and what keeps consensus meaningful.
+#   "endpoint" submit another validator's published, signed record instead.
+#              No labelling bill, no GPU -- and no independent opinion.
+#
+# Mirroring is a real option and worth being clear-eyed about. Consensus works
+# by validators disagreeing when one of them is wrong; a field where most weight
+# mirrors one provider cannot detect that provider being wrong, because the
+# agreement is manufactured rather than earned. The signature proves who
+# computed the vector, never that it is correct.
+score_source = "local"
+# The validator hotkey whose record to mirror. Required when score_source is
+# "endpoint", ignored otherwise. Pinned here rather than left to whoever answers:
+# the record is verified against this address, so a DB layer serving somebody
+# else's record fails the check instead of being submitted.
+score_provider = ""
+
 
 [validator]
 state_directory = ".validator-state"

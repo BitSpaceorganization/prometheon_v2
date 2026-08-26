@@ -13,6 +13,7 @@ import datetime as dt
 import json
 import re
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Final
 
@@ -34,7 +35,7 @@ from prometheon.cli.cycle import (
     submit_allocation,
     submit_weights,
 )
-from prometheon.config import Config
+from prometheon.config import Config, ScoreSource
 from prometheon.dbclient import auth
 from prometheon.dbclient.client import DbClient
 from prometheon.dbclient.models import EvaluationSubmission
@@ -42,6 +43,7 @@ from prometheon.errors import ConfigError
 from prometheon.labelling.client import OpenAICompatibleClient
 from prometheon.registry.huggingface import HuggingFaceClient
 from prometheon.registry.validation import ModelRegistry
+from prometheon.scoring.mirrored import verify_mirrored
 
 #: A cycle scores *yesterday*: today's content is still arriving.
 _DEFAULT_LAG_DAYS = 1
@@ -106,6 +108,36 @@ def _state_path(config: Config) -> Path:
     return config.validator.state_directory / _LAST_WEIGHTS_FILE
 
 
+def _write_allocation(
+    config: Config, *, day: dt.date, weights: Mapping[str, int], burn_hotkey: str
+) -> Path:
+    """Write the state file `validator resubmit` reads.
+
+    One writer for both modes: a mirrored vector has to be re-posted between
+    cycles exactly like a computed one, and a second copy of this would be a
+    second place for the format to drift.
+    """
+    path = _state_path(config)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "day": day.isoformat(),
+                "netuid": config.chain.netuid,
+                "burn_hotkey": burn_hotkey,
+                "scoring_version": SCORING_VERSION,
+                "submitted_at": int(time.time()),
+                "weights": dict(weights),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return path
+
+
 def save_submitted_allocation(config: Config, *, day: dt.date, result: CycleResult) -> Path:
     """Record the allocation a cycle submitted.
 
@@ -115,25 +147,9 @@ def save_submitted_allocation(config: Config, *, day: dt.date, result: CycleResu
     same vector or its miners earn nothing for the rest of the day, so the
     vector has to outlive the process that computed it.
     """
-    path = _state_path(config)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(
-            {
-                "day": day.isoformat(),
-                "netuid": config.chain.netuid,
-                "burn_hotkey": result.burn_hotkey,
-                "scoring_version": SCORING_VERSION,
-                "submitted_at": int(time.time()),
-                "weights": dict(result.split.weights),
-            },
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
+    return _write_allocation(
+        config, day=day, weights=result.split.weights, burn_hotkey=result.burn_hotkey
     )
-    return path
 
 
 def cmd_resubmit(args: argparse.Namespace) -> int:
@@ -193,9 +209,92 @@ def cmd_resubmit(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_mirror(args: argparse.Namespace) -> int:
+    """Submit another validator's published scores instead of computing any.
+
+    Reads the record ``score_provider`` published for the day, verifies it, and
+    sends its weights. No labelling, no model evaluation, no GPU -- and no
+    independent opinion, which is the trade `ScoringConfig.score_source`
+    describes.
+    """
+    config = load(args.config)
+    day = _target_day(args)
+    provider = config.scoring.score_provider
+    wallet = open_wallet(config)
+    note(
+        f"validator {wallet.hotkey.ss58_address} mirroring {provider} "
+        f"for {day.isoformat()} on netuid={config.chain.netuid}"
+    )
+
+    subtensor = chain.connect(config.chain.network)
+    metagraph = chain.sync_metagraph_view(subtensor, netuid=config.chain.netuid)
+    burn_hotkey = chain.read_subnet_owner_hotkey(subtensor, netuid=config.chain.netuid)
+
+    with DbClient(
+        base_url=config.db.base_url,
+        netuid=config.chain.netuid,
+        keypair=wallet.hotkey,
+        timeout_seconds=config.db.request_timeout_seconds,
+        max_retries=config.db.max_retries,
+    ) as db:
+        note(f"fetching {provider}'s record for {day.isoformat()}")
+        submission = db.get_evaluation(day, provider)
+        # The snapshot this validator can see for itself, so a record describing
+        # a different corpus is caught rather than trusted.
+        snapshot = db.get_snapshot(day)
+        weights = verify_mirrored(
+            submission,
+            provider=provider,
+            day=day,
+            netuid=config.chain.netuid,
+            metagraph=metagraph,
+            snapshot_content_hash=snapshot.content_hash,
+        )
+
+    out(
+        table(
+            [
+                ("day", day.isoformat()),
+                ("provider", provider),
+                ("scoring version", submission.scoring_version),
+                ("snapshot", submission.snapshot_content_hash[:12]),
+                ("corpus", submission.corpus_content_hash[:12]),
+                ("weighted hotkeys", str(len(weights))),
+                ("burn", str(submission.burned_weight)),
+            ]
+        )
+    )
+
+    if config.validator.dry_run:
+        note("")
+        note("dry run: the record verified but nothing was submitted")
+        return EXIT_OK
+    if not config.validator.submit_weights:
+        note("submit_weights is off: the record verified but nothing was sent")
+        return EXIT_OK
+
+    capabilities = chain.detect_capabilities(subtensor)
+    receipt = submit_allocation(
+        weights=weights,
+        burn_hotkey=burn_hotkey,
+        config=config,
+        subtensor=subtensor,
+        wallet=wallet,
+        mechid=0 if capabilities.supports_mechid else None,
+    )
+    note(f"weights submitted: {receipt or 'no receipt returned'}")
+    saved = _write_allocation(config, day=day, weights=weights, burn_hotkey=burn_hotkey)
+    note(f"allocation saved for re-submission: {saved}")
+    return EXIT_OK
+
+
 def cmd_run(args: argparse.Namespace) -> int:
     """Run one cycle: label, evaluate, score, submit."""
     config = load(args.config)
+    if config.scoring.score_source is ScoreSource.ENDPOINT:
+        # `validator run` stays the one command an operator schedules, whichever
+        # mode they chose; the config decides what it does.
+        return cmd_mirror(args)
     day = _target_day(args)
     policy, policy_version = _policy_text(args)
 
