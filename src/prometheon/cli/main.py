@@ -62,6 +62,15 @@ def build_parser() -> argparse.ArgumentParser:
     commit.add_argument(
         "--dry-run", action="store_true", help="print the payload without writing it"
     )
+    commit.add_argument(
+        "--if-changed",
+        action="store_true",
+        help=(
+            "write only if the chain does not already hold this repo and revision. "
+            "Use this for anything on a timer: an unconditional re-commit re-dates "
+            "your claim and moves you behind an earlier copy of the same revision"
+        ),
+    )
     commit.set_defaults(handler=miner.cmd_commit)
 
     verify = with_config(

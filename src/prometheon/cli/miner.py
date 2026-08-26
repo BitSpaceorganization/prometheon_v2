@@ -27,7 +27,7 @@ from prometheon.chain.commitment import (
     read_commitment,
 )
 from prometheon.cli._common import EXIT_FAILED, EXIT_OK, load, note, open_wallet, out, table
-from prometheon.errors import ConfigError
+from prometheon.errors import CommitmentError, ConfigError
 from prometheon.registry.huggingface import HuggingFaceClient
 from prometheon.registry.validation import MinerEntry, ModelRegistry
 from prometheon.revision import require_valid_revision
@@ -64,7 +64,24 @@ def _commitment_from(args: argparse.Namespace) -> ModelCommitment:
 
 
 def cmd_commit(args: argparse.Namespace) -> int:
-    """Write ``(hf_repo, hf_revision)`` on chain. This is the submission."""
+    """Write ``(hf_repo, hf_revision)`` on chain. This is the submission.
+
+    ``--if-changed`` makes this a reconciler: it reads what the chain already
+    holds and writes only when that differs from what is being asked for.
+
+    That is not merely a saved extrinsic. **A commitment's priority in a
+    duplicate contest is the block of the *current* write, and the chain resets
+    it on every re-commit** (see
+    :func:`~prometheon.registry.validation._duplicate_losers`). Re-committing an
+    unchanged model therefore re-dates your claim to it and moves you behind
+    anyone who mirrored your revision earlier -- and because a Hugging Face repo
+    is a git repo, mirroring preserves the revision SHA byte for byte, so the
+    copycat's claim looks identical to yours apart from being older.
+
+    An unconditional re-commit on a timer is the worst version of this: it hands
+    a copycat a fresh advantage every time it fires. Anything running on a loop
+    should pass this flag.
+    """
     config = load(args.config)
     commitment = _commitment_from(args)
     payload = encode_commitment(commitment)
@@ -88,6 +105,40 @@ def cmd_commit(args: argparse.Namespace) -> int:
 
     wallet = open_wallet(config)
     subtensor = chain.connect(config.chain.network)
+
+    if args.if_changed:
+        hotkey = wallet.hotkey.ss58_address
+        view = chain.sync_metagraph_view(subtensor, netuid=config.chain.netuid)
+        resolved = view.uid_for(hotkey)
+        if resolved is None:
+            raise ConfigError(
+                f"hotkey {hotkey} is not registered on netuid={config.chain.netuid}; "
+                "register before committing a model"
+            )
+        # A commitment that cannot be read is not a commitment that matches.
+        # Decoding failures fall through to the write deliberately: the whole
+        # point of the loop this serves is that an unreadable or missing
+        # commitment gets repaired, and only an exact match is a reason to
+        # leave the chain alone.
+        try:
+            current = read_commitment(
+                subtensor, netuid=config.chain.netuid, hotkey=hotkey, uid=resolved
+            )
+        except CommitmentError as exc:
+            current = None
+            note(f"could not read the current commitment ({exc}); writing")
+        if current is not None and (current.hf_repo, current.hf_revision) == (
+            commitment.hf_repo,
+            commitment.hf_revision,
+        ):
+            note("")
+            note(
+                f"unchanged on netuid={config.chain.netuid}: "
+                f"{commitment.hf_repo}@{commitment.hf_revision[:10]} is already committed; "
+                "nothing written, claim priority preserved"
+            )
+            return EXIT_OK
+
     written = publish_commitment(
         subtensor, wallet=wallet, netuid=config.chain.netuid, commitment=commitment
     )
