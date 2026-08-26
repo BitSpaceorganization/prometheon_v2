@@ -149,6 +149,7 @@ def label_items(
     fence_factory: Callable[[], str] = new_fence,
     max_consecutive_dead_chunks: int = DEFAULT_MAX_CONSECUTIVE_DEAD_CHUNKS,
     max_exclusion_rate_bp: int = DEFAULT_MAX_EXCLUSION_RATE_BP,
+    on_batch: Callable[[Mapping[str, bool]], None] | None = None,
 ) -> LabelledCorpus:
     """Label every item, splitting and retrying around unusable responses.
 
@@ -170,6 +171,19 @@ def label_items(
 
     Without them a fully broken endpoint returned an empty corpus that looked
     exactly like a successful run over unlabellable content.
+
+    ``on_batch`` is called with the verdicts obtained for each chunk, as soon as
+    that chunk is done, and exists so a caller can persist them before the run
+    finishes. Nothing was durable until this function returned, so a restart
+    part-way through a corpus discarded every verdict already paid for -- an
+    hour of labelling a ten-thousand-item day is a wide window, and on a box
+    that restarts under you it was being lost repeatedly. The callback sees
+    only labels, never exclusions: an excluded item has no verdict to keep, and
+    a later run must be free to try it again.
+
+    A raising callback aborts the run. Persistence is the caller's policy, so
+    whether a failed write is worth stopping for is the caller's call to make,
+    not a decision to bury here.
     """
     if batch_size < 1:
         raise LabellingError(f"batch_size must be at least 1, got {batch_size}")
@@ -203,6 +217,19 @@ def label_items(
             consecutive_dead_chunks += 1
         else:
             consecutive_dead_chunks = 0
+
+        if on_batch is not None:
+            # Scoped to this chunk's ids rather than handing over `run.labels`:
+            # a chunk that split still only ever produces verdicts for its own
+            # items, and re-offering the whole accumulated map every time would
+            # make each callback cost more than the one before it.
+            fresh = {
+                item.item_id: run.labels[item.item_id]
+                for item in chunk
+                if item.item_id in run.labels
+            }
+            if fresh:
+                on_batch(fresh)
 
         if consecutive_dead_chunks >= max_consecutive_dead_chunks:
             # Fail fast, loudly, and before burning the call budget.

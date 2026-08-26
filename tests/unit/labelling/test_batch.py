@@ -580,3 +580,94 @@ class TestAWellFormedAnswerIsNotAutomaticallyATrueOne:
 
         # One ask, then stop. Not a splitting cascade.
         assert harness.calls == 1
+
+
+class TestHandingBatchesOverAsTheyLand:
+    """``on_batch``: what a caller may persist before the run is finished.
+
+    Nothing was durable until :func:`label_items` returned, so any interruption
+    part-way through a corpus discarded every verdict already bought. On a box
+    that restarts under a long run that is a repeated bill for the same day.
+    """
+
+    def test_each_batch_is_handed_over_as_it_completes(
+        self, build_labeller: Callable[..., Harness]
+    ) -> None:
+        seen: list[dict[str, bool]] = []
+        harness = build_labeller(lambda items: verdicts(items, TRUTH))
+
+        label_items(
+            CORPUS,
+            client=harness.client,
+            policy=POLICY,
+            batch_size=2,
+            on_batch=lambda batch: seen.append(dict(batch)),
+        )
+
+        # One hand-over per chunk, carrying that chunk and nothing else. A
+        # callback re-offered the whole accumulated map would cost more on
+        # every call and rewrite verdicts already on disk.
+        assert seen == [{"a": True, "b": False}, {"c": True, "d": False}]
+
+    def test_an_interrupted_run_has_already_handed_over_what_it_finished(
+        self, build_labeller: Callable[..., Harness]
+    ) -> None:
+        """The regression this exists for.
+
+        The first batch is paid for and answered; the endpoint then dies. Those
+        verdicts must be in the caller's hands before the exception is, or the
+        retry buys them a second time.
+        """
+        seen: list[dict[str, bool]] = []
+
+        def dies_after_one(items: list[dict[str, str]]) -> Any:
+            if len(seen) >= 1:
+                raise httpx.ConnectError("endpoint went away")
+            return verdicts(items, TRUTH)
+
+        harness = build_labeller(dies_after_one)
+        with pytest.raises(LabellingError):
+            label_items(
+                CORPUS,
+                client=harness.client,
+                policy=POLICY,
+                batch_size=2,
+                on_batch=lambda batch: seen.append(dict(batch)),
+            )
+
+        assert seen == [{"a": True, "b": False}]
+
+    def test_an_excluded_item_is_never_handed_over(
+        self, build_labeller: Callable[..., Harness]
+    ) -> None:
+        """An exclusion is the absence of a verdict, not a verdict.
+
+        Persisting it would mean a later run never retries the item, and the
+        day would carry a hole nothing can fill.
+        """
+        seen: list[dict[str, bool]] = []
+
+        def skips_b(items: list[dict[str, str]]) -> Any:
+            kept = [item for item in items if item["id"] != "b"]
+            if not kept:
+                return json.dumps({"labels": []})
+            return verdicts(kept, TRUTH)
+
+        harness = build_labeller(skips_b)
+        corpus = label_items(
+            CORPUS,
+            client=harness.client,
+            policy=POLICY,
+            batch_size=4,
+            on_batch=lambda batch: seen.append(dict(batch)),
+        )
+
+        assert "b" in corpus.excluded_ids
+        assert all("b" not in batch for batch in seen)
+        assert {k for batch in seen for k in batch} == {"a", "c", "d"}
+
+    def test_no_callback_is_still_the_supported_shape(
+        self, build_labeller: Callable[..., Harness]
+    ) -> None:
+        corpus, _ = _run(build_labeller, lambda items: verdicts(items, TRUTH))
+        assert corpus.labels == {"a": True, "b": False, "c": True, "d": False}
