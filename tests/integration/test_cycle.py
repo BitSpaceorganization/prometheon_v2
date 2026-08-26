@@ -314,9 +314,13 @@ def test_dataset_valid_is_only_correctly_labelled_items() -> None:
     hk = MINER_A.ss58_address
     items = [
         ContentItem(id="a", content="aa", author_hotkey=hk, claimed_violating=True, submitted_at=1),
-        ContentItem(id="b", content="bb", author_hotkey=hk, claimed_violating=False, submitted_at=1),
+        ContentItem(
+            id="b", content="bb", author_hotkey=hk, claimed_violating=False, submitted_at=1
+        ),
         ContentItem(id="c", content="cc", author_hotkey=hk, claimed_violating=True, submitted_at=1),
-        ContentItem(id="d", content="dd", author_hotkey=hk, claimed_violating=False, submitted_at=1),
+        ContentItem(
+            id="d", content="dd", author_hotkey=hk, claimed_violating=False, submitted_at=1
+        ),
         ContentItem(id="e", content="ee", author_hotkey=hk, claimed_violating=True, submitted_at=1),
     ]
     snapshot = SimpleNamespace(

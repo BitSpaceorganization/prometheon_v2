@@ -555,7 +555,9 @@ def _label_items_for(snapshot: DaySnapshot) -> list[LabelItem]:
     content_hash = snapshot.manifest.content_hash
     items = [
         *(
-            LabelItem(item_id=item.id, content=item.content, expected_violating=item.claimed_violating)
+            LabelItem(
+                item_id=item.id, content=item.content, expected_violating=item.claimed_violating
+            )
             for item in snapshot.test_items
         ),
         *(
