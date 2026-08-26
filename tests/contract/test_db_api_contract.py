@@ -39,15 +39,19 @@ SIGNED_BYTES = (
     b'?cursor=eyJjIjoidGVzdCIsImQiOiIyMDI2LTA4LTA1IiwibyI6NTAwfQ&limit=500"}'
 )
 
-TEST_ITEM_DIGEST = "a1a6993cd3e2b94d2a92e577769bd8f6e2cc80c7d909fc1d52e2fc57167be5fb"
-TEST_COLLECTION_HASH = "afb2b787d6f4f92acf239a7d0cd2a53037ae1df1f5c500b20fc63a31b6510748"
-WORKED_CONTENT_HASH = "edfd1b49630d642d4df84b6e0d9c6a623c397e285020dc28b1896cbb055b7b4b"
+TEST_ITEM_DIGEST = "dc3cb7312c042b4c037f7a4c69c9c447c92c339ca4c00c9b673023e91b989aa0"
+TEST_COLLECTION_HASH = "6217b30bab8e8e6049f9d0dc1105422fc5bea4179794bcb70bcaab73a0739491"
+WORKED_CONTENT_HASH = "6ea0849e4fef4f8d2881180e63b9a95013b94a7bb6b24f55a381878f55aa3b53"
 EMPTY_DAY_CONTENT_HASH = "f1afe099299e07dabf31b211b6dcee506d5d5fe95333978154c74c5becb77f92"
 
 
 def _test_item() -> models.TestContentItem:
     return models.TestContentItem(
-        id="t1", content="example", author_hotkey=HOTKEY, submitted_at=1_786_000_000
+        id="t1",
+        content="example",
+        author_hotkey=HOTKEY,
+        claimed_violating=True,
+        submitted_at=1_786_000_000,
     )
 
 

@@ -94,6 +94,7 @@ class TestSnapshotContentHash:
                 id=item.id,
                 content=item.content,
                 author_hotkey=HOTKEY,
+                claimed_violating=True,
                 submitted_at=item.observed_at,
             )
             for item in production

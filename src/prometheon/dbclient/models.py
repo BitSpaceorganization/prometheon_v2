@@ -129,16 +129,24 @@ class ErrorResponse(BaseModel):
 
 
 class TestContentItem(_Strict):
-    """One piece of miner-sourced content that is *meant* to violate policy.
+    """One piece of miner-sourced labelled moderation content.
 
     Attributed, because attribution is what the dataset half of the reward is
     computed from and what self-exclusion needs: a miner is never scored on
     items its own users contributed.
+
+    ``claimed_violating`` is the submitter's own label (true = they say it breaks
+    policy, false = a compliant near-miss). It is a *claim*, never ground truth:
+    the validator still labels every item with its own labeller, and the dataset
+    reward counts only claims the labeller confirms. Balancing the corpus this
+    way is what keeps the model-accuracy metric from being won by always
+    answering "violating".
     """
 
     id: str = Field(min_length=1, max_length=128)
     content: str = Field(min_length=1, max_length=MAX_CONTENT_CHARS)
     author_hotkey: str = Field(min_length=1, max_length=64)
+    claimed_violating: bool
     submitted_at: int = Field(ge=0)
 
     @field_validator("author_hotkey")
@@ -427,6 +435,7 @@ def test_item_digest(item: TestContentItem) -> bytes:
     return _member_digest(
         {
             "author_hotkey": item.author_hotkey,
+            "claimed_violating": item.claimed_violating,
             "content": item.content,
             "id": item.id,
             "submitted_at": item.submitted_at,

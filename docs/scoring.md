@@ -31,11 +31,14 @@ All of it is computed inside one cycle and combined into a **single**
 
 ## Dataset contribution (⅔ of the pool, 40% of total)
 
-A miner's users submit test content they believe violates policy. After
-labelling, some of it does and some of it does not.
+A miner's users submit balanced test content: for each item they claim whether
+it violates policy or is compliant. Each validator labels every item with its
+own labeller and rewards only the claims the labeller confirms — so the claim is
+a prior, never trusted as ground truth, and a member cannot inflate `V` by
+claiming everything violates.
 
 ```text
-V = items labelled violating      (the usable contribution)
+V = items correctly labelled      (the claim matched the labeller's verdict)
 S = items submitted
 score = V × (V / S)  =  V² / S
 ```
@@ -67,14 +70,16 @@ rather than burning the remainder.
 ### Accuracy
 
 Every eligible model is run over the whole corpus: test content from *other*
-miners carrying whichever verdict labelling gave it, plus production content
-carrying both labels. It is scored on how often it agreed with the ground truth.
+miners carrying whichever verdict labelling gave it, plus production content. It
+is scored on how often it agreed with the ground truth (the validator's own
+labeller).
 
-Test content that came back non-violating is part of that corpus. A user
-submitted it believing it broke the policy and it did not, which makes it a
-negative example and one of the harder ones to get right. It still costs its
-author -- it counts in `S` and not in `V` -- but the model half is measured on
-it too, rather than it being discarded after being paid for.
+The test corpus is now deliberately balanced — submitters label roughly half
+their items compliant — so a model can no longer win by answering "violating" to
+everything: accuracy only rises by getting both classes right. A correctly
+labelled compliant item is a genuine negative and one of the harder ones to
+identify; a mislabelled item still costs its author (it counts in `S`, not `V`)
+and is measured on the model half too.
 
 ```text
 accuracy = correct / total

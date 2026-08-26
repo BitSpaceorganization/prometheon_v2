@@ -52,12 +52,15 @@ class RecordingSleep:
 _SEQUENCE = itertools.count(1)
 
 
-def make_test_items(count: int, *, author: str, prefix: str = "t") -> tuple[TestContentItem, ...]:
+def make_test_items(
+    count: int, *, author: str, prefix: str = "t", claimed_violating: bool = True
+) -> tuple[TestContentItem, ...]:
     return tuple(
         TestContentItem(
             id=f"{prefix}{index}",
             content=f"test content {index}",
             author_hotkey=author,
+            claimed_violating=claimed_violating,
             submitted_at=CYCLE_AT - 3600 * index,
         )
         for index in range(1, count + 1)

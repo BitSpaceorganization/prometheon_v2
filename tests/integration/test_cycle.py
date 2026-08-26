@@ -302,6 +302,35 @@ def config() -> Config:
     )
 
 
+def test_dataset_valid_is_only_correctly_labelled_items() -> None:
+    """V rewards accurate labelling of both classes and cannot be gamed.
+
+    A claim the labeller confirms is valid; a mislabelled claim (either
+    direction) and an unlabellable item are submitted but not valid. This is
+    what stops a miner inflating V by claiming everything violates.
+    """
+    from prometheon.cli.cycle import _dataset_submissions
+
+    hk = MINER_A.ss58_address
+    items = [
+        ContentItem(id="a", content="aa", author_hotkey=hk, claimed_violating=True, submitted_at=1),
+        ContentItem(id="b", content="bb", author_hotkey=hk, claimed_violating=False, submitted_at=1),
+        ContentItem(id="c", content="cc", author_hotkey=hk, claimed_violating=True, submitted_at=1),
+        ContentItem(id="d", content="dd", author_hotkey=hk, claimed_violating=False, submitted_at=1),
+        ContentItem(id="e", content="ee", author_hotkey=hk, claimed_violating=True, submitted_at=1),
+    ]
+    snapshot = SimpleNamespace(
+        eligible_miners=[EligibleMiner(hotkey=hk, qualified_user_count=1)],
+        test_items=items,
+    )
+    # a: T==T correct, b: F==F correct, c: T!=F wrong, d: F!=T wrong, e: unlabellable.
+    labelled = SimpleNamespace(labels={"a": True, "b": False, "c": False, "d": True, "e": None})
+
+    (submission,) = _dataset_submissions(snapshot, labelled)
+    assert submission.submitted_count == 5
+    assert submission.valid_count == 2
+
+
 @pytest.fixture
 def world(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setenv("PROMETHEON_TEST_KEY", "test-key")
@@ -311,6 +340,7 @@ def world(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
             id=f"t{n:03d}",
             content=f"a threatening message {n}",
             author_hotkey=(MINER_A if n % 2 == 0 else MINER_B).ss58_address,
+            claimed_violating=True,
             submitted_at=1,
         )
         for n in range(20)

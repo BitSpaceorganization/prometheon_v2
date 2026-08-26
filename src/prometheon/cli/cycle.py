@@ -555,7 +555,7 @@ def _label_items_for(snapshot: DaySnapshot) -> list[LabelItem]:
     content_hash = snapshot.manifest.content_hash
     items = [
         *(
-            LabelItem(item_id=item.id, content=item.content, expected_violating=True)
+            LabelItem(item_id=item.id, content=item.content, expected_violating=item.claimed_violating)
             for item in snapshot.test_items
         ),
         *(
@@ -629,7 +629,13 @@ def _dataset_submissions(
         if item.author_hotkey not in submitted:
             continue
         submitted[item.author_hotkey] += 1
-        if labelled.labels.get(item.id) is True:
+        # Valid = correctly labelled: the labeller's independent verdict matches
+        # the submitter's claim. Rewards accurate labelling of BOTH classes and
+        # stays un-gameable — a member cannot inflate V by claiming everything
+        # violates, because the labeller catches the false claim. An unlabellable
+        # item (verdict None) matches neither claim and so counts submitted, not
+        # valid.
+        if labelled.labels.get(item.id) == item.claimed_violating:
             valid[item.author_hotkey] += 1
 
     return [
