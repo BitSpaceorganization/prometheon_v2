@@ -59,6 +59,13 @@ but only when it is accurate volume.
 `S = 0` scores `0`. There is no division by zero, and a miner who submitted
 nothing contributed nothing.
 
+An item may also carry `ground_truth_violating` — the true label attached by a
+platform that generated the content itself. A validator that trusts that source
+for *its own* groups may score `claimed_violating == ground_truth_violating`
+directly, skipping the labeller for those items. It is only ever used for a
+source a validator already trusts; content it does not source is still labelled
+independently, so the field is a cost saving, not a lever on anyone's score.
+
 **The pool goes to the top 10 contributors**, split proportionally to score.
 Fewer than ten eligible contributors and the pool divides among those present
 rather than burning the remainder.

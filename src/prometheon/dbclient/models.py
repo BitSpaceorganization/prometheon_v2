@@ -147,6 +147,12 @@ class TestContentItem(_Strict):
     content: str = Field(min_length=1, max_length=MAX_CONTENT_CHARS)
     author_hotkey: str = Field(min_length=1, max_length=64)
     claimed_violating: bool
+    #: The platform's true label for its OWN generated content (null otherwise).
+    #: A validator that trusts the source may score `claimed_violating` against
+    #: this for its own groups, skipping its labeller. Never trusted for content
+    #: it does not source. Folded into the digest only when present, so days with
+    #: no platform-labelled content keep their hash.
+    ground_truth_violating: bool | None = None
     submitted_at: int = Field(ge=0)
 
     @field_validator("author_hotkey")
@@ -432,15 +438,18 @@ def _member_digest(payload: dict[str, Any]) -> bytes:
 
 
 def test_item_digest(item: TestContentItem) -> bytes:
-    return _member_digest(
-        {
-            "author_hotkey": item.author_hotkey,
-            "claimed_violating": item.claimed_violating,
-            "content": item.content,
-            "id": item.id,
-            "submitted_at": item.submitted_at,
-        }
-    )
+    payload = {
+        "author_hotkey": item.author_hotkey,
+        "claimed_violating": item.claimed_violating,
+        "content": item.content,
+        "id": item.id,
+        "submitted_at": item.submitted_at,
+    }
+    # Included only when present, so content without a platform truth (all of it
+    # until this field ships) keeps the exact digest it had before.
+    if item.ground_truth_violating is not None:
+        payload["ground_truth_violating"] = item.ground_truth_violating
+    return _member_digest(payload)
 
 
 def production_item_digest(item: ProductionContentItem) -> bytes:
