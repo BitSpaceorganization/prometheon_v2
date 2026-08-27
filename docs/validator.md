@@ -229,11 +229,35 @@ minutes.
 
 ### If the host has no cron
 
-Containers frequently have neither cron nor systemd. Any supervisor that keeps
-a process alive will do; the loop is four lines, and the point of running it
-under a supervisor rather than `nohup` is that a loop which dies stops
-re-posting silently, and the first symptom is the miners you weighted sitting
-at zero incentive.
+Containers frequently have neither cron nor systemd, so the CLI can keep its own
+clock:
+
+```bash
+uv run prometheon validator schedule --config /etc/prometheon/mainnet.toml
+```
+
+One process runs both jobs: the cycle at 04:00 UTC (`--cycle-hour` to move it)
+and the re-post on every :00 and :30. Because they share a process, a cycle that
+runs long delays the next re-post rather than submitting weights underneath
+itself — the shell version below needs a lock file to get that right.
+
+**Wake-ups are aligned to the wall clock, not to when the process started.** A
+loop that sleeps 1800 seconds from launch keeps whatever offset it happened to
+start with, so a field of validators ends up smeared across the half hour.
+Sleeping to the next boundary instead puts every validator running this on the
+same instants, whatever time each was started and however long its last cycle
+took. That is a coordination convenience rather than a consensus requirement —
+Yuma compares whatever is on chain within a tempo and nothing breaks if you are
+late — but it makes two validators' logs line up by timestamp, which is worth
+having the first time you debug a divergence.
+
+Run it under a supervisor rather than `nohup`: a loop that dies stops re-posting
+silently, and the first symptom is the miners you weighted sitting at zero
+incentive.
+
+#### Or a shell loop
+
+If you would rather not have the CLI hold the schedule:
 
 ```bash
 #!/bin/bash

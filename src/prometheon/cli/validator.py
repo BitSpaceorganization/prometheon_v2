@@ -395,6 +395,43 @@ def cmd_run(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def cmd_schedule(args: argparse.Namespace) -> int:
+    """Run the cycle daily and the re-post every half hour, in this process.
+
+    The alternative to two crontab entries, for a host that has no cron -- and
+    the two jobs share a process, so a cycle that runs long cannot have a
+    re-post submit weights underneath it. No lock file needed.
+
+    Wake-ups are aligned to the wall clock, so every validator running this
+    re-posts on the same :00/:30 instants however long its own cycle took.
+    """
+    from prometheon.cli.schedule import run_forever
+
+    config = load(args.config)
+    mode = config.scoring.score_source.value
+    note(
+        f"scheduler started: cycle at {args.cycle_hour:02d}:00 UTC in {mode} mode, "
+        f"re-post on :00 and :30"
+    )
+
+    def cycle() -> None:
+        # Fresh Namespace per run: `--date` must stay unset so each cycle
+        # targets its own yesterday rather than the day the process started.
+        cmd_run(argparse.Namespace(config=args.config, date=None))
+
+    def resubmit() -> None:
+        cmd_resubmit(argparse.Namespace(config=args.config, date=None))
+
+    run_forever(
+        cycle=cycle,
+        resubmit=resubmit,
+        cycle_hour=args.cycle_hour,
+        say=note,
+        max_iterations=args.max_iterations,
+    )
+    return EXIT_OK
+
+
 def cmd_dataset_pull(args: argparse.Namespace) -> int:
     """Download a released day's test content as JSONL.
 

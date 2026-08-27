@@ -138,6 +138,35 @@ def build_parser() -> argparse.ArgumentParser:
     )
     resubmit.set_defaults(handler=validator.cmd_resubmit)
 
+    schedule = with_config(
+        validator_commands.add_parser(
+            "schedule",
+            help="run the cycle daily and the re-post every 30 minutes, in this process",
+            description=(
+                "The alternative to two crontab entries, for a host with no cron or "
+                "systemd. One process runs both jobs, so a long cycle delays the next "
+                "re-post rather than submitting weights underneath itself. Wake-ups "
+                "align to the wall clock, so every validator running this re-posts on "
+                "the same :00 and :30 instants."
+            ),
+        )
+    )
+    schedule.add_argument(
+        "--cycle-hour",
+        type=int,
+        default=4,
+        choices=range(24),
+        metavar="HOUR",
+        help="UTC hour to start the daily cycle (default: 4)",
+    )
+    schedule.add_argument(
+        "--max-iterations",
+        type=int,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    schedule.set_defaults(handler=validator.cmd_schedule)
+
     return parser
 
 
