@@ -22,6 +22,9 @@ request_timeout_seconds = 10.0
 max_retries = 0
 
 [labelling]
+# A local OpenAI-compatible server. Any hosted provider works here too -- see
+# the mainnet example for the OpenAI and OpenRouter settings, and for why the
+# model id has to change with the base_url rather than independently of it.
 model = "gpt-5.6-sol"
 base_url = "http://127.0.0.1:8601/v1"
 api_key_env = "OPENAI_API_KEY"

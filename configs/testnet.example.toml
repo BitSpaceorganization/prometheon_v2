@@ -28,6 +28,27 @@ max_retries = 3
 
 [labelling]
 # Ground truth. Validators pay for this with their own key.
+#
+# Any OpenAI-compatible endpoint works: the three settings below are all that
+# distinguishes one provider from another, so switching needs no code change.
+# Two that are known to work, and the differences that bite:
+#
+#   OpenAI      model       = "gpt-5.6-sol"
+#               base_url    = "https://api.openai.com/v1"
+#               api_key_env = "OPENAI_API_KEY"
+#
+#   OpenRouter  model       = "openai/gpt-5.6-sol"     <- provider prefix
+#               base_url    = "https://openrouter.ai/api/v1"
+#               api_key_env = "OPENROUTER_API_KEY"
+#
+# The model id is not portable. OpenRouter namespaces every model by provider,
+# so a bare "gpt-5.6-sol" against its base_url is a 404 on the first labelling
+# call -- which is a whole cycle spent to discover a typo. Change all three
+# together or none.
+#
+# `api_key_env` names the variable, never the key. Whatever it names has to be
+# exported in the environment the cycle runs in; a loop that sources an env
+# file once at start will not see a key added afterwards until it restarts.
 model = "gpt-5.6-sol"
 base_url = "https://api.openai.com/v1"
 api_key_env = "OPENAI_API_KEY"
