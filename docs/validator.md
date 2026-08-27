@@ -200,24 +200,54 @@ the second one fails immediately at startup rather than hours into a cycle. The
 first cannot be caught that way — a stale split is valid config, just a
 different policy — so it is on you to diff.
 
-You also need the hourly re-post entry below; a pull does not add it to your
-crontab.
+You also need the 30-minute re-post entry below; a pull does not add it to
+your crontab.
 
 ---
 
-## Running it daily — **and re-posting between cycles**
+## Running it daily — **and re-posting every 30 minutes**
 
-Two entries, not one. The cycle runs once a day; the re-post runs every hour.
+Two entries, not one. The cycle runs once a day; the re-post runs every 30
+minutes.
 
 ```cron
 # The cycle: label, evaluate, score, submit. Once a day.
 0 4 * * * cd /opt/prometheon_v2 && /usr/local/bin/uv run prometheon validator run \
     --config /etc/prometheon/mainnet.toml >> /var/log/prometheon.log 2>&1
 
-# The re-post: send the same vector again so it keeps counting. Every hour.
-30 * * * * cd /opt/prometheon_v2 && /usr/local/bin/uv run prometheon validator resubmit \
+# The re-post: send the same vector again so it keeps counting. Every 30 minutes.
+*/30 * * * * cd /opt/prometheon_v2 && /usr/local/bin/uv run prometheon validator resubmit \
     --config /etc/prometheon/mainnet.toml >> /var/log/prometheon.log 2>&1
 ```
+
+### If the host has no cron
+
+Containers frequently have neither cron nor systemd. Any supervisor that keeps
+a process alive will do; the loop is four lines, and the point of running it
+under a supervisor rather than `nohup` is that a loop which dies stops
+re-posting silently, and the first symptom is your miners at zero.
+
+```bash
+#!/bin/bash
+# resubmit-loop.sh -- re-post the stored vector every 30 minutes, forever.
+set -u
+while true; do
+    cd /opt/prometheon_v2 && /usr/local/bin/uv run prometheon validator resubmit \
+        --config /etc/prometheon/mainnet.toml
+    sleep 1800
+done
+```
+
+Two things that are easy to get wrong here, both learned the hard way:
+
+**Escalate rather than log-and-continue.** A loop that catches every failure and
+carries on shows `RUNNING` to the supervisor while having submitted nothing for
+hours. Count consecutive failures and `exit 1` after a few, so the supervisor
+reports the process as failed and something actually alerts.
+
+**Source the environment inside the loop, or restart after changing it.** A
+script that reads an env file once at startup will not see a key you add
+afterwards. That is a cycle lost to a config change that looked applied.
 
 **Without the second entry your miners earn nothing for most of the day.**
 Weights stop counting toward consensus once `activity_cutoff` passes — 720
@@ -231,11 +261,25 @@ beyond the extrinsic: it re-sends the allocation the last cycle computed. It
 does re-read the chain, so the submission gates and the metagraph are resolved
 fresh and a miner that deregistered since is dropped exactly as it would be at
 first submission. Re-posting inside the 100-block (~20 min) weights rate limit
-— which happens when the hourly entry lands just after the daily one — is
+— which happens when a re-post lands just after the daily cycle — is
 reported and skipped, not failed.
 
-Hourly is deliberate: comfortably inside the 2.4-hour cutoff, and far enough
-above the 20-minute rate limit that the two never fight.
+Thirty minutes is deliberate, and it is bounded on both sides:
+
+| | netuid 108 | |
+|---|---|---|
+| `activity_cutoff` | 720 blocks ≈ **2.4 h** | re-post *more often* than this, or the vector stops counting |
+| `weights_set_rate_limit` | 100 blocks ≈ **20 min** | re-post *less often* than this, or submissions are refused |
+
+Thirty minutes sits between the two with margin at each end: about five
+re-posts inside every cutoff window, so losing one to a rate-limit collision or
+a transient chain error costs nothing, and comfortably clear of the 20-minute
+floor. Hourly also works but leaves only two posts per window, so a single
+missed one puts you within an hour of being masked out of consensus.
+
+A re-post that lands inside the rate limit — which happens when the daily cycle
+has just submitted — is reported and skipped, not failed. Do not treat that log
+line as an error.
 
 Results go to stdout, progress to stderr, so a log keeps both and a pipe keeps
 only the result.
@@ -309,13 +353,13 @@ burn               599980
 ```
 
 Then the same two crontab entries as `local` mode — the daily fetch and the
-hourly re-post. A mirrored vector expires against `activity_cutoff` exactly like
+30-minute re-post. A mirrored vector expires against `activity_cutoff` exactly like
 a computed one, so `validator resubmit` is not optional:
 
 ```cron
 0  4 * * * cd /opt/prometheon_v2 && /usr/local/bin/uv run prometheon validator run \
     --config /etc/prometheon/mainnet.toml >> /var/log/prometheon.log 2>&1
-30 * * * * cd /opt/prometheon_v2 && /usr/local/bin/uv run prometheon validator resubmit \
+*/30 * * * * cd /opt/prometheon_v2 && /usr/local/bin/uv run prometheon validator resubmit \
     --config /etc/prometheon/mainnet.toml >> /var/log/prometheon.log 2>&1
 ```
 
