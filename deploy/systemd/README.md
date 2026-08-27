@@ -13,7 +13,8 @@ score counting until the next one.
 | `prometheon-validator.timer` | daily, 04:00 UTC | labelling + evaluation |
 | `prometheon-resubmit.timer` | hourly | one extrinsic |
 
-**Running only the first one earns your miners nothing for most of the day.**
+**Running only the first one earns the miners you weighted nothing for most of
+the day.**
 Weights stop counting toward consensus once `activity_cutoff` passes — 720
 blocks, about 2.4 hours on netuid 108 — while the cycle runs every 24. For the
 remaining ~21 hours the validator's row is masked out, and every miner it

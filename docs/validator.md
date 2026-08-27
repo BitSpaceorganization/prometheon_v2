@@ -232,7 +232,8 @@ minutes.
 Containers frequently have neither cron nor systemd. Any supervisor that keeps
 a process alive will do; the loop is four lines, and the point of running it
 under a supervisor rather than `nohup` is that a loop which dies stops
-re-posting silently, and the first symptom is your miners at zero.
+re-posting silently, and the first symptom is the miners you weighted sitting
+at zero incentive.
 
 ```bash
 #!/bin/bash
@@ -256,7 +257,8 @@ reports the process as failed and something actually alerts.
 script that reads an env file once at startup will not see a key you add
 afterwards. That is a cycle lost to a config change that looked applied.
 
-**Without the second entry your miners earn nothing for most of the day.**
+**Without the second entry the miners you weighted earn nothing for most of the
+day.**
 Weights stop counting toward consensus once `activity_cutoff` passes — 720
 blocks on netuid 108, about 2.4 hours — while a cycle runs every 24. For the
 remaining ~21 hours the validator's row is masked out of consensus, and the
