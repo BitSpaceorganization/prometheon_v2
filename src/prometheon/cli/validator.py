@@ -15,7 +15,7 @@ import re
 import time
 from collections.abc import Mapping
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 from prometheon.chain import subtensor as chain
 from prometheon.cli._common import (
@@ -209,6 +209,34 @@ def cmd_resubmit(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _wait_for_weights_window(
+    subtensor: Any,
+    *,
+    config: Config,
+    wallet: Any,
+    attempts: int = 40,
+    sleep: Any = time.sleep,
+) -> None:
+    """Block until this hotkey may set weights again.
+
+    Bounded: `weights_set_rate_limit` is 100 blocks (~20 min) on netuid 108, so
+    the window always clears. The cap exists so a chain that never reports the
+    limit clearing fails loudly instead of hanging a scheduler forever.
+    """
+    for _ in range(attempts):
+        waiting = chain.blocks_until_weights_allowed(
+            subtensor, netuid=config.chain.netuid, hotkey=wallet.hotkey.ss58_address
+        )
+        if waiting <= 0:
+            return
+        note(f"rate limit: {waiting} blocks (~{waiting * 12 / 60:.0f} min) before weights land")
+        sleep(min(waiting, 10) * 12 + 6)
+    raise ConfigError(
+        "the weights rate limit never cleared; refusing to spin. Something else "
+        "is submitting with this hotkey, or the chain is not advancing"
+    )
+
+
 def cmd_mirror(args: argparse.Namespace) -> int:
     """Submit another validator's published scores instead of computing any.
 
@@ -275,6 +303,18 @@ def cmd_mirror(args: argparse.Namespace) -> int:
         return EXIT_OK
 
     capabilities = chain.detect_capabilities(subtensor)
+
+    # Wait the rate limit out rather than raising into it. A mirror cycle and a
+    # re-post both run on timers and land inside the 100-block (~20 min) window
+    # routinely; `cmd_resubmit` skips because it retries in thirty minutes, but
+    # this call has a specific day's vector to land and skipping would lose it.
+    #
+    # Raising is what the previous version did, and under a supervisor that is
+    # a restart loop: the process exits non-zero, comes back, re-runs the whole
+    # cycle, and hits the same limit. Observed three times over before one
+    # submission landed.
+    _wait_for_weights_window(subtensor, config=config, wallet=wallet)
+
     receipt = submit_allocation(
         weights=weights,
         burn_hotkey=burn_hotkey,
@@ -396,6 +436,21 @@ def cmd_run(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+def _last_completed_cycle_day(config: Config) -> dt.date | None:
+    """The day the last cycle submitted, from the allocation state file.
+
+    ``None`` when there is no state, it cannot be read, or its day is not a
+    date -- all of which mean "no cycle is known to have run", which is the
+    safe answer: the cost of re-running one is a cycle, and the cost of
+    wrongly skipping one is a day nobody is paid for.
+    """
+    try:
+        state = json.loads(_state_path(config).read_text(encoding="utf-8"))
+        return dt.date.fromisoformat(str(state["day"]))
+    except (OSError, KeyError, ValueError, json.JSONDecodeError):
+        return None
+
+
 def cmd_schedule(args: argparse.Namespace) -> int:
     """Run the cycle daily and the re-post every half hour, in this process.
 
@@ -423,11 +478,21 @@ def cmd_schedule(args: argparse.Namespace) -> int:
     def resubmit() -> None:
         cmd_resubmit(argparse.Namespace(config=args.config, date=None))
 
+    # Seed the once-a-day guard from the state file the last cycle wrote, so a
+    # restart does not re-run a cycle that already submitted. In memory alone
+    # this resets on every start, and a supervisor restarting a crashing
+    # validator would re-run the cycle each time -- in `local` mode that means
+    # re-labelling a corpus that is already paid for.
+    already = _last_completed_cycle_day(config)
+    if already is not None:
+        note(f"last cycle on record: {already.isoformat()}")
+
     run_forever(
         cycle=cycle,
         resubmit=resubmit,
         cycle_hour=args.cycle_hour,
         say=note,
+        last_cycle_day=already,
         max_iterations=args.max_iterations,
     )
     return EXIT_OK

@@ -162,3 +162,65 @@ class TestTheLoop:
             max_iterations=6,
         )
         assert not any(overlaps), "a re-post ran while the cycle was in flight"
+
+
+class TestSurvivingARestart:
+    """The once-a-day guard has to outlive the process.
+
+    A supervisor restarting a crashing validator re-ran the whole cycle on
+    every start, because the guard lived only in memory. Observed as three
+    `scheduler started` lines and three cycles before one submission landed --
+    cheap while mirroring, but in `local` mode that is the labelling bill again
+    each time, and labelling is the only real bill.
+    """
+
+    def _clock(self, start: dt.datetime):
+        state = {"now": start}
+        return (
+            (lambda: state["now"]),
+            (lambda s: state.__setitem__("now", state["now"] + dt.timedelta(seconds=s))),
+        )
+
+    def test_a_restart_does_not_rerun_a_cycle_already_recorded(self) -> None:
+        now, sleep = self._clock(_at(9, 0))
+        cycles = []
+        run_forever(
+            cycle=lambda: cycles.append(now().date()),
+            resubmit=lambda: None,
+            cycle_hour=4,
+            now=now,
+            sleep=sleep,
+            last_cycle_day=dt.date(2026, 8, 27),  # what the state file says
+            max_iterations=6,
+        )
+        assert cycles == [], "the day was already submitted before the restart"
+
+    def test_a_restart_still_runs_a_day_that_was_never_submitted(self) -> None:
+        """Yesterday's state must not suppress today's cycle."""
+        now, sleep = self._clock(_at(9, 0))
+        cycles = []
+        run_forever(
+            cycle=lambda: cycles.append(now().date()),
+            resubmit=lambda: None,
+            cycle_hour=4,
+            now=now,
+            sleep=sleep,
+            last_cycle_day=dt.date(2026, 8, 26),  # a day behind
+            max_iterations=4,
+        )
+        assert cycles == [dt.date(2026, 8, 27)]
+
+    def test_no_state_at_all_runs_the_cycle(self) -> None:
+        """A fresh validator has no state file; that must not mean 'skip'."""
+        now, sleep = self._clock(_at(9, 0))
+        cycles = []
+        run_forever(
+            cycle=lambda: cycles.append(now().date()),
+            resubmit=lambda: None,
+            cycle_hour=4,
+            now=now,
+            sleep=sleep,
+            last_cycle_day=None,
+            max_iterations=4,
+        )
+        assert cycles == [dt.date(2026, 8, 27)]

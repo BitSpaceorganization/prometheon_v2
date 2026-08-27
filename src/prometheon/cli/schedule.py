@@ -84,6 +84,7 @@ def run_forever(
     now: Callable[[], dt.datetime] = lambda: dt.datetime.now(dt.timezone.utc),
     sleep: Callable[[float], None] = time.sleep,
     say: Callable[[str], None] = lambda _message: None,
+    last_cycle_day: dt.date | None = None,
     max_iterations: int | None = None,
 ) -> None:
     """Run the cycle daily and the re-post on every boundary, indefinitely.
@@ -93,8 +94,13 @@ def run_forever(
     schedule in milliseconds. Both are called for their effect; a raising job is
     reported and the loop continues, because one failed cycle must not stop the
     re-posts that keep yesterday's vector alive.
+
+    ``last_cycle_day`` seeds the once-a-day guard from outside the process. Held
+    only in memory it does not survive a restart, so a supervisor restarting a
+    crashing validator re-runs the whole cycle every time -- cheap when
+    mirroring, but in `local` mode that is the labelling bill paid again on
+    every loop. The caller passes the day its state file already records.
     """
-    last_cycle_day: dt.date | None = None
     iterations = 0
     while max_iterations is None or iterations < max_iterations:
         current = now()
