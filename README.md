@@ -104,9 +104,27 @@ Your Hugging Face repository holds **weights, config and tokenizer — no execut
 
 ## Validators
 
-**Validating requires GPUs: 8 × RTX 5090 (256 GB total) or better.** Every
-eligible model is downloaded and run over the whole corpus daily, so this is the
-cost of validating rather than a suggestion. See [`docs/validator.md`](./docs/validator.md#hardware).
+There are two ways to run one, and they cost very different things:
+
+| | `score_source = "local"` (default) | `score_source = "endpoint"` |
+|---|---|---|
+| Hardware | **8 × RTX 5090 (256 GB) or better** | **CPU only — no GPU** |
+| Labelling key | yours to pay for | none |
+| Cycle | hours | seconds |
+| What you submit | what you measured | what another validator measured |
+| Consensus | an independent opinion | a copy of one |
+
+**Local mode requires those GPUs.** Every eligible model is downloaded and run
+over the whole corpus daily, so it is the cost of validating rather than a
+suggestion.
+
+**Endpoint mode needs no GPU and no labelling key.** It fetches a signed record
+another validator published, checks its provenance, and submits its weights —
+which is how you validate without a GPU budget. It also contributes no
+independent opinion, and consensus only detects a wrong provider by validators
+disagreeing with it, so read the trade-off before choosing it.
+
+See [`docs/validator.md`](./docs/validator.md#hardware).
 
 
 A validator runs **one cycle per day**, starting at 04:00 UTC against the previous day's data.
@@ -114,7 +132,8 @@ A validator runs **one cycle per day**, starting at 04:00 UTC against the previo
 ```bash
 cp configs/mainnet.example.toml ~/prometheon-mainnet.toml   # then edit [wallet]
 export OPENAI_API_KEY="…"        # you pay for ground-truth labelling
-# no inference key: validators download each model and run it on their own GPU
+# no inference key: in local mode a validator downloads each model and runs it
+# on its own GPU. In endpoint mode neither this key nor a GPU is needed.
 
 uv run prometheon validator run --config ~/prometheon-mainnet.toml
 ```

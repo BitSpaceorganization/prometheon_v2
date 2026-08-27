@@ -8,8 +8,15 @@ nothing at evaluation time.
 
 ## Hardware
 
-**Validating requires GPUs, and the floor is 8 × RTX 5090 (32 GB each, 256 GB
-total) or better.** This is not a recommendation. Validators download every
+**This section applies to `score_source = "local"`, the default — a validator
+that measures the field itself.** The other mode, `score_source = "endpoint"`,
+submits a record another validator published and needs **no GPU at all**: it is
+a CPU-only job. Skip to [Two ways to run a
+validator](#two-ways-to-run-a-validator) if that is what you are building, and
+read the cost to consensus stated there before choosing it.
+
+**Validating locally requires GPUs, and the floor is 8 × RTX 5090 (32 GB each,
+256 GB total) or better.** This is not a recommendation. Validators download every
 eligible model and run it over the whole corpus, every day, and a machine that
 cannot finish scores the field on whatever it completed — which pays miners for
 the validator's hardware rather than for their models.
@@ -351,6 +358,35 @@ corpus             591dcacfaa2d
 weighted hotkeys   9
 burn               599980
 ```
+
+### What it requires
+
+No GPU, and no labelling key. What is left is an ordinary small server:
+
+| | |
+|---|---|
+| GPU | **none** |
+| CPU | any modern x86-64 or arm64; 2 cores is ample |
+| RAM | ~2 GB — it fetches a JSON record and verifies a signature |
+| Disk | ~1 GB for the checkout and its virtualenv |
+| Network | outbound HTTPS to the data layer, and a chain endpoint |
+| Keys | a registered hotkey **with a validator permit** |
+| Labelling key | **not needed** — you label nothing |
+
+Install without the `wrapper` extra, which is what pulls torch and the
+evaluation runtime:
+
+```bash
+uv sync                      # no --extra wrapper
+```
+
+A cycle in this mode is a fetch, five provenance checks and one extrinsic —
+seconds, not hours. Nothing downloads a model, so `model_timeout_seconds`,
+`device` and the whole `[evaluation]` section are inert.
+
+The permit still matters: mirroring changes where your numbers come from, not
+whether the chain accepts them. A hotkey without a validator permit cannot set
+weights whatever it submits.
 
 Then the same two crontab entries as `local` mode — the daily fetch and the
 30-minute re-post. A mirrored vector expires against `activity_cutoff` exactly like
