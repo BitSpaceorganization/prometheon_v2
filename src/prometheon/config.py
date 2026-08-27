@@ -262,7 +262,18 @@ class ScoringConfig(BaseModel):
         if self.score_source is ScoreSource.ENDPOINT and not self.score_provider.strip():
             raise ValueError(
                 "score_source = 'endpoint' requires score_provider to name the "
-                "validator hotkey whose published record to mirror"
+                "validator hotkey whose published record to mirror.\n"
+                "\n"
+                "To see who has published for a day:\n"
+                "    curl <db.base_url>/v2/evaluations/2026-01-31\n"
+                "\n"
+                "That lists every record for the date; each names its "
+                "validator_hotkey. Pin one of those.\n"
+                "\n"
+                "It is not filled in for you on purpose. Mirroring submits "
+                "whatever that hotkey published, so choosing it is a trust "
+                "decision -- and if this service picked, the service would be "
+                "choosing whom you trust."
             )
         return self
 

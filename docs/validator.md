@@ -359,6 +359,37 @@ weighted hotkeys   9
 burn               599980
 ```
 
+### Finding a provider
+
+You need one validator hotkey: whoever's record you want to mirror. Ask the
+data layer who has published:
+
+```bash
+curl -s https://audit.bitfan.ai/v2/evaluations/2026-01-31 \
+  | jq -r '.[] | "\(.validator_hotkey)  \(.results|length) miners  burn \(.burned_weight)"'
+```
+
+Without `jq` — worth having, because a validator host often has neither `jq`
+nor anything else beyond Python:
+
+```bash
+curl -s https://audit.bitfan.ai/v2/evaluations/2026-01-31 | python3 -c '
+import json, sys
+for r in json.load(sys.stdin):
+    print(r["validator_hotkey"], len(r["results"]), "miners", "burn", r["burned_weight"])'
+```
+
+Every record for that date, each naming the hotkey that signed it. Pick one and
+put it in `score_provider`. Nothing is filled in for you, and that is the point:
+mirroring submits whatever that hotkey published, so choosing it is a trust
+decision. If the config picked a default, the subnet would converge on one
+provider by inertia — which is exactly the failure the next section describes.
+
+Worth a look before you commit to one: fetch a few days and check the provider
+publishes consistently, and that its vector is not wildly different from the
+others listed. A validator that publishes intermittently leaves you with a stale
+vector on the days it skips.
+
 ### What it requires
 
 No GPU, and no labelling key. What is left is an ordinary small server:
