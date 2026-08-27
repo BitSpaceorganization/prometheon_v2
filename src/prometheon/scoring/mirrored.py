@@ -52,9 +52,24 @@ def verify_mirrored(
     day: dt.date,
     netuid: int,
     metagraph: MetagraphView,
+    burn_hotkey: str,
     snapshot_content_hash: str | None = None,
 ) -> dict[str, int]:
     """Check a published record and return its ``{hotkey: weight}`` map.
+
+    The map includes ``burn_hotkey`` carrying the record's ``burned_weight``.
+    The burn is part of the vector, not a leftover: it is the share the
+    provider deliberately did not pay out, and dropping it renormalises every
+    miner upward by exactly the burn fraction. That produces a vector the
+    provider never submitted while every provenance check still passes, which
+    is the worst shape a bug here can take -- a 20% burn became a silent 1.25x
+    on every miner, and the only visible symptom was the mirroring validator's
+    vtrust sitting at 0.8.
+
+    ``burn_hotkey`` is a parameter because the record carries the *amount* and
+    not the address; the caller reads the subnet owner from chain. Passing it
+    is therefore required rather than optional -- a default would let a caller
+    reintroduce the same omission by forgetting it.
 
     Raises :class:`MirroredScoreError` on any failure. Never returns a partial
     result: a record that fails one check is not a record to submit most of.
@@ -103,10 +118,12 @@ def verify_mirrored(
         )
 
     weights = {result.hotkey: result.weight for result in submission.results}
-    if submission.burned_weight:
-        weights = dict(weights)
     if not weights and not submission.burned_weight:
         raise MirroredScoreError("record carries no weights to submit")
+    if submission.burned_weight:
+        # Added, not merely acknowledged. A provider that also holds a miner
+        # row would otherwise have its burn overwrite that row, so it is summed.
+        weights[burn_hotkey] = weights.get(burn_hotkey, 0) + submission.burned_weight
     return weights
 
 

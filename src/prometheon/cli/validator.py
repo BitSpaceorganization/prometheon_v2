@@ -248,6 +248,7 @@ def cmd_mirror(args: argparse.Namespace) -> int:
             day=day,
             netuid=config.chain.netuid,
             metagraph=metagraph,
+            burn_hotkey=burn_hotkey,
             snapshot_content_hash=snapshot.content_hash,
         )
 

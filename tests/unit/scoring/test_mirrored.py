@@ -20,6 +20,9 @@ HASH_A = "a" * 64
 HASH_B = "b" * 64
 
 
+BURN = "5Burn"
+
+
 def keypair(seed: int) -> Keypair:
     return Keypair.create_from_seed(f"0x{seed:064x}")
 
@@ -83,9 +86,13 @@ def test_a_well_formed_record_yields_its_weights() -> None:
         day=DAY,
         netuid=NETUID,
         metagraph=metagraph(provider.ss58_address),
+        burn_hotkey=BURN,
         snapshot_content_hash=HASH_A,
     )
-    assert weights == {"5Miner": 1000}
+    # The burn is part of the vector. Asserting the miner rows alone is what
+    # let a dropped burn ship: every provenance check passed, and the only
+    # symptom was every miner silently inflated by the burn fraction.
+    assert weights == {"5Miner": 1000, BURN: 500}
 
 
 def test_a_record_from_another_validator_is_refused() -> None:
@@ -98,6 +105,7 @@ def test_a_record_from_another_validator_is_refused() -> None:
             day=DAY,
             netuid=NETUID,
             metagraph=metagraph(other.ss58_address),
+            burn_hotkey=BURN,
         )
 
 
@@ -112,6 +120,7 @@ def test_a_tampered_record_fails_its_signature() -> None:
             day=DAY,
             netuid=NETUID,
             metagraph=metagraph(provider.ss58_address),
+            burn_hotkey=BURN,
         )
 
 
@@ -124,6 +133,7 @@ def test_the_wrong_day_or_netuid_is_refused() -> None:
             day=DAY,
             netuid=NETUID,
             metagraph=metagraph(provider.ss58_address),
+            burn_hotkey=BURN,
         )
     with pytest.raises(MirroredScoreError, match="netuid=1"):
         verify_mirrored(
@@ -132,6 +142,7 @@ def test_the_wrong_day_or_netuid_is_refused() -> None:
             day=DAY,
             netuid=NETUID,
             metagraph=metagraph(provider.ss58_address),
+            burn_hotkey=BURN,
         )
 
 
@@ -144,6 +155,7 @@ def test_a_provider_without_a_permit_is_refused() -> None:
             day=DAY,
             netuid=NETUID,
             metagraph=metagraph(provider.ss58_address, permit=False),
+            burn_hotkey=BURN,
         )
     with pytest.raises(MirroredScoreError, match="not registered"):
         verify_mirrored(
@@ -152,6 +164,7 @@ def test_a_provider_without_a_permit_is_refused() -> None:
             day=DAY,
             netuid=NETUID,
             metagraph=metagraph(provider.ss58_address, registered=False),
+            burn_hotkey=BURN,
         )
 
 
@@ -165,5 +178,65 @@ def test_a_record_describing_a_different_snapshot_is_refused() -> None:
             day=DAY,
             netuid=NETUID,
             metagraph=metagraph(provider.ss58_address),
+            burn_hotkey=BURN,
             snapshot_content_hash="c" * 64,
         )
+
+
+def test_the_vector_sums_to_what_the_provider_submitted() -> None:
+    """The check that would have caught the dropped burn.
+
+    Provenance can pass on a vector the provider never sent. Asserting the
+    *total* is what ties the mirrored vector to the original: drop the burn and
+    the sum falls short, and every miner is silently renormalised upward by the
+    burn fraction -- 20% burn became a 1.25x on every miner in production, with
+    vtrust at 0.8 as the only visible symptom.
+    """
+    provider = keypair(1)
+    signed = record(provider)
+    weights = verify_mirrored(
+        signed,
+        provider=provider.ss58_address,
+        day=DAY,
+        netuid=NETUID,
+        metagraph=metagraph(provider.ss58_address),
+        burn_hotkey=BURN,
+        snapshot_content_hash=HASH_A,
+    )
+    expected = sum(r.weight for r in signed.results) + signed.burned_weight
+    assert sum(weights.values()) == expected
+    assert weights[BURN] == signed.burned_weight
+
+
+def test_a_record_that_burned_nothing_carries_no_burn_row() -> None:
+    """Zero burn is not a row. An explicit 0 would still be a weight the
+    provider did not assign, and `resolve_allocations` would carry it."""
+    provider = keypair(1)
+    signed = record(provider, burned_weight=0)
+    weights = verify_mirrored(
+        signed,
+        provider=provider.ss58_address,
+        day=DAY,
+        netuid=NETUID,
+        metagraph=metagraph(provider.ss58_address),
+        burn_hotkey=BURN,
+        snapshot_content_hash=HASH_A,
+    )
+    assert BURN not in weights
+
+
+def test_a_provider_that_is_also_a_miner_has_its_burn_summed_not_overwritten() -> None:
+    """The owner hotkey can hold a miner row too. Assigning rather than adding
+    would discard whichever of the two was written second."""
+    provider = keypair(1)
+    signed = record(provider, results=(result(BURN, 7, 300),))
+    weights = verify_mirrored(
+        signed,
+        provider=provider.ss58_address,
+        day=DAY,
+        netuid=NETUID,
+        metagraph=metagraph(provider.ss58_address),
+        burn_hotkey=BURN,
+        snapshot_content_hash=HASH_A,
+    )
+    assert weights[BURN] == 300 + signed.burned_weight
