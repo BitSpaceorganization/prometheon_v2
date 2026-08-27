@@ -136,6 +136,7 @@ only too long. It must never become a 500.
 | GET | `/v2/dataset/{date}/production` | public, after the embargo¹ | `ProductionContentPage` |
 | GET | `/v2/eligible-miners/{date}` | public | `EligibleMinerSet` |
 | GET | `/v2/models/{date}` | public | `ModelCommitmentSet` |
+| GET | `/v2/evaluations/{date}` | public | `EvaluationSubmission[]` |
 | GET | `/v2/evaluations/{date}/{validator_hotkey}` | public | `EvaluationSubmission` |
 | POST | `/v2/evaluations` | validator (signed) | `EvaluationAccepted` |
 
@@ -151,6 +152,12 @@ what lets a validator running `score_source = "endpoint"` mirror another
 validator's scores without trusting this layer. Serve it verbatim, signature
 included; re-encoding it so that the canonical JSON differs breaks every reader.
 `404 db.not_found` when that validator has published nothing for that day.
+
+The day-wide form lists every record published for the date, as a plain array
+of the same objects, so a reader that does not already know who published can
+discover them. A day nobody has published yet is `200` with `[]`, not `404`:
+the date is real and may simply be young. It is unpaginated -- the bound is
+the number of permitted validators.
 
 `{date}` is `YYYY-MM-DD`, UTC.
 
