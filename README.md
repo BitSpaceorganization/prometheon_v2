@@ -82,7 +82,7 @@ Every command below assumes `uv run` in front of `prometheon`. To drop the prefi
 
 ## Miners
 
-You need a Fan Group with **at least 50 registered members** — accounts that have joined your group. That gate applies to both reward streams.
+You need a Fan Group that clears **both** floors: **at least 50 registered members** — accounts that have joined your group — **and at least 25 active members**, members whose 7-day activity score clears the platform's active threshold. Both gates apply to both reward streams; the active floor is the anti-farming half a sign-up farm fails.
 
 Register your Fan Group, then connect your **Talisman** wallet (or another Substrate wallet — polkadot-js, SubWallet, Nova) with the **Connect Wallet** button in the bitfan.ai site header and sign the ownership proof, which binds your mining hotkey to your leader account. That is a platform step, not a subnet command, and nothing else works until it is done.
 
