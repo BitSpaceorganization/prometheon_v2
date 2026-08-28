@@ -140,7 +140,7 @@ exists because the quiet version of it is worse:
 | Metagraph came back empty | A live subnet always has its owner registered, so this is a failed read. Treating it as real would mark every miner deregistered and burn the day |
 | Labelling failed 3 batches in a row | An endpoint fault, not a corpus fault. Continuing produces an empty ground truth that scores every miner against nothing |
 | Labelling excluded >20% of the corpus | What is left is not a benchmark |
-| A low-base-rate batch came back unanimously violating | Evidence the labeller stopped labelling; publishing it would poison the day |
+| A low-base-rate batch came back unanimously violating, across two or more independent sources | Evidence the labeller stopped labelling; publishing it would poison the day. The two-source condition is what separates that from one submitter mislabelling their own content — for test content the low-base-rate prior is the submitter's own claim, so without it any single participant could halt every validator at will |
 | Snapshot version or content hash mismatch | You were served something other than what the manifest describes |
 
 What does **not** stop a cycle: any single miner. A model that will not
