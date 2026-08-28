@@ -139,11 +139,22 @@ class LabelItem:
     It never influences a label. The labeller is not told about it, and a
     verdict that disagrees with it is kept exactly as given: that disagreement
     is the measurement.
+
+    ``author`` is who supplied the item, and it is carried for one reason: for
+    test content the prior above is *the submitter's own claim*, so a single
+    author can decide what lands in the low-base-rate subset that
+    ``_looks_subverted`` watches. Knowing the author lets that check require
+    the evidence to span more than one of them. ``None`` means the item has no
+    submitter — production content, whose prior this service sets itself.
+
+    Like ``expected_violating``, it never influences a label and is never sent
+    to the labeller.
     """
 
     item_id: str
     content: str
     expected_violating: bool | None = None
+    author: str | None = None
 
 
 def new_fence() -> str:

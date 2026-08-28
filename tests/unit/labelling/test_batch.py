@@ -490,6 +490,22 @@ class TestAWellFormedAnswerIsNotAutomaticallyATrueOne:
             for n in range(count)
         ]
 
+    def _claimed_non_violating(self, count: int, *, author: str) -> list[LabelItem]:
+        """Test content one author tagged as non-violating.
+
+        The prior here is that author's own claim, so these are the items a
+        submitter can put into the low-base-rate subset at will.
+        """
+        return [
+            LabelItem(
+                item_id=f"{author}-{n:04d}",
+                content=f"claimed harmless {n}",
+                expected_violating=False,
+                author=author,
+            )
+            for n in range(count)
+        ]
+
     def _all_yes(self, items: list[dict[str, str]]) -> Any:
         return json.dumps({"labels": [{"id": i["id"], "violates": True} for i in items]})
 
@@ -544,6 +560,62 @@ class TestAWellFormedAnswerIsNotAutomaticallyATrueOne:
         mixed = self._production(5) + self._test_content(55)
         corpus, _ = _run(build_labeller, self._all_yes, items=mixed, batch_size=60)
         assert len(corpus.labels) == 60
+
+    def test_one_authors_mislabelled_claims_do_not_trip_the_tripwire(
+        self, build_labeller: Callable[..., Harness]
+    ) -> None:
+        """The regression this exists for, observed on 2026-08-27.
+
+        For test content the prior is the submitter's own claim, so an author
+        who uploads violating content tagged non-violating fills the
+        low-base-rate subset with items that are unanimous by construction. The
+        labeller answered every one of them correctly; the check read it as
+        subversion and aborted the cycle. Any single participant could
+        therefore halt every validator on the subnet at will, at the cost only
+        of their own dataset score.
+
+        Forty such items from one author must label normally.
+        """
+        corpus, _ = _run(
+            build_labeller,
+            self._all_yes,
+            items=self._claimed_non_violating(40, author="5Fake"),
+            batch_size=40,
+        )
+
+        assert len(corpus.labels) == 40
+        assert all(corpus.labels.values())
+        assert corpus.excluded_ids == ()
+
+    def test_the_same_pattern_across_two_authors_still_trips_it(
+        self, build_labeller: Callable[..., Harness]
+    ) -> None:
+        """The tripwire keeps its teeth.
+
+        A subverted labeller stops reading content, so its answer is unanimous
+        across whoever shares the batch. No submitter can produce items under a
+        second hotkey, so two authors agreeing is evidence the one-author case
+        is not.
+        """
+        two = self._claimed_non_violating(20, author="5AAA") + self._claimed_non_violating(
+            20, author="5BBB"
+        )
+        with pytest.raises(LabellingError, match="does not look like labelling"):
+            _run(build_labeller, self._all_yes, items=two, batch_size=40)
+
+    def test_production_content_alongside_one_author_still_trips_it(
+        self, build_labeller: Callable[..., Harness]
+    ) -> None:
+        """Production content is not submitted by a participant.
+
+        Its prior is this service's own, so it cannot be stuffed the way a
+        claim can, and each item counts as an independent source. One author's
+        claims plus genuine production content is a batch nobody could forge
+        alone.
+        """
+        mixed = self._claimed_non_violating(20, author="5Fake") + self._production(20)
+        with pytest.raises(LabellingError, match="does not look like labelling"):
+            _run(build_labeller, self._all_yes, items=mixed, batch_size=40)
 
     def test_content_with_no_prior_is_not_checked(
         self, build_labeller: Callable[..., Harness]

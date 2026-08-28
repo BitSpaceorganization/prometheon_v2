@@ -89,6 +89,15 @@ _MIN_CORPUS_FOR_RATE_CHECK: Final[int] = 50
 #: agreeing is unremarkable rather than suspicious.
 _MIN_CHUNK_FOR_BASE_RATE: Final[int] = 20
 
+#: How many independent sources the unanimous low-base-rate subset must span
+#: before it counts as evidence. For test content the prior is the submitter's
+#: own claim, so one author's items are one source however many they sent, and
+#: a single author could otherwise halt every validator by tagging violating
+#: content as non-violating. Two is the whole requirement: a subverted labeller
+#: answers unanimously across everyone in the batch, and no submitter can
+#: produce items under a second hotkey.
+_MIN_AUTHORS_FOR_BASE_RATE: Final[int] = 2
+
 #: Models wrap JSON in a fence often enough that rejecting it would send half
 #: the corpus through pointless splitting. Only a fence around the *whole*
 #: response is stripped. Prose, a second object, or a preamble is still a
@@ -393,6 +402,30 @@ def _looks_subverted(chunk: Sequence[LabelItem], verdicts: Mapping[str, bool]) -
       and is never evidence of anything.
     - Only when that subset is at least :data:`_MIN_CHUNK_FOR_BASE_RATE` items.
       Over a handful, unanimity is unremarkable.
+    - Only when that subset spans at least :data:`_MIN_AUTHORS_FOR_BASE_RATE`
+      distinct authors. See below.
+
+    **The subset must span more than one author**, because for test content the
+    prior is the submitter's own ``claimed_violating``. A submitter therefore
+    chooses what goes into the very subset this check watches, and one who
+    uploads violating content tagged as non-violating makes their own items
+    unanimous by construction. That is not evidence about the labeller — the
+    labeller answered those items correctly — but the check read it as
+    subversion and aborted the cycle, which is a halt any single participant
+    could trigger at will against every validator at once. Observed on
+    2026-08-27: one author supplied 1,472 such items into a labelling pool of
+    3,541, roughly 42 per 100-item batch, so the first batch tripped and so
+    would every one after it.
+
+    Requiring two authors separates the two cases without weakening the
+    tripwire, because it follows the shape of the fault rather than its size.
+    A subverted labeller stops reading content at all, so its answer is
+    unanimous across *whoever* is in the batch, and batches interleave authors
+    by construction (see ``_label_items_for``). A lying submitter can only make
+    their own items unanimous: they cannot submit under another hotkey, and any
+    genuinely non-violating item from anyone else in the subset returns ``NO``
+    and breaks it. So the multi-author condition is cheap for the real signal
+    and unreachable for the forged one.
 
     **It used to require the batch to be entirely low-base-rate**, and the
     caller concatenated test content ahead of production content, so every batch
@@ -421,10 +454,19 @@ def _looks_subverted(chunk: Sequence[LabelItem], verdicts: Mapping[str, bool]) -
         return ""
     if not all(verdicts.get(item.item_id) for item in low_base_rate):
         return ""
+    # Production content carries no submitter, so its prior is this service's
+    # own and every such item counts as its own independent source. Test items
+    # group by author: one author is one source no matter how many items they
+    # sent.
+    authors = {item.author for item in low_base_rate if item.author is not None}
+    sources = len(authors) + sum(1 for item in low_base_rate if item.author is None)
+    if sources < _MIN_AUTHORS_FOR_BASE_RATE:
+        return ""
     return (
         f"every one of {len(low_base_rate)} items expected to be non-violating came "
-        f"back violating, out of a batch of {len(chunk)}; treating a unanimous answer "
-        "against a low base rate as an unusable response rather than as ground truth"
+        f"back violating, out of a batch of {len(chunk)}, spanning {sources} independent "
+        "sources; treating a unanimous answer against a low base rate as an unusable "
+        "response rather than as ground truth"
     )
 
 

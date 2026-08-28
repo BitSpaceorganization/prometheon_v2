@@ -534,6 +534,13 @@ def _label_items_for(snapshot: DaySnapshot) -> list[LabelItem]:
     low base rate. Labelling uses it only to tell a legitimately unanimous batch
     apart from a subverted one.
 
+    For test content that prior is the submitter's own ``claimed_violating``,
+    so ``author`` is carried alongside it. A submitter who tags violating
+    content as non-violating fills the tripwire's low-base-rate subset with
+    items that are unanimous by construction, and without the author the check
+    cannot tell that from a labeller that stopped labelling. See
+    ``_looks_subverted``.
+
     **The order is derived from the day's content hash**, using the same keyed
     digest :func:`~prometheon.evaluation.corpus.build_corpus` sorts by. Two
     properties follow, and the labelling path had neither.
@@ -556,12 +563,19 @@ def _label_items_for(snapshot: DaySnapshot) -> list[LabelItem]:
     items = [
         *(
             LabelItem(
-                item_id=item.id, content=item.content, expected_violating=item.claimed_violating
+                item_id=item.id,
+                content=item.content,
+                expected_violating=item.claimed_violating,
+                # The prior above is this author's own claim, so the tripwire
+                # needs to know whose it is; see `_looks_subverted`.
+                author=item.author_hotkey,
             )
             for item in snapshot.test_items
         ),
         *(
-            LabelItem(item_id=item.id, content=item.content, expected_violating=False)
+            # No author: production content is not submitted by a participant,
+            # so its prior is ours and each item is its own independent source.
+            LabelItem(item_id=item.id, content=item.content, expected_violating=False, author=None)
             for item in snapshot.production_items
         ),
     ]
