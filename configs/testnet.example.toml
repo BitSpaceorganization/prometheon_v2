@@ -81,11 +81,14 @@ model_timeout_seconds = 3600.0
 # These decide emissions. Defaults are the agreed reward design; change one and
 # payouts change with it.
 # Share of miner emission that burns to the owner (uid 0) before any miner is
-# paid. At 4000, 40% burns every day and miners compete for the other 60%.
-miner_burn_share_bp = 4000
-# Dataset's share of that 60% pool. 6667 splits it two to one, which is 40% of
-# total emission for contributed data and 20% for model performance.
-dataset_share_bp = 6667
+# paid. 0 means every unit reaches a miner. Every validator must agree on
+# this number: it is not enforced by consensus, so a different value computes
+# a different vector from identical inputs and costs vtrust.
+miner_burn_share_bp = 0
+# Dataset's share of the miner pool; model performance takes the rest. At 5000
+# against an unburned pool that is 50% of total emission for contributed data
+# and 50% for model performance.
+dataset_share_bp = 5000
 dataset_top_n = 10
 model_rank_shares_bp = [3000, 1500, 500]
 # A model scored on fewer items than this is not ranked at all. Accuracy over a

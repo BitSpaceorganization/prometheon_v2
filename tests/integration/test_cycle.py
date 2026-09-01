@@ -298,7 +298,7 @@ def config() -> Config:
         # The corpus here is small, so the production floor would exclude
         # everybody. Lowered rather than inflating the fixture, because the
         # composition is what is under test.
-        scoring=ScoringConfig(model_min_scored_items=1),
+        scoring=ScoringConfig(model_min_scored_items=1, miner_burn_share_bp=4000),
     )
 
 
@@ -451,8 +451,9 @@ def test_a_whole_cycle_produces_a_submittable_weight_vector(
     # The burn hotkey is one entry in the vector, so the whole vector — miners
     # and burn together — always sums to the pool.
     assert sum(result.split.weights.values()) == 1_000_000
-    # 40% of miner emission burns to the owner before any miner is paid; a full
-    # field splits the remaining 60%.
+    # The burn this fixture configures comes off the top before any miner is
+    # paid; a full field splits the rest. Stated in the fixture rather than
+    # inherited: the shipped default is 0, and this asserts the overlay works.
     assert result.split.burn_units == 400_000
     miner_units = sum(w for hk, w in result.split.weights.items() if hk != result.split.burn_hotkey)
     assert miner_units == 600_000

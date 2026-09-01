@@ -4,16 +4,16 @@ How a day's work becomes one weight vector. Every constant here lives in
 `[scoring]` in your config, so a validator can read the numbers that decide
 emissions without reading the code.
 
-A fixed share of miner emission (`miner_burn_share_bp`, **40%** by default)
-burns to the subnet owner (uid 0) before any miner is paid. Miners compete for
-the remaining **60%** — the miner pool — which splits two to one:
+A share of miner emission (`miner_burn_share_bp`, **0 by default**) burns to the
+subnet owner (uid 0) before any miner is paid. At the default nothing is
+withheld, and the whole of it is the miner pool, split evenly:
 
 ```text
 100% miner emission
-├─ 40%  burn                    — withheld to the owner (uid 0) every day
-└─ 60%  miner pool
-   ├─ ⅔  dataset contribution  — did you supply usable evaluation data?
-   └─ ⅓  model performance     — is your model the best judge of it?
+├─  0%  burn                    — withheld to the owner (uid 0); 0 by default
+└─ 100% miner pool
+   ├─ ½  dataset contribution  — did you supply usable evaluation data?
+   └─ ½  model performance     — is your model the best judge of it?
 ```
 
 So dataset contribution is **40%** of total emission and model performance

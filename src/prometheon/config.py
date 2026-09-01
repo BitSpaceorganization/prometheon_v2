@@ -171,23 +171,29 @@ class ScoringConfig(BaseModel):
 
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", frozen=True)
 
-    #: Share of miner emission that always burns to the subnet owner (uid 0)
-    #: before any miner is paid. The remaining ``10000 - this`` is the pool the
-    #: dataset and model halves divide among miners by score. At 4000, 40% burns
-    #: every day and miners compete for the other 60%; the burn line on the
-    #: dashboard is the subnet stating that share explicitly rather than letting
-    #: the chain renormalise it away.
-    miner_burn_share_bp: int = Field(default=4000, ge=0, le=10000)
+    #: Share of miner emission that burns to the subnet owner (uid 0) before any
+    #: miner is paid. The remaining ``10000 - this`` is the pool the dataset and
+    #: model halves divide among miners by score.
+    #:
+    #: **0 by default: every unit of miner emission reaches a miner.** Set it
+    #: above zero only deliberately — the burn line on the dashboard is the
+    #: subnet stating that share explicitly rather than letting the chain
+    #: renormalise it away, so a non-zero value is a visible claim on emission
+    #: that miners competed for.
+    #:
+    #: Every validator must agree on this number. It is not enforced by
+    #: consensus, so one running a different value computes a different vector
+    #: from identical inputs and loses vtrust for a configuration difference.
+    miner_burn_share_bp: int = Field(default=0, ge=0, le=10000)
 
     #: Dataset contribution's share of the *miner pool* (what is left after the
-    #: burn share above); model performance takes the rest. At 6667 against a
-    #: 6000 pool that is 40% of total emission for data and 20% for models —
-    #: two to one, which is as close as basis points of the pool get to it.
+    #: burn share above); model performance takes the rest. At 5000 against a
+    #: full pool that is 50% of total emission for data and 50% for models.
     #:
-    #: The weighting is deliberate. Data is what every model is measured
-    #: against, it accrues daily from real users, and it is the half a miner
-    #: can earn without a deployed model at all.
-    dataset_share_bp: int = Field(default=6667, ge=0, le=10000)
+    #: The two halves are independent, and a miner can earn the dataset half
+    #: with no deployed model at all: data is what every model is measured
+    #: against, and it accrues daily from real users.
+    dataset_share_bp: int = Field(default=5000, ge=0, le=10000)
 
     #: Only the top contributors are paid, proportionally to score. With fewer
     #: than this many eligible contributors the pool divides among those

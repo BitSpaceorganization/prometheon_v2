@@ -17,7 +17,11 @@ pytestmark = pytest.mark.unit
 # is pinned separately, in `tests/contract/test_shipped_artifacts.py`; without
 # that separation every policy change rewrites unrelated expected values here.
 EVEN_SPLIT_BP = 5000
-DEFAULTS = ScoringConfig(dataset_share_bp=EVEN_SPLIT_BP)
+#: A burn of 40%, stated rather than inherited. These tests exercise the burn
+#: overlay, so the field has to be named here: the shipped default is 0, and a
+#: fixture that inherited it would test the burn arithmetic with no burn.
+BURN_BP = 4000
+DEFAULTS = ScoringConfig(miner_burn_share_bp=BURN_BP, dataset_share_bp=EVEN_SPLIT_BP)
 NO_BURN = ScoringConfig(
     miner_burn_share_bp=0, dataset_share_bp=EVEN_SPLIT_BP
 )  # isolate the allocation math

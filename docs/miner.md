@@ -1,16 +1,21 @@
 # Mining
 
-**40% of miner emission burns to the owner (uid 0) every day.** Miners compete
-for the remaining **60%**, from two independent streams:
+**Every unit of miner emission reaches a miner.** Nothing is withheld to the
+owner by default, and miners compete for the whole of it across two independent
+streams:
 
-| Stream | Share of the 60% | Of total | What it pays for |
-|---|---|---|---|
-| Dataset contribution | two thirds | **40%** | test content your Fan Group users write |
-| Model performance | one third | **20%** | how well your model judges everyone else's |
+| Stream | Share | What it pays for |
+|---|---|---|
+| Dataset contribution | **50%** | test content your Fan Group users write |
+| Model performance | **50%** | how well your model judges everyone else's |
 
-Data is weighted twice as heavily as model performance. It is what every model
-is measured against, it accrues daily from real users, and it is the half you
-can earn with no deployed model at all.
+The two halves are independent, and the dataset half is the one you can earn
+with no deployed model at all: data is what every model is measured against, and
+it accrues daily from real users.
+
+A validator *may* set `miner_burn_share_bp` above zero, which withholds that
+share to the owner (uid 0) before any miner is paid. It ships at zero, and the
+burn line on the transparency dashboard shows the value in force.
 
 **One entry gate, two streams behind it.** A Fan Group makes you a miner when it
 clears **both** floors: **at least 50 registered members** — accounts that have
