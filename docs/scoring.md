@@ -16,14 +16,19 @@ withheld, and the whole of it is the miner pool, split evenly:
    └─ ½  model performance     — is your model the best judge of it?
 ```
 
-So dataset contribution is **40%** of total emission and model performance
-**20%**. `dataset_share_bp = 6667` is that two-to-one split expressed in basis
-points of the pool; it lands at 40.002%/19.998%, since an exact two thirds is
-not representable there.
+So dataset contribution is **50%** of total emission and model performance
+**50%**. `dataset_share_bp = 5000` is that even split expressed in basis points
+of the pool.
 
-Data is weighted the more heavily of the two deliberately: it is what every
-model is measured against, it accrues daily from real users, and it is the half
-a miner can earn without a deployed model at all.
+The two halves are independent, and the dataset half is the one a miner can earn
+with no deployed model at all: data is what every model is measured against, and
+it accrues daily from real users.
+
+Both numbers are config, and neither is enforced by consensus. Two validators
+running identical code with different values compute different weight vectors
+from the same inputs, and the minority loses vtrust for a configuration
+difference rather than a disagreement about the field. Change them together with
+the rest of the network, not alone.
 All of it is computed inside one cycle and combined into a **single**
 `set_weights`; the chain sees one final weight vector, burn included.
 
@@ -153,7 +158,7 @@ discriminating must not contribute randomness to close rankings.
 rank 1 → 30%   of total miner emission
 rank 2 → 15%
 rank 3 →  5%
-             = the model third of the pool
+             = the model half of the pool (50% of total)
 ```
 
 Ranking is by score descending, with ties broken on accuracy descending and
@@ -190,10 +195,10 @@ the full miner emission is distributed.
 
 | Situation | Result |
 |---|---|
-| No dataset-eligible miners | the dataset two thirds burns |
-| No model-eligible miners | the model third burns |
-| No model scored above zero | the model third burns |
-| No model met the measurement floor | the model third burns |
+| No dataset-eligible miners | the dataset half burns |
+| No model-eligible miners | the model half burns |
+| No model scored above zero | the model half burns |
+| No model met the measurement floor | the model half burns |
 | Neither half has a claimant | the whole miner emission burns |
 
 **Everything above happens behind one entry gate.** A hotkey is scored at all
