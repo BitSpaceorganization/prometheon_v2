@@ -17,7 +17,7 @@ against it first; it enforces the same rules a real server must.
 ## 1. Authentication
 
 **The reads are public, and no envelope is required to read.** The `/v2` reads
-are a read-only database governed by the embargo rather than by a password — the
+are a read-only database governed by the embargo rather than by a password, the
 same posture the dashboard takes, and for the same reason: the corpus, and the
 numbers computed over it, are what let anyone audit the subnet. An anonymous
 caller may pull them, subject to the embargo in §4. There are no API keys.
@@ -33,11 +33,11 @@ Two rules follow, and §2 says which route each applies to:
 - **A read is all-or-nothing signed.** Send no authentication header and the
   request is anonymous; send any and it must verify completely. A signature that
   is present but malformed, expired, over the wrong bytes, or from a hotkey the
-  metagraph does not know is a 401 or 403 — never a silent downgrade to an
+  metagraph does not know is a 401 or 403, never a silent downgrade to an
   anonymous read, which would let a caller who cannot sign reach embargoed
   content by corrupting a header on purpose. No nonce is claimed for a read: a
   read is idempotent, so there is nothing a replay of one could achieve.
-- **The write, `POST /v2/evaluations`, is always signed** — envelope, nonce, and
+- **The write, `POST /v2/evaluations`, is always signed**, envelope, nonce, and
   the record's own signature. Nothing relaxes it. See §7.
 
 The signature mechanics below are the same for a signed read and for the write.
@@ -111,8 +111,8 @@ client-supplied values makes all three fields decorative.
 **`path` is the origin-form request target**, query string included, exactly as
 it appears on the wire. Neither side normalises.
 
-**Claim the nonce *after* the signature verifies.** This is the write path — a
-read claims no nonce (§1) — and claiming first lets anyone who can observe a
+**Claim the nonce *after* the signature verifies.** This is the write path, a
+read claims no nonce (§1), and claiming first lets anyone who can observe a
 nonce burn it by replaying an unsigned request. That turns a replay defence into
 a denial-of-service tool against the caller it protects.
 
@@ -141,13 +141,13 @@ only too long. It must never become a 500.
 | POST | `/v2/evaluations` | validator (signed) | `EvaluationAccepted` |
 
 ¹ Content is embargoed until 00:00 UTC on day N+2 (§4). A signed **validator**
-bypasses the embargo — it reads the current day to score it — and is the only
+bypasses the embargo; it reads the current day to score it, and is the only
 caller that reaches unreleased content. Snapshot, eligible-miner and model
 metadata name no embargoed content and are public immediately.
 
 Reading an evaluation is **public and unsigned**. The record carries its own
 SR25519 signature over `DOMAIN_EVALUATION`, so a reader verifies it against the
-`validator_hotkey` it names rather than trusting whoever served it — which is
+`validator_hotkey` it names rather than trusting whoever served it; which is
 what lets a validator running `score_source = "endpoint"` mirror another
 validator's scores without trusting this layer. Serve it verbatim, signature
 included; re-encoding it so that the canonical JSON differs breaks every reader.
@@ -195,7 +195,7 @@ version. That is an irreducible corpus error no model could overcome.
 **The embargo is two days.** Day N's content is readable by anyone at
 **00:00 UTC on day N+2**, by which point the 04:00 cycle that used it has long
 finished. Serve `403 db.embargoed` before that to every caller that has not
-signed as a validator — anonymous or miner alike — and carry `available_at` so
+signed as a validator, anonymous or miner alike, and carry `available_at` so
 it does not have to guess when to return. A signed **validator** is never
 embargoed: it must read the current day in order to score it.
 

@@ -81,7 +81,7 @@ class LabellingConfig(BaseModel):
     #: ``0`` is what keeps ground truth from wandering between validators, and
     #: is the right value for any model that accepts it. It is *not* the default
     #: here only because the default ``model`` is a gpt-5 reasoning model, which
-    #: rejects an explicit ``0`` outright — and a default that cannot run with
+    #: rejects an explicit ``0`` outright, and a default that cannot run with
     #: the neighbouring default is a trap, not a default. Set ``0`` explicitly
     #: when you point ``model`` at something that allows it.
     temperature: float | None = Field(default=1.0, ge=0.0, le=2.0)
@@ -103,7 +103,7 @@ class LabellingConfig(BaseModel):
                 f"model {self.model!r} rejects an explicit temperature of 0 "
                 "(HTTP 400: 'Only the default (1) value is supported'). "
                 "Set `temperature = 1.0` under [labelling], or choose a model "
-                "that accepts 0 — 0 is what keeps ground truth from wandering "
+                "that accepts 0, 0 is what keeps ground truth from wandering "
                 "between validators, so prefer it where the model allows it."
             )
         return self
@@ -176,7 +176,7 @@ class ScoringConfig(BaseModel):
     #: model halves divide among miners by score.
     #:
     #: **0 by default: every unit of miner emission reaches a miner.** Set it
-    #: above zero only deliberately — the burn line on the dashboard is the
+    #: above zero only deliberately, the burn line on the dashboard is the
     #: subnet stating that share explicitly rather than letting the chain
     #: renormalise it away, so a non-zero value is a visible claim on emission
     #: that miners competed for.

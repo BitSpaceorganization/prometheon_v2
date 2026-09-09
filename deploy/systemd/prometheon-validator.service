@@ -1,5 +1,5 @@
 [Unit]
-Description=Prometheon validator — one daily cycle
+Description=Prometheon validator; one daily cycle
 Documentation=https://github.com/BitSpaceorganization/prometheon_v2
 After=network-online.target
 Wants=network-online.target

@@ -407,7 +407,7 @@ def test_the_commitment_block_is_readable_and_keyed_by_hotkey() -> None:
     """The block that settles a duplicate-model claim, taken from the authority.
 
     Duplicate claims on one revision SHA are resolved by ascending commit block.
-    Nothing populated it for a while, so the sort collapsed to ascending uid —
+    Nothing populated it for a while, so the sort collapsed to ascending uid,
     which hands every claim to whoever registered earliest, the attack
     ``registry.validation`` exists to prevent.
 
@@ -417,7 +417,7 @@ def test_the_commitment_block_is_readable_and_keyed_by_hotkey() -> None:
     service being audited would make the anti-gaming property depend on the one
     component a validator is otherwise careful never to trust.
 
-    Keyed by ``hotkey_ss58``, unlike ``get_commitment`` above — which is the
+    Keyed by ``hotkey_ss58``, unlike ``get_commitment`` above; which is the
     better key, since a uid is a recycled slot.
     """
     parameters = set(inspect.signature(bittensor.Subtensor.get_commitment_metadata).parameters)

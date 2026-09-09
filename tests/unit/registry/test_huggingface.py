@@ -236,8 +236,8 @@ def test_the_manifest_admits_model_files_and_nothing_executable() -> None:
 
     The engine used to be published here and hash-checked, which made this list
     a security boundary: it had to enumerate the ways code could hide, and
-    `deploy_config.yml` — permitted by name, unchecked in content, applied to the
-    image builder — turned out to be one of them. With the engine in the deploy
+    `deploy_config.yml`, permitted by name, unchecked in content, applied to the
+    image builder, turned out to be one of them. With the engine in the deploy
     script the list becomes a description instead of a defence.
     """
     assert file_allowed("config.json")

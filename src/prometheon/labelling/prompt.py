@@ -145,7 +145,7 @@ class LabelItem:
     author can decide what lands in the low-base-rate subset that
     ``_looks_subverted`` watches. Knowing the author lets that check require
     the evidence to span more than one of them. ``None`` means the item has no
-    submitter — production content, whose prior this service sets itself.
+    submitter, production content, whose prior this service sets itself.
 
     Like ``expected_violating``, it never influences a label and is never sent
     to the labeller.

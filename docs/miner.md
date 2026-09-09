@@ -18,11 +18,11 @@ share to the owner (uid 0) before any miner is paid. It ships at zero, and the
 burn line on the transparency dashboard shows the value in force.
 
 **One entry gate, two streams behind it.** A Fan Group makes you a miner when it
-clears **both** floors: **at least 50 registered members** — accounts that have
-joined the group — **and at least 25 active members**, members whose 7-day
+clears **both** floors: **at least 50 registered members**, accounts that have
+joined the group, **and at least 25 active members**, members whose 7-day
 activity score clears the platform's active threshold. The registered headcount
 alone is not enough; the active floor is the anti-farming half, and it is what a
-sign-up farm fails. It is not a condition on one stream or the other — below the
+sign-up farm fails. It is not a condition on one stream or the other, below the
 gate you are not on the eligible list, and a validator never looks at you.
 
 Above it, the two streams are independent. Contribute data and deploy no model
@@ -38,9 +38,9 @@ through any subnet command.
 
 1. Sign in at **[bitfan.ai](https://bitfan.ai)**.
 2. Create a Fan Group and grow it to **at least 50 registered members**
-   (accounts that have joined your group), **at least 25 of them active** —
+   (accounts that have joined your group), **at least 25 of them active**,
    members whose 7-day activity score clears the platform's active threshold.
-3. Connect your **Talisman** wallet (or another Substrate wallet — polkadot-js,
+3. Connect your **Talisman** wallet (or another Substrate wallet, polkadot-js,
    SubWallet, Nova) with the **Connect Wallet** button in the bitfan.ai site
    header, and sign the ownership proof it prompts for. The proved address is the
    hotkey you will mine with, and it becomes your Fan Group's leader hotkey on
@@ -66,13 +66,13 @@ judged on one task: given the policy and one piece of content, answer `YES` or
 That ceiling is not a style guide, it is the deal. **Validators download your
 model and run it on their own hardware**, so its size decides what validating
 this subnet costs. 24 GiB leaves headroom on a 32 GB card, which is the floor a
-validator is expected to own — an 8B checkpoint in fp16 sits comfortably inside
+validator is expected to own, an 8B checkpoint in fp16 sits comfortably inside
 it. A model over the line is refused at commit rather than quietly costing
 every validator an hour of bandwidth they cannot use.
 
 **The evaluation runtime pins `transformers>=4.44,<4.47`, so your architecture
 has to be one that release recognises.** `Qwen2.5` (`model_type: qwen2`) loads;
-`Qwen3` does not, however new and capable it is — it arrived in transformers
+`Qwen3` does not, however new and capable it is; it arrived in transformers
 4.51.
 
 `prometheon model commit` and `model verify` both refuse an architecture the
@@ -84,7 +84,7 @@ the evaluation runtime's transformers does not recognise…
 ```
 
 It checks against a list frozen from the runtime's own `transformers`, not
-whatever you have installed — a newer release locally would accept a newer
+whatever you have installed, a newer release locally would accept a newer
 architecture that every validator would then fail to load.
 
 You are not writing inference code. Every model on the subnet is run by the
@@ -103,7 +103,7 @@ Train accordingly. What matters is calibration on the boundary cases in
 
 **Your Hugging Face repository holds weights, and that is all it needs to
 hold.** No inference code, no wrapper, no deploy script. Validators run one
-engine — theirs — over every model on the subnet, in one process on one
+engine, theirs, over every model on the subnet, in one process on one
 machine, which is what makes a score difference a weights difference.
 
 You never deploy anything. There is no endpoint to keep warm, no GPU bill for
@@ -127,7 +127,7 @@ README.md  LICENSE  .gitattributes  .gitignore
 ```
 
 Weights must be `safetensors`. Benchmark scripts, training args, adapter files
-and original-format checkpoints all fail the manifest — most published
+and original-format checkpoints all fail the manifest, most published
 moderation models carry at least one of them, so check before you commit.
 
 Two things worth confirming while you still have a choice, both of which a

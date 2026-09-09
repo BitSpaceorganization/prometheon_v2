@@ -138,7 +138,7 @@ def assert_submission_allowed(
         raise MechidMissingError(
             f"the installed bittensor SDK {capabilities.sdk_version!r} does not "
             "accept a mechid on set_weights. Upgrade the SDK, or set "
-            "[chain] allow_missing_mechid = true — which is for localnet only, "
+            "[chain] allow_missing_mechid = true; which is for localnet only, "
             "because on a live network the weights land on whatever mechanism "
             "the chain defaults to and nothing reports it"
         )

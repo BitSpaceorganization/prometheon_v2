@@ -1,4 +1,4 @@
-"""Prometheon Phase 2 — a Bittensor subnet for open moderation models."""
+"""Prometheon Phase 2, a Bittensor subnet for open moderation models."""
 
 from prometheon.version import __version__
 

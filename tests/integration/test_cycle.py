@@ -448,8 +448,8 @@ def test_a_whole_cycle_produces_a_submittable_weight_vector(
     assert len(result.corpus.items) == 50
     assert len(result.evaluations) == 2
     assert result.split.weights, "the cycle produced no weights at all"
-    # The burn hotkey is one entry in the vector, so the whole vector — miners
-    # and burn together — always sums to the pool.
+    # The burn hotkey is one entry in the vector, so the whole vector, miners
+    # and burn together, always sums to the pool.
     assert sum(result.split.weights.values()) == 1_000_000
     # The burn this fixture configures comes off the top before any miner is
     # paid; a full field splits the rest. Stated in the fixture rather than
@@ -480,7 +480,7 @@ def test_the_cycle_reads_a_real_commit_block_for_every_miner(
     ``_duplicate_losers`` settles competing claims on one revision SHA by
     ascending block. Every production construction of ``MinerEntry`` omitted
     ``commit_block``, so all of them carried the same default and the sort
-    collapsed to ascending uid — which the registry's own docstring calls the
+    collapsed to ascending uid; which the registry's own docstring calls the
     strictly worse attack, because a copycat need only hold a lower uid.
 
     The unit tests passed throughout: they set ``commit_block`` themselves. So
@@ -540,7 +540,7 @@ def test_labelling_batches_are_deterministic_and_interleaved(
     Evaluation derives its order from the day's content hash so every validator
     batches identically; labelling took whatever order the DB layer returned and
     concatenated test content ahead of production. That made batching
-    validator-dependent, and it put each miner's items in one contiguous run —
+    validator-dependent, and it put each miner's items in one contiguous run,
     so a successful injection inside a test batch landed almost entirely on the
     miner who authored it.
     """

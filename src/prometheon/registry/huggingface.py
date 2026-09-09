@@ -46,7 +46,7 @@ DEFAULT_HF_ENDPOINT: Final[str] = "https://huggingface.co"
 _USER_AGENT: Final[str] = f"prometheon-validator/{__version__}"
 
 #: Ceiling on any single file this client will read. Nothing is fetched from a
-#: miner's repo any more — only its file list — but the cap stays on `fetch_file`
+#: miner's repo any more, only its file list, but the cap stays on `fetch_file`
 #: because the path is miner-controlled and an unbounded read is a denial of
 #: service any miner could trigger.
 MAX_FILE_BYTES: Final[int] = 1 << 20
@@ -85,8 +85,8 @@ def require_valid_repo_id(repo: str) -> str:
 #: **Weights, config and tokenizer. No executable code of any kind.** The engine
 #: used to be published here as `miner.py` and hash-checked at load time, which
 #: made this list a security boundary: it had to enumerate the ways code could
-#: hide, and `deploy_config.yml` — a permitted file whose *contents* nothing
-#: checked — turned out to be one of them.
+#: hide, and `deploy_config.yml`, a permitted file whose *contents* nothing
+#: checked, turned out to be one of them.
 #:
 #: The engine is the validator's own now, so this list stops being a defence and
 #: becomes a description: these are model files, and anything else does not

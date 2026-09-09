@@ -10,10 +10,10 @@ withheld, and the whole of it is the miner pool, split evenly:
 
 ```text
 100% miner emission
-├─  0%  burn                    — withheld to the owner (uid 0); 0 by default
+├─  0%  burn, withheld to the owner (uid 0); 0 by default
 └─ 100% miner pool
-   ├─ ½  dataset contribution  — did you supply usable evaluation data?
-   └─ ½  model performance     — is your model the best judge of it?
+   ├─ ½  dataset contribution, did you supply usable evaluation data?
+   └─ ½  model performance, is your model the best judge of it?
 ```
 
 So dataset contribution is **50%** of total emission and model performance
@@ -38,7 +38,7 @@ All of it is computed inside one cycle and combined into a **single**
 
 A miner's users submit balanced test content: for each item they claim whether
 it violates policy or is compliant. Each validator labels every item with its
-own labeller and rewards only the claims the labeller confirms — so the claim is
+own labeller and rewards only the claims the labeller confirms, so the claim is
 a prior, never trusted as ground truth, and a member cannot inflate `V` by
 claiming everything violates.
 
@@ -64,7 +64,7 @@ but only when it is accurate volume.
 `S = 0` scores `0`. There is no division by zero, and a miner who submitted
 nothing contributed nothing.
 
-An item may also carry `ground_truth_violating` — the true label attached by a
+An item may also carry `ground_truth_violating`, the true label attached by a
 platform that generated the content itself. A validator that trusts that source
 for *its own* groups may score `claimed_violating == ground_truth_violating`
 directly, skipping the labeller for those items. It is only ever used for a
@@ -86,8 +86,8 @@ miners carrying whichever verdict labelling gave it, plus production content. It
 is scored on how often it agreed with the ground truth (the validator's own
 labeller).
 
-The test corpus is now deliberately balanced — submitters label roughly half
-their items compliant — so a model can no longer win by answering "violating" to
+The test corpus is now deliberately balanced, submitters label roughly half
+their items compliant, so a model can no longer win by answering "violating" to
 everything: accuracy only rises by getting both classes right. A correctly
 labelled compliant item is a genuine negative and one of the harder ones to
 identify; a mislabelled item still costs its author (it counts in `S`, not `V`)

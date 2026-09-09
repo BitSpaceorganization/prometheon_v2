@@ -538,7 +538,7 @@ class TestAWellFormedAnswerIsNotAutomaticallyATrueOne:
         required *every* item to have a low prior, and the caller concatenated
         test content ahead of production content, so in a real cycle no batch
         containing a test item was ever checked. That exempted the
-        miner-authored, adversarial-by-design half of the corpus — the half the
+        miner-authored, adversarial-by-design half of the corpus, the half the
         tripwire was written for.
 
         Thirty production items all coming back violating is the signal, and the

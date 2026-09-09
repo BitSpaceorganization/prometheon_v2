@@ -307,8 +307,8 @@ def submit_allocation(
 
     Split out of :func:`submit_weights` so a re-submission of an already
     computed day goes through the same gates and the same fresh-metagraph
-    resolution. A validator has to re-post its vector between cycles — weights
-    stop counting once ``activity_cutoff`` passes — and a second code path for
+    resolution. A validator has to re-post its vector between cycles, weights
+    stop counting once ``activity_cutoff`` passes, and a second code path for
     that would be a second place for the burn target, the deregistration rule,
     or the commit-reveal gate to drift.
     """
@@ -425,8 +425,8 @@ def _require_burn_target(metagraph: MetagraphView, burn_hotkey: str, *, netuid: 
     redistributes its emission to everybody else.
 
     A subnet owner's hotkey is **not** automatically registered as a neuron on
-    its own subnet. When it is not, every cycle carrying any burn — which is
-    most early cycles — reached submission and aborted there, after a full day
+    its own subnet. When it is not, every cycle carrying any burn; which is
+    most early cycles, reached submission and aborted there, after a full day
     of labelling and inference had already been paid for. The failure is the
     same either way; the cost of discovering it is not.
 
@@ -481,7 +481,7 @@ def _chain_entries(
         # be read here or it is not read at all. Leaving it unset was the whole
         # of the defect: every entry carried the same default, the sort
         # collapsed to ascending uid, and a low-uid mirror beat the model's
-        # author every time — the outcome `_duplicate_losers` names as the
+        # author every time, the outcome `_duplicate_losers` names as the
         # strictly worse attack.
         #
         # A read failure is not fatal to the cycle. The miner keeps their entry
@@ -552,7 +552,7 @@ def _label_items_for(snapshot: DaySnapshot) -> list[LabelItem]:
 
     *Test and production interleave.* Concatenating the two put every miner's
     items in a contiguous run, so one successful injection inside a test batch
-    landed almost entirely on the miner who authored that batch — it converted
+    landed almost entirely on the miner who authored that batch; it converted
     their own items to ``V = 100`` and poisoned ground truth at the same time.
     Scattering them means an injection that survives is diluted across the
     field rather than aimed, and it is what lets the base-rate tripwire see
@@ -647,7 +647,7 @@ def _dataset_submissions(
         submitted[item.author_hotkey] += 1
         # Valid = correctly labelled: the labeller's independent verdict matches
         # the submitter's claim. Rewards accurate labelling of BOTH classes and
-        # stays un-gameable — a member cannot inflate V by claiming everything
+        # stays un-gameable, a member cannot inflate V by claiming everything
         # violates, because the labeller catches the false claim. An unlabellable
         # item (verdict None) matches neither claim and so counts submitted, not
         # valid.

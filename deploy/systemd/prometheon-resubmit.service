@@ -1,5 +1,5 @@
 [Unit]
-Description=Prometheon validator — re-post the last computed weights
+Description=Prometheon validator, re-post the last computed weights
 Documentation=https://github.com/BitSpaceorganization/prometheon_v2
 After=network-online.target
 Wants=network-online.target

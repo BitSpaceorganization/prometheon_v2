@@ -38,7 +38,7 @@ Code in this repository enforces each of these. There is no rule anyone has to r
 
 Miners also cannot see the corpus they are measured on. A day's test content is released to miners two days later, after the evaluation that used it has finished. Memorisation is not a strategy.
 
-Every model runs identical code. Miners supply weights and nothing else. The inference path is one subnet-authored script, hash-pinned, running inside one subnet-built container image — and validators check both from outside, against the deployment itself. A hash proves which bytes are on disk; pinning the image is what makes them run somewhere the miner did not assemble. A score difference is a model difference.
+Every model runs identical code. Miners supply weights and nothing else. The inference path is one subnet-authored script, hash-pinned, running inside one subnet-built container image, and validators check both from outside, against the deployment itself. A hash proves which bytes are on disk; pinning the image is what makes them run somewhere the miner did not assemble. A score difference is a model difference.
 
 **Verdicts cannot be malformed, and a model cannot refuse.** Decoding is forced-choice: the engine compares probability mass on `YES` against `NO` and takes the larger. Nothing is generated freely, so there is no output to parse and no refusal to interpret.
 
@@ -82,12 +82,12 @@ Every command below assumes `uv run` in front of `prometheon`. To drop the prefi
 
 ## Miners
 
-You need a Fan Group that clears **both** floors: **at least 50 registered members** — accounts that have joined your group — **and at least 25 active members**, members whose 7-day activity score clears the platform's active threshold. Both gates apply to both reward streams; the active floor is the anti-farming half a sign-up farm fails.
+You need a Fan Group that clears **both** floors: **at least 50 registered members**, accounts that have joined your group, **and at least 25 active members**, members whose 7-day activity score clears the platform's active threshold. Both gates apply to both reward streams; the active floor is the anti-farming half a sign-up farm fails.
 
-Register your Fan Group, then connect your **Talisman** wallet (or another Substrate wallet — polkadot-js, SubWallet, Nova) with the **Connect Wallet** button in the bitfan.ai site header and sign the ownership proof, which binds your mining hotkey to your leader account. That is a platform step, not a subnet command, and nothing else works until it is done.
+Register your Fan Group, then connect your **Talisman** wallet (or another Substrate wallet, polkadot-js, SubWallet, Nova) with the **Connect Wallet** button in the bitfan.ai site header and sign the ownership proof, which binds your mining hotkey to your leader account. That is a platform step, not a subnet command, and nothing else works until it is done.
 
 ```bash
-# 1. Commit the model on chain — this is the submission
+# 1. Commit the model on chain; this is the submission
 uv run prometheon model commit --config ~/prometheon-mainnet.toml
 
 # 2. Check what a validator will conclude about your deployment
@@ -97,7 +97,7 @@ uv run prometheon model verify --config ~/prometheon-mainnet.toml
 uv run prometheon dataset pull --config ~/prometheon-mainnet.toml --date 2026-08-05
 ```
 
-Your Hugging Face repository holds **weights, config and tokenizer — no executable code at all**. Any other file and your deployment is not scored. See [`docs/miner.md`](./docs/miner.md).
+Your Hugging Face repository holds **weights, config and tokenizer, no executable code at all**. Any other file and your deployment is not scored. See [`docs/miner.md`](./docs/miner.md).
 
 
 ---
@@ -108,7 +108,7 @@ There are two ways to run one, and they cost very different things:
 
 | | `score_source = "local"` (default) | `score_source = "endpoint"` |
 |---|---|---|
-| Hardware | **8 × RTX 5090 (256 GB) or better** | **CPU only — no GPU** |
+| Hardware | **8 × RTX 5090 (256 GB) or better** | **CPU only, no GPU** |
 | Labelling key | yours to pay for | none |
 | Cycle | hours | seconds |
 | What you submit | what you measured | what another validator measured |
@@ -119,7 +119,7 @@ over the whole corpus daily, so it is the cost of validating rather than a
 suggestion.
 
 **Endpoint mode needs no GPU and no labelling key.** It fetches a signed record
-another validator published, checks its provenance, and submits its weights —
+another validator published, checks its provenance, and submits its weights,
 which is how you validate without a GPU budget. It also contributes no
 independent opinion, and consensus only detects a wrong provider by validators
 disagreeing with it, so read the trade-off before choosing it.

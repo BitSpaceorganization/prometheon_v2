@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "prometheon"
 version = "2.0.0"
-description = "Prometheon Phase 2 — a Bittensor subnet for open moderation models"
+description = "Prometheon Phase 2, a Bittensor subnet for open moderation models"
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "BitSpace" }]
@@ -49,7 +49,7 @@ wrapper = [
     "torch>=2.7,<3",
     # `ModerationEngine.load` passes `device_map=`, which transformers refuses
     # without accelerate installed. It was absent here, so *every* GPU load
-    # raised ImportError and scored the model zero — on a validator that had
+    # raised ImportError and scored the model zero, on a validator that had
     # followed the install instructions exactly.
     "accelerate>=0.26.0",
     "huggingface-hub>=0.25.0",
@@ -144,7 +144,7 @@ ignore_missing_imports = true
 # Not followed into. Two reasons, and the bare module name is listed alongside
 # the wildcard because `bittensor.*` does not match `bittensor` itself.
 #
-# 1. `prometheon.chain.subtensor` types the SDK as `Any` on purpose — the SDK's
+# 1. `prometheon.chain.subtensor` types the SDK as `Any` on purpose, the SDK's
 #    own types are dynamic and pinning them here would be a fiction that breaks
 #    on the next release. Following them buys nothing.
 # 2. Following reaches numpy, whose stubs use `type` statements (3.12 syntax)

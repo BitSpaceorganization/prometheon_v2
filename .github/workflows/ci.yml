@@ -44,7 +44,7 @@ jobs:
       - run: uv python install ${{ matrix.python }}
       - run: uv sync --group dev
       # Every test, not a marker subset. An earlier version ran `-m unit` and
-      # `-m contract` only, which silently excluded the end-to-end cycle tests —
+      # `-m contract` only, which silently excluded the end-to-end cycle tests,
       # the ones that check the modules actually compose, and the only place a
       # field renamed in one module and read by another is caught. Nothing here
       # touches the network: the DB layer, the chain, the labeller and every

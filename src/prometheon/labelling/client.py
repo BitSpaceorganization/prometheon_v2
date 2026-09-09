@@ -138,7 +138,7 @@ class OpenAICompatibleClient:
         }
         # Ground truth must not wander between validators or between the first
         # attempt and its retry, and sampling is the largest avoidable source of
-        # that drift — so temperature is 0 by default. Some models accept only
+        # that drift, so temperature is 0 by default. Some models accept only
         # their own default and reject an explicit 0; for those the operator
         # sets the supported value, or null to omit the field entirely.
         if self._config.temperature is not None:
@@ -175,7 +175,7 @@ class OpenAICompatibleClient:
                         f"to {response.headers.get('Location', '<no Location header>')!r}. "
                         "Redirects are not followed, because a redirected "
                         "completion request is a misconfigured base_url rather "
-                        "than a working endpoint — check [labelling] base_url"
+                        "than a working endpoint, check [labelling] base_url"
                     )
                 if not _is_retryable_status(response.status_code):
                     snippet = _snippet(response)

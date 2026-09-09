@@ -11,7 +11,7 @@ dist/
 build/
 *.egg-info/
 
-# Runtime state — never commit a validator's working directory
+# Runtime state, never commit a validator's working directory
 .validator-state/
 *.sqlite
 *.sqlite-*

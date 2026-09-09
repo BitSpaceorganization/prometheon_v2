@@ -222,7 +222,7 @@ def publish_commitment(
         parse_extrinsic_response(result, operation="set_commitment", error=CommitmentError)
     except CommitmentError as exc:
         raise CommitmentError(
-            f"{exc} — note that each commitment consumes at least 100 bytes of the "
+            f"{exc}, note that each commitment consumes at least 100 bytes of the "
             "hotkey's per-epoch byte quota on the commitments pallet, so a "
             "rejected write often means the quota is spent; retry after the "
             "next epoch"
@@ -272,7 +272,7 @@ def read_commitment_block(subtensor: Any, *, netuid: int, hotkey: str) -> int:
 
     This is what settles a duplicate-model contest, and it has to come from the
     **chain**. The subnet DB layer mirrors a ``block`` on its own commitment
-    records and it would have been one line to read it from there — but
+    records and it would have been one line to read it from there, but
     duplicate resolution is an anti-gaming mechanism, and sourcing it from the
     service being audited would make the anti-gaming property depend on the one
     component a validator is otherwise careful never to trust. The chain is the

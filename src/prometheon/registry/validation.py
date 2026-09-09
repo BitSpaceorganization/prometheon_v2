@@ -86,7 +86,7 @@ class InvalidReason(str, Enum):
 #: settled by ascending block, so a default of ``0`` meant "unknown" was
 #: indistinguishable from "committed in the genesis block" and therefore *won*
 #: every contest it entered. An unknown block cannot prove priority, so it must
-#: lose to any block that can — and a caller that can make the read fail must
+#: lose to any block that can, and a caller that can make the read fail must
 #: not be rewarded for it.
 UNKNOWN_COMMIT_BLOCK: Final[int] = 1 << 62
 
@@ -104,7 +104,7 @@ class MinerEntry:
     chain. It settles duplicates and nothing else.
 
     **It has no benign default.** It used to default to ``0``, and nothing in
-    the production path ever set it — only the tests did — so every real
+    the production path ever set it, only the tests did, so every real
     duplicate contest was decided by ascending uid. That is the outcome
     :func:`_duplicate_losers` documents as the *strictly worse* attack: sit on a
     low uid and mirror anything good. The default is now

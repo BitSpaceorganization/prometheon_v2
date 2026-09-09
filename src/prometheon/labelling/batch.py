@@ -264,7 +264,7 @@ def label_items(
             raise LabellingError(
                 f"labelling failed completely for {consecutive_dead_chunks} consecutive "
                 f"batches ({len(run.excluded)} items excluded so far, {run.calls} calls "
-                "spent). This is an endpoint fault, not a corpus fault — a reverse "
+                "spent). This is an endpoint fault, not a corpus fault, a reverse "
                 "proxy answering HTTP 200 with an error page, a model ignoring the "
                 "requested response format, or a provider-side filter refusing the "
                 "corpus. Refusing to return an empty ground truth that would score "
@@ -320,7 +320,7 @@ def _assert_exclusion_within_budget(run: _Run, *, total: int, max_rate_bp: int) 
         raise LabellingError(
             f"labelling excluded every one of {total} items, so the day has no "
             "ground truth. This is an endpoint fault rather than a corpus fault "
-            "— refusing to return an empty corpus that would score every miner "
+            ", refusing to return an empty corpus that would score every miner "
             f"against nothing. Last reason: {_last_reason(run) or 'none recorded'}"
         )
 
@@ -338,7 +338,7 @@ def _assert_exclusion_within_budget(run: _Run, *, total: int, max_rate_bp: int) 
     raise LabellingError(
         f"labelling excluded {len(run.excluded)} of {total} items "
         f"({rate_bp / 100:.1f}%), over the {max_rate_bp / 100:.1f}% ceiling. "
-        "A corpus this incomplete is not a benchmark — scoring on it would "
+        "A corpus this incomplete is not a benchmark, scoring on it would "
         "measure models against whichever items happened to survive. Last "
         f"reason: {_last_reason(run) or 'none recorded'}"
     )
@@ -395,8 +395,8 @@ def _looks_subverted(chunk: Sequence[LabelItem], verdicts: Mapping[str, bool]) -
     fake without becoming visible. It is scoped as narrowly as possible,
     because a false positive here costs real labels:
 
-    - It looks at the batch's **low-base-rate subset** — the items marked
-      ``expected_violating=False`` — and asks whether every one of them came
+    - It looks at the batch's **low-base-rate subset**, the items marked
+      ``expected_violating=False``, and asks whether every one of them came
       back violating. Test content is submitted *because* someone believed it
       violates policy, so an all-``YES`` answer over it is the ordinary result
       and is never evidence of anything.
@@ -409,8 +409,8 @@ def _looks_subverted(chunk: Sequence[LabelItem], verdicts: Mapping[str, bool]) -
     prior is the submitter's own ``claimed_violating``. A submitter therefore
     chooses what goes into the very subset this check watches, and one who
     uploads violating content tagged as non-violating makes their own items
-    unanimous by construction. That is not evidence about the labeller — the
-    labeller answered those items correctly — but the check read it as
+    unanimous by construction. That is not evidence about the labeller, the
+    labeller answered those items correctly, but the check read it as
     subversion and aborted the cycle, which is a halt any single participant
     could trigger at will against every validator at once. Observed on
     2026-08-27: one author supplied 1,472 such items into a labelling pool of
@@ -430,8 +430,8 @@ def _looks_subverted(chunk: Sequence[LabelItem], verdicts: Mapping[str, bool]) -
     **It used to require the batch to be entirely low-base-rate**, and the
     caller concatenated test content ahead of production content, so every batch
     containing a test item returned early and was never checked at all. Test
-    content is the miner-authored, adversarial-by-design half of the corpus —
-    precisely the half an injection arrives in — so the check was off for exactly
+    content is the miner-authored, adversarial-by-design half of the corpus,
+    precisely the half an injection arrives in, so the check was off for exactly
     the input it was written for. It works now because
     ``_label_items_for`` interleaves the two; the ordering change and this one
     are one fix in two files.
@@ -504,7 +504,7 @@ def _label_once(chunk: Sequence[LabelItem], run: _Run) -> dict[str, bool]:
         # misdiagnoses the fault and defeats the check.
         raise LabellingError(
             f"the labeller returned an answer that does not look like labelling: {subverted}. "
-            "Refusing to publish it as ground truth — every miner would be scored "
+            "Refusing to publish it as ground truth; every miner would be scored "
             "against it. Check the labelling endpoint and model before rerunning"
         )
     return verdicts

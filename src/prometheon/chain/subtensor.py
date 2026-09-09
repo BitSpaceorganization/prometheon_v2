@@ -67,7 +67,7 @@ _REQUIRED_ACCESSORS: Final[tuple[str, ...]] = (
     "get_commitment",
     # Supplies the block a commitment was written in, which is what settles a
     # duplicate-model claim. Absent, duplicate resolution silently degrades to
-    # uid order — the attack `registry.validation` exists to prevent.
+    # uid order, the attack `registry.validation` exists to prevent.
     "get_commitment_metadata",
     "set_weights",
 )
@@ -123,7 +123,7 @@ def assert_sdk_compatible(subtensor: Any) -> None:
         detail = (
             " This client exposes read()/execute(), which is the 11.x "
             "read-and-intent API. It is not a newer version of the same "
-            "interface — it shares no accessor with 10.x, and it ships no "
+            "interface; it shares no accessor with 10.x, and it ships no "
             "intent that writes a metadata commitment, so a miner could not "
             "submit a model on it."
         )
@@ -221,7 +221,7 @@ def sync_metagraph_view(subtensor: Any, *, netuid: int) -> MetagraphView:
         raise SubtensorError(
             f"the metagraph for netuid={netuid} came back with no neurons. A live "
             "subnet always has at least its owner registered, so this is a "
-            "failed or misdirected read, not an empty subnet — refusing to "
+            "failed or misdirected read, not an empty subnet, refusing to "
             "treat every miner as deregistered"
         )
     return view

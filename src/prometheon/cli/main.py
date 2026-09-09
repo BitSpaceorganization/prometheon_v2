@@ -29,7 +29,7 @@ from prometheon.version import __version__
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="prometheon",
-        description="Prometheon V2 — an open moderation-model competition on Bittensor.",
+        description="Prometheon V2, an open moderation-model competition on Bittensor.",
     )
     parser.add_argument("--version", action="version", version=f"prometheon {__version__}")
     commands = parser.add_subparsers(dest="command", required=True)

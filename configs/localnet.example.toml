@@ -1,4 +1,4 @@
-# Prometheon V2 — localnet, for development against a local chain and the
+# Prometheon V2, localnet, for development against a local chain and the
 # in-memory DB fake. Nothing here reaches a real service.
 
 [chain]
@@ -46,7 +46,7 @@ dataset_top_n = 10
 model_rank_shares_bp = [3000, 1500, 500]
 # A model scored on fewer items than this is not ranked at all. Accuracy over a
 # handful of items is noise, and a miner can shrink its own corpus by supplying
-# most of a day's test content — its own items are excluded from what it is
+# most of a day's test content; its own items are excluded from what it is
 # scored on.
 model_min_scored_items = 100
 efficiency_lambda_bp = 1500
