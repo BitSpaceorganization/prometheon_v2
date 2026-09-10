@@ -148,6 +148,20 @@ class EvaluationConfig(BaseModel):
     #: is not a model the subnet can serve.
     model_timeout_seconds: float = Field(default=3600.0, gt=0)
 
+    #: Delete each model's downloaded snapshot once it has been scored.
+    #:
+    #: Off by default: the cache is keyed by revision, so keeping it means a
+    #: miner who re-commits an unchanged model costs one HEAD request and a
+    #: validator restarting mid-cycle does not re-download the day.
+    #:
+    #: Turn it on when the disk is smaller than the field. One day's eligible
+    #: set is routinely over 100 GiB of weights, and nothing evicts from the
+    #: cache, so a host with less free space than that cannot finish a cycle;
+    #: the failure arrives as a disk-full error partway through scoring. With
+    #: this set, the requirement is the largest single model rather than the sum
+    #: of all of them, paid for by re-downloading each model every day.
+    discard_checkpoints: bool = Field(default=False)
+
 
 class ScoreSource(str, Enum):
     """Where a validator's weight vector comes from."""

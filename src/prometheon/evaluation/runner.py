@@ -27,6 +27,7 @@ from __future__ import annotations
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from prometheon.errors import EvaluationError
@@ -85,6 +86,55 @@ def download_checkpoint(target: MinerTarget, *, allow_patterns: Sequence[str] | 
         raise EvaluationError(
             f"could not download {target.hf_repo}@{target.hf_revision}: {type(exc).__name__}: {exc}"
         ) from exc
+
+
+def discard_checkpoint(path: str) -> int:
+    """Delete a downloaded snapshot, returning the bytes reclaimed.
+
+    The cache is keyed by revision and nothing evicts from it, so a validator
+    accumulates every model it has ever scored. That is the right trade on a box
+    with room: a miner who re-commits an unchanged model costs one HEAD request,
+    and a validator restarting mid-cycle does not re-download the day.
+
+    It is the wrong trade when the disk is smaller than the field. One day's
+    eligible set is routinely over 100 GiB of weights, so a host with less than
+    that free cannot complete a cycle at all, and the failure arrives as a
+    disk-full error partway through scoring rather than as anything nameable.
+    Pruning trades bandwidth for space and makes the requirement the size of the
+    largest single model instead of the sum of all of them.
+
+    Deletes the revision snapshot and its blobs, not the whole repo directory:
+    another revision of the same repo may be a different miner's commitment.
+    Never raises. Failing to reclaim space is not a reason to stop scoring, and
+    the caller has already got what it needed from the path.
+    """
+    import shutil
+
+    target = Path(path).resolve()
+    if not target.is_dir():
+        return 0
+    # `snapshot_download` returns .../snapshots/<sha>, whose files are symlinks
+    # into .../blobs. Removing the snapshot alone reclaims nothing.
+    freed = 0
+    blobs: set[Path] = set()
+    for entry in target.rglob("*"):
+        if entry.is_symlink():
+            resolved = entry.resolve()
+            if resolved.is_file():
+                blobs.add(resolved)
+        elif entry.is_file():
+            freed += entry.stat().st_size
+    for blob in blobs:
+        try:
+            freed += blob.stat().st_size
+            blob.unlink()
+        except OSError:
+            freed -= 0
+    try:
+        shutil.rmtree(target, ignore_errors=True)
+    except OSError:
+        pass
+    return freed
 
 
 def evaluate_miner(

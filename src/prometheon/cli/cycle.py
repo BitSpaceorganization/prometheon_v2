@@ -68,6 +68,7 @@ from prometheon.evaluation.result import MinerEvaluation
 from prometheon.evaluation.runner import (
     MinerTarget,
     build_engine,
+    discard_checkpoint,
     download_checkpoint,
     evaluate_miner,
 )
@@ -224,6 +225,13 @@ def run_cycle(
                 deadline_seconds=config.evaluation.model_timeout_seconds,
             )
         )
+        if config.evaluation.discard_checkpoints:
+            # After scoring, not before the next download: the corpus is
+            # already through this model, and failing to reclaim space must not
+            # stop the cycle.
+            freed = discard_checkpoint(model_path)
+            if freed:
+                say(f"  discarded checkpoint, reclaimed {freed / 1024**3:.1f} GiB")
 
     # --- 5. score both halves and reduce to one vector -------------------
     say("scoring")
