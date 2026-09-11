@@ -152,6 +152,121 @@ def save_submitted_allocation(config: Config, *, day: dt.date, result: CycleResu
     )
 
 
+#: How many days back a mirror will look for a record newer than the one it
+#: holds. A mirror that fell behind did so because its daily run failed, and
+#: three days is well past the point where an operator should have noticed.
+#: It also bounds the request count: a mirror that is already current sends
+#: none at all.
+MIRROR_LOOKBACK_DAYS: Final[int] = 3
+
+
+def _mirrored_for(
+    db: Any,
+    config: Config,
+    *,
+    day: dt.date,
+    provider: str,
+    metagraph: Any,
+    burn_hotkey: str,
+) -> Mapping[str, int] | None:
+    """One day's verified weights, or ``None`` if this is not a day to use.
+
+    ``None`` covers the two ordinary cases together, because the caller treats
+    them identically: the provider has not published this day yet, and the
+    record it did publish does not verify against the pinned hotkey. Neither is
+    worth a log line on a timer that fires every thirty minutes; both mean the
+    caller should look at an older day, and failing that keep what it holds.
+    """
+    try:
+        submission = db.get_evaluation(day, provider)
+        snapshot = db.get_snapshot(day)
+        return verify_mirrored(
+            submission,
+            provider=provider,
+            day=day,
+            netuid=config.chain.netuid,
+            metagraph=metagraph,
+            burn_hotkey=burn_hotkey,
+            snapshot_content_hash=snapshot.content_hash,
+        )
+    except Exception:
+        return None
+
+
+def _refresh_mirrored(
+    config: Config,
+    *,
+    stored_day: dt.date,
+    wallet: Any,
+    subtensor: Any,
+    burn_hotkey: str,
+    today: dt.date,
+) -> tuple[dt.date, Mapping[str, int]] | None:
+    """The newest record the provider has published after ``stored_day``.
+
+    ``None`` means keep what is on disk, and that is the ordinary outcome.
+
+    A mirror fetched its provider's record once, when `validator run` last
+    fired, and re-posted that vector every half hour until the next daily run.
+    If that run happened before the provider published -- which is exactly what
+    a provider retrying a failed cycle causes -- the mirror's run failed, wrote
+    nothing, and it spent the next day re-posting the *previous* day's vector.
+    Observed on netuid 108 on 2026-09-11: a provider published three and a half
+    hours late after a retry, and 22.5% of validating stake sat on the day
+    before for the rest of the day.
+
+    Re-reading the day already held would not have helped, because a published
+    record is immutable: the DB layer accepts an identical resend and refuses a
+    revision. The only thing worth looking for is a *newer* day, which is what
+    this does.
+
+    A mirror that is current asks for nothing: there are no candidate days, so
+    the whole function is a date comparison. Only one that is behind spends a
+    request, and then at most ``MIRROR_LOOKBACK_DAYS`` of them.
+
+    **Never raises.** Weights stop counting once ``activity_cutoff`` passes, so
+    a DB layer that is down, or a day the provider has not published yet, must
+    not stop this validator submitting. Both are ordinary and neither is worth
+    a line in the log; the caller falls back to the vector on disk.
+    """
+    provider = config.scoring.score_provider
+    # A cycle scores the day before it runs, so nothing newer than yesterday
+    # can exist. Newest first: the freshest record wins and the rest are
+    # never requested.
+    candidates: list[dt.date] = []
+    day = today - dt.timedelta(days=1)
+    while day > stored_day and len(candidates) < MIRROR_LOOKBACK_DAYS:
+        candidates.append(day)
+        day -= dt.timedelta(days=1)
+    if not candidates:
+        return None
+
+    try:
+        metagraph = chain.sync_metagraph_view(subtensor, netuid=config.chain.netuid)
+        with DbClient(
+            base_url=config.db.base_url,
+            netuid=config.chain.netuid,
+            keypair=wallet.hotkey,
+            timeout_seconds=config.db.request_timeout_seconds,
+            max_retries=config.db.max_retries,
+        ) as db:
+            for candidate in candidates:
+                weights = _mirrored_for(
+                    db,
+                    config,
+                    day=candidate,
+                    provider=provider,
+                    metagraph=metagraph,
+                    burn_hotkey=burn_hotkey,
+                )
+                if weights is not None:
+                    return candidate, weights
+    except Exception:
+        # Could not even reach the DB layer. Keep re-posting; see the docstring.
+        return None
+    return None
+
+
 def cmd_resubmit(args: argparse.Namespace) -> int:
     """Re-post the last cycle's vector without recomputing it.
 
@@ -197,9 +312,33 @@ def cmd_resubmit(args: argparse.Namespace) -> int:
         note(f"rate limit not clear for another {waiting} blocks; nothing sent")
         return EXIT_OK
 
+    burn_hotkey = str(state["burn_hotkey"])
+    # In endpoint mode every re-post is a fresh read of the provider's record,
+    # not a replay of the one fetched at the last daily run. A mirror that only
+    # replays cannot receive a correction until its next cycle.
+    if config.scoring.score_source is ScoreSource.ENDPOINT:
+        stored_day = dt.date.fromisoformat(str(state["day"]))
+        found = _refresh_mirrored(
+            config,
+            stored_day=stored_day,
+            wallet=wallet,
+            subtensor=subtensor,
+            burn_hotkey=burn_hotkey,
+            today=dt.datetime.now(dt.timezone.utc).date(),
+        )
+        if found is not None:
+            day, refreshed = found
+            note(
+                f"{config.scoring.score_provider} has published {day.isoformat()}, newer than "
+                f"the {stored_day.isoformat()} vector held; submitting {len(refreshed)} hotkeys"
+            )
+            weights = dict(refreshed)
+            state = {**state, "day": day.isoformat()}
+            _write_allocation(config, day=day, weights=weights, burn_hotkey=burn_hotkey)
+
     receipt = submit_allocation(
         weights=weights,
-        burn_hotkey=str(state["burn_hotkey"]),
+        burn_hotkey=burn_hotkey,
         config=config,
         subtensor=subtensor,
         wallet=wallet,
