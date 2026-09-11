@@ -363,7 +363,40 @@ score_provider = "5…"          # the validator hotkey whose record you mirror
 it, rather than running a cycle that has nothing to send at the end.
 
 You still need a registered hotkey with a validator permit, and you still need
-to re-post between cycles. You do **not** need `OPENAI_API_KEY`, the `wrapper`
+to re-post between cycles.
+
+**A re-post catches a mirror up if it fell behind.** `validator resubmit` in
+this mode checks whether the provider has published a day *newer* than the one
+it holds, and if so verifies and submits that instead.
+
+This exists for one failure, which is not hypothetical. A mirror's daily run
+fetches the provider's record for the day. If it runs before the provider has
+published, the run fails, nothing is written, and the mirror re-posts the
+*previous* day's vector until its next daily run, a day later. A provider that
+retries a failed cycle publishes hours late and strands every mirror whose run
+fell in the gap. On netuid 108 on 2026-09-11 that was 22.5% of validating
+stake, sitting a day behind for a full day.
+
+Re-reading the day already held would not help, and this deliberately does not
+do it: a published record is immutable. The DB layer accepts an identical
+resend and refuses a revision with `409 db.duplicate_evaluation`, so the audit
+trail cannot be rewritten. A record you already hold can never have changed.
+
+**A mirror that is current sends no request.** Nothing newer than yesterday can
+exist, because a cycle scores the day before it runs, so an up-to-date mirror
+does a date comparison and stops. Only one that is behind spends a request, and
+never more than three.
+
+A day the provider has not yet published is the ordinary state of the world
+between midnight and its publish, so it is not an error and not logged. Neither
+is a record that fails verification, or a DB layer that cannot be reached: all
+three fall back to re-posting the vector on disk. Weights stop counting once
+`activity_cutoff` passes, so a mirror that declined to submit over a transient
+fetch failure would cost its miners far more than a stale vector does.
+
+This does not make mirroring safer, and it is worth being plain about that. It
+stops a mirror lagging a day behind its provider. It gives it no opinion about
+whether the provider was right. You do **not** need `OPENAI_API_KEY`, the `wrapper`
 extra, or a GPU:
 
 ```bash
