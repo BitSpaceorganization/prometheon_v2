@@ -239,3 +239,44 @@ class TestAnOldConfigFailsLoudly:
         )
         with pytest.raises(OutdatedConfigError, match=r"prometheon-scoring/2\.1"):
             load_config(self._write(tmp_path, older))
+
+
+class TestTheDocsNameNoNetuid:
+    """The subnet has no netuid yet, and mainnet 108 belongs to another project.
+
+    Operators copy what the guides show, so a netuid in prose becomes a netuid
+    in somebody's config. None may appear until the team announces one, and
+    then it belongs in config rather than in the guides. The configs have their
+    own check above.
+    """
+
+    @staticmethod
+    def _documents() -> list[Path]:
+        candidates = [
+            *ROOT.glob("*.md"),
+            *(ROOT / "docs").glob("*.md"),
+            *(ROOT / "deploy").rglob("*"),
+        ]
+        return sorted(path for path in candidates if path.is_file())
+
+    def test_the_guides_are_scanned_at_all(self) -> None:
+        names = {path.name for path in self._documents()}
+        assert {"README.md", "validator.md", "miner.md", "scoring.md"} <= names
+
+    def test_no_guide_names_108_or_481(self) -> None:
+        import re
+
+        offenders = [
+            f"{path.relative_to(ROOT)}:{number}: {line.strip()}"
+            for path in self._documents()
+            for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+            if re.search(r"\b(108|481)\b", line)
+        ]
+        assert not offenders, "\n".join(offenders)
+
+    def test_no_guide_sends_operators_to_testnet(self) -> None:
+        """The team doesn't use testnet; the local chain path replaces it."""
+        for path in self._documents():
+            text = path.read_text(encoding="utf-8").lower()
+            for advice in ("testnet first", "--network test", 'network = "test"'):
+                assert advice not in text, f"{path.relative_to(ROOT)} says {advice!r}"
