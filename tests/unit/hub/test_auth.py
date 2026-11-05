@@ -1,4 +1,4 @@
-"""Behaviour of the signed request envelope.
+"""Behaviour of the signed request envelope the hub verifies.
 
 Each test here corresponds to something the envelope exists to stop. If a field
 can be changed in flight without the signature failing, that field is not
@@ -9,15 +9,16 @@ from __future__ import annotations
 
 import pytest
 from bittensor_wallet import Keypair
-from tests.unit.dbclient.factories import CYCLE_AT, DAY, NETUID
+from tests.unit.hub.factories import DAY, NETUID
+from tests.unit.hub.factories import NOW as CYCLE_AT
 
-from prometheon.dbclient import auth
-from prometheon.dbclient.models import DbErrorCode, EvaluationSubmission, MinerResult, ModelStatus
-from prometheon.errors import NotAuthorizedError, SignatureVerificationError
+from prometheon.errors import HubAuthError, SignatureVerificationError
+from prometheon.hub import auth
+from prometheon.hub.models import EvaluationSubmission, HubErrorCode, MinerResult, ModelStatus
 
 pytestmark = pytest.mark.unit
 
-PATH = "/v2/snapshot/2026-08-05"
+PATH = "/api/v1/validator/epoch"
 
 
 def _directory(validator: str, miner: str) -> auth.StaticHotkeyDirectory:
@@ -105,13 +106,13 @@ class TestHappyPath:
         store: auth.InMemoryNonceStore,
     ) -> None:
         body = b'{"hello":"world"}'
-        headers = _headers(validator_keypair, method="POST", path="/v2/evaluations", body=body)
+        headers = _headers(validator_keypair, method="POST", path="/api/v1/results", body=body)
         caller = _verify(
             headers,
             directory=directory,
             store=store,
             method="POST",
-            path="/v2/evaluations",
+            path="/api/v1/results",
             body=body,
         )
         assert caller.envelope.body_sha256 == auth.body_sha256(body)
@@ -124,10 +125,10 @@ class TestTampering:
         directory: auth.StaticHotkeyDirectory,
         store: auth.InMemoryNonceStore,
     ) -> None:
-        headers = _headers(validator_keypair, path="/v2/snapshot/2026-08-05")
-        with pytest.raises(NotAuthorizedError) as caught:
-            _verify(headers, directory=directory, store=store, path="/v2/snapshot/2026-08-04")
-        assert caught.value.error_code == DbErrorCode.AUTH_INVALID.value
+        headers = _headers(validator_keypair, path="/api/v1/epochs/2026-11-05")
+        with pytest.raises(HubAuthError) as caught:
+            _verify(headers, directory=directory, store=store, path="/api/v1/epochs/2026-11-04")
+        assert caught.value.error_code == HubErrorCode.AUTH_INVALID.value
 
     def test_a_changed_query_string_is_rejected(
         self,
@@ -136,14 +137,14 @@ class TestTampering:
         store: auth.InMemoryNonceStore,
     ) -> None:
         """The signed path is the whole request target, cursor included."""
-        signed = "/v2/dataset/2026-08-05/test?cursor=abc"
+        signed = "/api/v1/corpus?day=2026-11-03&cursor=abc"
         headers = _headers(validator_keypair, path=signed)
-        with pytest.raises(NotAuthorizedError):
+        with pytest.raises(HubAuthError):
             _verify(
                 headers,
                 directory=directory,
                 store=store,
-                path="/v2/dataset/2026-08-05/test?cursor=xyz",
+                path="/api/v1/corpus?day=2026-11-03&cursor=xyz",
             )
 
     def test_a_changed_method_is_rejected(
@@ -153,7 +154,7 @@ class TestTampering:
         store: auth.InMemoryNonceStore,
     ) -> None:
         headers = _headers(validator_keypair, method="GET")
-        with pytest.raises(NotAuthorizedError):
+        with pytest.raises(HubAuthError):
             _verify(headers, directory=directory, store=store, method="DELETE")
 
     def test_a_substituted_body_is_rejected(
@@ -163,9 +164,9 @@ class TestTampering:
         store: auth.InMemoryNonceStore,
     ) -> None:
         headers = _headers(validator_keypair, method="POST", body=b'{"a":1}')
-        with pytest.raises(NotAuthorizedError) as caught:
+        with pytest.raises(HubAuthError) as caught:
             _verify(headers, directory=directory, store=store, method="POST", body=b'{"a":2}')
-        assert caught.value.error_code == DbErrorCode.AUTH_INVALID.value
+        assert caught.value.error_code == HubErrorCode.AUTH_INVALID.value
 
     def test_a_body_digest_header_that_lies_is_rejected(
         self,
@@ -177,7 +178,7 @@ class TestTampering:
         body = b'{"a":1}'
         headers = _headers(validator_keypair, method="POST", body=body)
         headers[auth.HEADER_BODY_SHA256] = auth.body_sha256(b'{"a":2}')
-        with pytest.raises(NotAuthorizedError):
+        with pytest.raises(HubAuthError):
             _verify(headers, directory=directory, store=store, method="POST", body=body)
 
     def test_another_hotkeys_signature_is_rejected(
@@ -189,7 +190,7 @@ class TestTampering:
     ) -> None:
         headers = _headers(stranger_keypair)
         headers[auth.HEADER_HOTKEY] = validator_keypair.ss58_address
-        with pytest.raises(NotAuthorizedError):
+        with pytest.raises(HubAuthError):
             _verify(headers, directory=directory, store=store)
 
 
@@ -201,9 +202,9 @@ class TestNetuidBinding:
         store: auth.InMemoryNonceStore,
     ) -> None:
         headers = _headers(validator_keypair, netuid=NETUID + 1)
-        with pytest.raises(NotAuthorizedError) as caught:
+        with pytest.raises(HubAuthError) as caught:
             _verify(headers, directory=directory, store=store)
-        assert caught.value.error_code == DbErrorCode.NOT_AUTHORIZED.value
+        assert caught.value.error_code == HubErrorCode.NOT_AUTHORIZED.value
         assert caught.value.status_code == 403
 
 
@@ -217,9 +218,9 @@ class TestClockWindow:
         store: auth.InMemoryNonceStore,
     ) -> None:
         headers = _headers(validator_keypair, issued_at=CYCLE_AT + offset)
-        with pytest.raises(NotAuthorizedError) as caught:
+        with pytest.raises(HubAuthError) as caught:
             _verify(headers, directory=directory, store=store, now=CYCLE_AT)
-        assert caught.value.error_code == DbErrorCode.AUTH_EXPIRED.value
+        assert caught.value.error_code == HubErrorCode.AUTH_EXPIRED.value
 
     @pytest.mark.parametrize("offset", [-300, 0, 300])
     def test_an_envelope_inside_the_window_is_accepted(
@@ -242,9 +243,9 @@ class TestReplay:
     ) -> None:
         headers = _headers(validator_keypair)
         _verify(headers, directory=directory, store=store)
-        with pytest.raises(NotAuthorizedError) as caught:
+        with pytest.raises(HubAuthError) as caught:
             _verify(headers, directory=directory, store=store)
-        assert caught.value.error_code == DbErrorCode.AUTH_REPLAYED.value
+        assert caught.value.error_code == HubErrorCode.AUTH_REPLAYED.value
 
     def test_a_nonce_is_not_burned_by_a_request_that_fails_to_verify(
         self,
@@ -257,7 +258,7 @@ class TestReplay:
         nonce = auth.new_nonce()
         forged = _headers(stranger_keypair, nonce=nonce)
         forged[auth.HEADER_HOTKEY] = validator_keypair.ss58_address
-        with pytest.raises(NotAuthorizedError):
+        with pytest.raises(HubAuthError):
             _verify(forged, directory=directory, store=store)
         assert len(store) == 0
 
@@ -304,7 +305,7 @@ class TestReplay:
         a nonce that can be replayed, and both numbers were free parameters
         that nothing compared.
         """
-        with pytest.raises(NotAuthorizedError, match="does not cover"):
+        with pytest.raises(HubAuthError, match="does not cover"):
             auth.InMemoryNonceStore(retention_seconds=300, max_clock_skew_seconds=300)
 
     def test_the_shipped_defaults_satisfy_the_invariant(self) -> None:
@@ -323,9 +324,9 @@ class TestMalformedHeaders:
     ) -> None:
         headers = _headers(validator_keypair)
         del headers[header]
-        with pytest.raises(NotAuthorizedError) as caught:
+        with pytest.raises(HubAuthError) as caught:
             _verify(headers, directory=directory, store=store)
-        assert caught.value.error_code == DbErrorCode.AUTH_MALFORMED.value
+        assert caught.value.error_code == HubErrorCode.AUTH_MALFORMED.value
 
     def test_a_non_integer_issued_at_is_rejected(
         self,
@@ -335,9 +336,9 @@ class TestMalformedHeaders:
     ) -> None:
         headers = _headers(validator_keypair)
         headers[auth.HEADER_ISSUED_AT] = "soon"
-        with pytest.raises(NotAuthorizedError) as caught:
+        with pytest.raises(HubAuthError) as caught:
             _verify(headers, directory=directory, store=store)
-        assert caught.value.error_code == DbErrorCode.AUTH_MALFORMED.value
+        assert caught.value.error_code == HubErrorCode.AUTH_MALFORMED.value
 
     def test_a_short_nonce_is_rejected(
         self,
@@ -347,9 +348,9 @@ class TestMalformedHeaders:
     ) -> None:
         headers = _headers(validator_keypair)
         headers[auth.HEADER_NONCE] = "abc"
-        with pytest.raises(NotAuthorizedError) as caught:
+        with pytest.raises(HubAuthError) as caught:
             _verify(headers, directory=directory, store=store)
-        assert caught.value.error_code == DbErrorCode.AUTH_MALFORMED.value
+        assert caught.value.error_code == HubErrorCode.AUTH_MALFORMED.value
 
     def test_headers_are_matched_case_insensitively(
         self,
@@ -361,10 +362,10 @@ class TestMalformedHeaders:
         assert _verify(headers, directory=directory, store=store)
 
     def test_a_relative_path_cannot_be_signed(self, validator_keypair: Keypair) -> None:
-        with pytest.raises(NotAuthorizedError):
+        with pytest.raises(HubAuthError):
             auth.build_envelope(
                 method="GET",
-                path="v2/snapshot/2026-08-05",
+                path="api/v1/validator/epoch",
                 body=b"",
                 netuid=NETUID,
                 hotkey=validator_keypair.ss58_address,
@@ -380,9 +381,9 @@ class TestRegistration:
         directory: auth.StaticHotkeyDirectory,
         store: auth.InMemoryNonceStore,
     ) -> None:
-        with pytest.raises(NotAuthorizedError) as caught:
+        with pytest.raises(HubAuthError) as caught:
             _verify(_headers(stranger_keypair), directory=directory, store=store)
-        assert caught.value.error_code == DbErrorCode.NOT_AUTHORIZED.value
+        assert caught.value.error_code == HubErrorCode.NOT_AUTHORIZED.value
 
     def test_deregistering_revokes_access_with_no_credential_to_rotate(
         self,
@@ -392,7 +393,7 @@ class TestRegistration:
     ) -> None:
         assert _verify(_headers(validator_keypair), directory=directory, store=store)
         directory.set_role(validator_keypair.ss58_address, None)
-        with pytest.raises(NotAuthorizedError):
+        with pytest.raises(HubAuthError):
             _verify(_headers(validator_keypair), directory=directory, store=store)
 
     def test_a_miner_cannot_reach_a_validator_only_endpoint(
@@ -402,7 +403,7 @@ class TestRegistration:
         store: auth.InMemoryNonceStore,
     ) -> None:
         caller = _verify(_headers(miner_keypair), directory=directory, store=store)
-        with pytest.raises(NotAuthorizedError) as caught:
+        with pytest.raises(HubAuthError) as caught:
             auth.require_validator(caller)
         assert caught.value.status_code == 403
 
@@ -414,7 +415,7 @@ def _submission(hotkey: str) -> EvaluationSubmission:
         validator_hotkey=hotkey,
         scoring_version="prometheon-scoring/2.0.0",
         policy_version="2026-08-07",
-        snapshot_content_hash="a" * 64,
+        epoch_content_hash="a" * 64,
         corpus_content_hash="b" * 64,
         labelled_test_count=1,
         labelled_production_count=2,
@@ -498,10 +499,10 @@ class TestAMalformedHeaderIsA401NotACrash:
         headers = _headers(validator_keypair)
         headers[auth.HEADER_HOTKEY] = "5" + "G" * 100
 
-        with pytest.raises(NotAuthorizedError) as excinfo:
+        with pytest.raises(HubAuthError) as excinfo:
             _verify(headers, directory=directory, store=store)
 
-        assert excinfo.value.error_code == DbErrorCode.AUTH_MALFORMED.value
+        assert excinfo.value.error_code == HubErrorCode.AUTH_MALFORMED.value
         assert excinfo.value.status_code == 401
 
     def test_an_over_long_path_is_rejected_as_malformed(
@@ -510,15 +511,15 @@ class TestAMalformedHeaderIsA401NotACrash:
         directory: auth.StaticHotkeyDirectory,
         store: auth.NonceStore,
     ) -> None:
-        with pytest.raises(NotAuthorizedError) as excinfo:
+        with pytest.raises(HubAuthError) as excinfo:
             _verify(
                 _headers(validator_keypair),
                 directory=directory,
                 store=store,
-                path="/v2/" + "z" * 3000,
+                path="/api/v1/" + "z" * 3000,
             )
 
-        assert excinfo.value.error_code == DbErrorCode.AUTH_MALFORMED.value
+        assert excinfo.value.error_code == HubErrorCode.AUTH_MALFORMED.value
 
     def test_the_rejection_does_not_echo_the_submitted_value_back(
         self,
@@ -530,7 +531,7 @@ class TestAMalformedHeaderIsA401NotACrash:
         headers = _headers(validator_keypair)
         headers[auth.HEADER_HOTKEY] = "5" + "G" * 100
 
-        with pytest.raises(NotAuthorizedError) as excinfo:
+        with pytest.raises(HubAuthError) as excinfo:
             _verify(headers, directory=directory, store=store)
 
         message = str(excinfo.value)
@@ -539,7 +540,7 @@ class TestAMalformedHeaderIsA401NotACrash:
 
     def test_the_client_cannot_sign_a_malformed_envelope_either(self) -> None:
         """`signed_headers` is the documented one-call API and must be typed too."""
-        with pytest.raises(NotAuthorizedError) as excinfo:
+        with pytest.raises(HubAuthError) as excinfo:
             auth.build_envelope(
                 method="GET",
                 path=PATH,
@@ -550,4 +551,4 @@ class TestAMalformedHeaderIsA401NotACrash:
                 issued_at=CYCLE_AT,
             )
 
-        assert excinfo.value.error_code == DbErrorCode.AUTH_MALFORMED.value
+        assert excinfo.value.error_code == HubErrorCode.AUTH_MALFORMED.value

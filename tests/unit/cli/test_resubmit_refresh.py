@@ -9,27 +9,35 @@ of validating stake.
 Re-reading the day already held would not help: a published record is immutable.
 Only a newer day is worth looking for, and a mirror that is already current must
 not spend a request looking.
+
+The hub here is the real client over the fake hub, so the records and epochs a
+mirror reads are signed and verified exactly as they would be in production.
 """
 
 from __future__ import annotations
 
 import datetime as dt
 from types import SimpleNamespace
+from typing import Any
 
+import httpx
 import pytest
 from bittensor_wallet import Keypair
 
 from prometheon.chain.metagraph import MetagraphView
 from prometheon.cli import validator as cli
-from prometheon.dbclient.auth import sign_evaluation
-from prometheon.dbclient.models import EvaluationSubmission, MinerResult, ModelStatus
+from prometheon.hub.auth import CallerRole, sign_evaluation
+from prometheon.hub.client import HubClient
+from prometheon.hub.epoch import epoch_content_hash
+from prometheon.hub.fake import FakeHub
+from prometheon.hub.models import EvaluationSubmission, MinerResult, ModelStatus
+from prometheon.version import SCORING_VERSION
 
 pytestmark = pytest.mark.unit
 
-DAY = dt.date(2026, 9, 10)
-NETUID = 108
-SNAP = "a" * 64
-CORPUS = "b" * 64
+DAY = dt.date(2026, 11, 10)
+NETUID = 481
+NOW = int(dt.datetime(2026, 11, 11, 12, tzinfo=dt.timezone.utc).timestamp())
 BURN = "5Burn"
 
 
@@ -58,86 +66,93 @@ def miner(hotkey: str, uid: int, weight: int) -> MinerResult:
     )
 
 
-def record(provider: Keypair, *, weight: int, day: dt.date = DAY) -> EvaluationSubmission:
-    return sign_evaluation(
-        provider,
-        EvaluationSubmission(
-            date=day,
+class World:
+    """A fake hub with an epoch for every recent day, and a pinned provider."""
+
+    def __init__(self, provider: Keypair) -> None:
+        self.provider = provider
+        self.hub = FakeHub(netuid=NETUID, now=lambda: NOW)
+        self.hub.register(provider.ss58_address, CallerRole.VALIDATOR)
+        self.epoch_hash: dict[dt.date, str] = {}
+        for back in range(6):
+            day = DAY - dt.timedelta(days=back)
+            raw = self.hub.publish_day(
+                day,
+                miners=[
+                    {
+                        "hotkey": provider.ss58_address,
+                        "uid": 0,
+                        "coldkey": provider.ss58_address,
+                        "verified_active_members": 0,
+                        "eligible": False,
+                    }
+                ],
+            )
+            self.epoch_hash[day] = epoch_content_hash(raw)
+
+    def publish(self, day: dt.date, *, weight: int, signer: Keypair | None = None) -> None:
+        record = sign_evaluation(
+            signer or self.provider,
+            EvaluationSubmission(
+                date=day,
+                netuid=NETUID,
+                validator_hotkey=(signer or self.provider).ss58_address,
+                scoring_version=SCORING_VERSION,
+                policy_version="2026-08-07",
+                epoch_content_hash=self.epoch_hash[day],
+                corpus_content_hash="b" * 64,
+                labelled_test_count=10,
+                labelled_production_count=2,
+                results=(miner("5Miner", 7, weight),),
+                burned_weight=0,
+                started_at=1,
+                completed_at=2,
+            ),
+        )
+        # Stored under the pinned provider whoever signed it, as a hub serving a
+        # substituted record would.
+        self.hub.results[(day, self.provider.ss58_address)] = record.model_dump_json().encode()
+
+    def results_asked(self) -> list[str]:
+        return [target for method, target in self.hub.request_log if "/results/" in target]
+
+
+def install(monkeypatch: pytest.MonkeyPatch, world: World, *, down: bool = False) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        if down:
+            raise httpx.ConnectError("hub unreachable", request=request)
+        return world.hub.handler(request)
+
+    def client(config: Any, *, keypair: Any = None) -> HubClient:
+        return HubClient(
+            base_url="https://hub.invalid",
             netuid=NETUID,
-            validator_hotkey=provider.ss58_address,
-            scoring_version="prometheon-scoring/2.2",
-            policy_version="2026-08-07",
-            snapshot_content_hash=SNAP,
-            corpus_content_hash=CORPUS,
-            labelled_test_count=10,
-            labelled_production_count=2,
-            results=(miner("5Miner", 7, weight),),
-            burned_weight=0,
-            started_at=1,
-            completed_at=2,
-        ),
-    )
+            epoch_keys=world.hub.epoch_keys,
+            keypair=keypair,
+            transport=httpx.MockTransport(handler),
+            max_retries=0,
+            sleep=lambda _seconds: None,
+        )
 
-
-def config(provider: str) -> SimpleNamespace:
-    return SimpleNamespace(
-        chain=SimpleNamespace(netuid=NETUID),
-        db=SimpleNamespace(
-            base_url="https://db.invalid", request_timeout_seconds=1.0, max_retries=1
-        ),
-        scoring=SimpleNamespace(score_provider=provider),
-    )
-
-
-def patch_chain(monkeypatch: pytest.MonkeyPatch, provider: str) -> None:
     view = MetagraphView(
         netuid=NETUID,
         block=1,
         uids=(0,),
-        hotkeys=(provider,),
+        hotkeys=(world.provider.ss58_address,),
         stake_rao=(1,),
         validator_permit=(True,),
     )
+    monkeypatch.setattr(cli, "_hub_client", client)
     monkeypatch.setattr(cli.chain, "sync_metagraph_view", lambda *a, **k: view)
 
 
-def fake_db(
-    monkeypatch: pytest.MonkeyPatch,
-    published: dict[dt.date, object],
-    *,
-    raises: bool = False,
-) -> list[dt.date]:
-    """Stand in for the DB layer. Returns the list of days actually requested."""
-    asked: list[dt.date] = []
-
-    class FakeDb:
-        def __init__(self, **_: object) -> None:
-            pass
-
-        def __enter__(self) -> FakeDb:
-            return self
-
-        def __exit__(self, *_: object) -> None:
-            return None
-
-        def get_evaluation(self, day: dt.date, _provider: str) -> object:
-            asked.append(day)
-            if raises:
-                raise TimeoutError("db layer unreachable")
-            if day not in published:
-                raise LookupError(f"no record for {day}")
-            return published[day]
-
-        def get_snapshot(self, _day: dt.date) -> object:
-            return SimpleNamespace(content_hash=SNAP)
-
-    monkeypatch.setattr(cli, "DbClient", FakeDb)
-    return asked
-
-
-def call(cfg: SimpleNamespace, *, stored: dt.date, today: dt.date):
+def call(world: World, *, stored: dt.date, today: dt.date) -> Any:
+    config = SimpleNamespace(
+        chain=SimpleNamespace(netuid=NETUID),
+        scoring=SimpleNamespace(score_provider=world.provider.ss58_address),
+    )
     return cli._refresh_mirrored(
-        cfg,
+        config,  # type: ignore[arg-type]
         stored_day=stored,
         wallet=SimpleNamespace(hotkey=keypair(2)),
         subtensor=object(),
@@ -147,119 +162,65 @@ def call(cfg: SimpleNamespace, *, stored: dt.date, today: dt.date):
 
 
 def test_a_mirror_that_is_current_asks_for_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The common case must cost no request at all.
-
-    A mirror holding yesterday's vector is up to date: nothing newer can exist,
-    because a cycle scores the day before it runs. If this probed anyway it
-    would add 48 pointless fetches a day per mirror, which is what made the
-    first version of this not worth shipping.
-    """
-    provider = keypair(1)
-    patch_chain(monkeypatch, provider.ss58_address)
-    asked = fake_db(monkeypatch, {})
-    assert call(config(provider.ss58_address), stored=DAY, today=DAY + dt.timedelta(days=1)) is None
-    assert asked == []
+    """A mirror holding yesterday's vector is up to date: nothing newer exists."""
+    world = World(keypair(1))
+    install(monkeypatch, world)
+    assert call(world, stored=DAY, today=DAY + dt.timedelta(days=1)) is None
+    assert world.hub.request_log == []
 
 
 def test_a_mirror_a_day_behind_catches_up(monkeypatch: pytest.MonkeyPatch) -> None:
-    """The uid 7 case: stuck on 09-09 because 09-10 was published late."""
-    provider = keypair(1)
-    patch_chain(monkeypatch, provider.ss58_address)
-    behind = DAY - dt.timedelta(days=1)
-    fake_db(monkeypatch, {DAY: record(provider, weight=4242, day=DAY)})
-    found = call(config(provider.ss58_address), stored=behind, today=DAY + dt.timedelta(days=1))
-    assert found is not None
-    day, weights = found
-    assert day == DAY
-    assert weights == {"5Miner": 4242}
+    world = World(keypair(1))
+    install(monkeypatch, world)
+    world.publish(DAY, weight=4242)
+    found = call(world, stored=DAY - dt.timedelta(days=1), today=DAY + dt.timedelta(days=1))
+    assert found == (DAY, {"5Miner": 4242})
 
 
 def test_the_newest_day_wins_and_older_ones_are_never_requested(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    provider = keypair(1)
-    patch_chain(monkeypatch, provider.ss58_address)
-    older, newer = DAY - dt.timedelta(days=1), DAY
-    asked = fake_db(
-        monkeypatch,
-        {
-            older: record(provider, weight=1, day=older),
-            newer: record(provider, weight=2, day=newer),
-        },
-    )
-    found = call(
-        config(provider.ss58_address),
-        stored=DAY - dt.timedelta(days=3),
-        today=DAY + dt.timedelta(days=1),
-    )
-    assert found is not None and found[0] == newer
-    assert asked == [newer], "an older day must not be fetched once a newer one verified"
+    world = World(keypair(1))
+    install(monkeypatch, world)
+    older = DAY - dt.timedelta(days=1)
+    world.publish(older, weight=1)
+    world.publish(DAY, weight=2)
+    found = call(world, stored=DAY - dt.timedelta(days=3), today=DAY + dt.timedelta(days=1))
+    assert found is not None and found[0] == DAY
+    assert len(world.results_asked()) == 1
+    assert DAY.isoformat() in world.results_asked()[0]
 
 
 def test_a_day_the_provider_has_not_published_yet_is_not_an_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Every mirror sees this daily, between midnight and the provider's publish."""
-    provider = keypair(1)
-    patch_chain(monkeypatch, provider.ss58_address)
-    fake_db(monkeypatch, {})
-    assert (
-        call(
-            config(provider.ss58_address),
-            stored=DAY - dt.timedelta(days=1),
-            today=DAY + dt.timedelta(days=1),
-        )
-        is None
-    )
+    world = World(keypair(1))
+    install(monkeypatch, world)
+    assert call(world, stored=DAY - dt.timedelta(days=1), today=DAY + dt.timedelta(days=1)) is None
 
 
-def test_a_db_layer_that_is_down_falls_back_rather_than_raising(
+def test_a_hub_that_is_down_falls_back_rather_than_raising(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The re-post must survive the fetch failing.
-
-    Weights stop counting toward consensus once activity_cutoff passes, so a
-    mirror that refuses to submit because it could not reach the DB layer costs
-    its miners far more than re-posting a day-old vector does.
-    """
-    provider = keypair(1)
-    patch_chain(monkeypatch, provider.ss58_address)
-    fake_db(monkeypatch, {}, raises=True)
-    assert (
-        call(
-            config(provider.ss58_address),
-            stored=DAY - dt.timedelta(days=1),
-            today=DAY + dt.timedelta(days=1),
-        )
-        is None
-    )
+    """Weights stop counting once activity_cutoff passes, so a mirror that refuses to
+    re-post because the hub is unreachable costs its miners more than a day-old vector."""
+    world = World(keypair(1))
+    install(monkeypatch, world, down=True)
+    assert call(world, stored=DAY - dt.timedelta(days=1), today=DAY + dt.timedelta(days=1)) is None
 
 
 def test_a_record_signed_by_the_wrong_hotkey_is_refused_not_raised(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Pinning score_provider means a substituted record is not submitted."""
-    pinned, impostor = keypair(1), keypair(9)
-    patch_chain(monkeypatch, pinned.ss58_address)
-    fake_db(monkeypatch, {DAY: record(impostor, weight=999, day=DAY)})
-    assert (
-        call(
-            config(pinned.ss58_address),
-            stored=DAY - dt.timedelta(days=1),
-            today=DAY + dt.timedelta(days=1),
-        )
-        is None
-    )
+    world = World(keypair(1))
+    install(monkeypatch, world)
+    world.publish(DAY, weight=999, signer=keypair(9))
+    assert call(world, stored=DAY - dt.timedelta(days=1), today=DAY + dt.timedelta(days=1)) is None
 
 
 def test_the_lookback_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
     """A mirror down for a month must not fetch a month of days every half hour."""
-    provider = keypair(1)
-    patch_chain(monkeypatch, provider.ss58_address)
-    asked = fake_db(monkeypatch, {})
-    call(
-        config(provider.ss58_address),
-        stored=DAY - dt.timedelta(days=400),
-        today=DAY + dt.timedelta(days=1),
-    )
-    assert len(asked) == cli.MIRROR_LOOKBACK_DAYS
+    world = World(keypair(1))
+    install(monkeypatch, world)
+    call(world, stored=DAY - dt.timedelta(days=400), today=DAY + dt.timedelta(days=1))
+    assert len(world.results_asked()) == cli.MIRROR_LOOKBACK_DAYS

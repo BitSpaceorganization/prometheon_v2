@@ -215,15 +215,11 @@ commit loses.
 
 ---
 
-## 6. Train against released data
+## 6. Released test content
 
-```bash
-uv run prometheon dataset pull --config ~/prometheon-mainnet.toml --date 2026-08-05
-```
-
-A day's test content is released **two days later**, after the evaluation that
-used it has finished. You cannot see the corpus you are being measured on today,
-so memorisation is not a strategy. Yesterday's is yours to train on.
+A day's test content becomes readable on the hub's public corpus view two days
+later, paged and without authors. There is no download command: only validators
+receive the files.
 
 ---
 

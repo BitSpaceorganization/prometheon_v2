@@ -18,13 +18,18 @@ allow_missing_mechid = false
 name = "validator"
 hotkey = "default"
 
-[db]
-# The subnet DB layer. Every dataset, miner list, and model commitment the
-# runtime reads comes from here; nothing in this repo talks to the BitFan
-# platform directly.
-base_url = "https://subnet-db.bitfan.ai"
+[hub]
+# Where the signed daily epoch comes from and where results go. The address is
+# published with each release; this placeholder resolves nowhere on purpose.
+base_url = "https://hub.prometheon.invalid"
 request_timeout_seconds = 60.0
 max_retries = 3
+
+[hub.epoch_keys]
+# The hub's Ed25519 public key, 64 lowercase hex, under its key id, copied from
+# the release notes of the version you run. Never copy it from the hub itself:
+# a key the hub could hand you is a signature that proves nothing. A validator
+# refuses to score while this table is empty.
 
 [labelling]
 # Ground truth. Validators pay for this with their own key.
@@ -91,6 +96,12 @@ dataset_top_n = 10
 # Models: 25%, 4% and 1% of total emission to the first, second and third model.
 # A rank nobody fills burns, so one model alone collects 25% and 5% burns.
 model_rank_shares_bp = [2500, 400, 100]
+# The entry gate, for both pools: a miner counts only with at least this many
+# identity-verified active members. The hub's own flag must agree as well.
+min_verified_active_members = 10
+# Items whose normalised text has 64-bit SimHashes within this many bits are one
+# item, and only the earliest counts. The same value on every validator.
+near_duplicate_max_hamming = 3
 # A model scored on fewer items than this is not ranked at all. Accuracy over a
 # handful of items is noise, and a miner can shrink its own corpus by supplying
 # most of a day's test content; its own items are excluded from what it is

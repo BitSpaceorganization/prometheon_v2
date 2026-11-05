@@ -35,6 +35,21 @@ def clock() -> Clock:
 
 
 @pytest.fixture
+def validator_keypair() -> Keypair:
+    return VALIDATOR
+
+
+@pytest.fixture
+def miner_keypair() -> Keypair:
+    return MINER_A
+
+
+@pytest.fixture
+def stranger_keypair() -> Keypair:
+    return Keypair.create_from_uri("//HubStranger")
+
+
+@pytest.fixture
 def hub(clock: Clock) -> FakeHub:
     fake = FakeHub(netuid=NETUID, now=clock)
     fake.register(VALIDATOR.ss58_address, CallerRole.VALIDATOR)

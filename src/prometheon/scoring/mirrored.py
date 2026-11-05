@@ -21,12 +21,12 @@ subnet as a healthy one.
 So the checks here are about *provenance*, and are deliberately strict, because
 provenance is the only thing that can be checked mechanically:
 
-- the record is signed by the hotkey the operator pinned, not by whoever the DB
-  layer felt like serving;
+- the record is signed by the hotkey the operator pinned, not by whoever the
+  hub felt like serving;
 - that hotkey holds a validator permit on this netuid right now;
-- the record is for the day and the netuid being scored;
-- it describes the same snapshot this validator fetched, so a stale or
-  substituted day is refused rather than submitted.
+- the record is for the day, the netuid and the scoring rules being run;
+- it names the same signed epoch this validator verified for the day, so a
+  stale or substituted day is refused rather than submitted.
 """
 
 from __future__ import annotations
@@ -34,9 +34,10 @@ from __future__ import annotations
 import datetime as dt
 
 from prometheon.chain.metagraph import MetagraphView
-from prometheon.dbclient.auth import verify_evaluation
-from prometheon.dbclient.models import EvaluationSubmission
 from prometheon.errors import ScoringError, SignatureError
+from prometheon.hub.auth import verify_evaluation
+from prometheon.hub.models import EvaluationSubmission
+from prometheon.version import SCORING_VERSION
 
 
 class MirroredScoreError(ScoringError):
@@ -53,7 +54,7 @@ def verify_mirrored(
     netuid: int,
     metagraph: MetagraphView,
     burn_hotkey: str,
-    snapshot_content_hash: str | None = None,
+    epoch_content_hash: str | None = None,
 ) -> dict[str, int]:
     """Check a published record and return its ``{hotkey: weight}`` map.
 
@@ -86,13 +87,20 @@ def verify_mirrored(
         )
     if submission.netuid != netuid:
         raise MirroredScoreError(f"record is for netuid={submission.netuid}, not netuid={netuid}")
+    if submission.scoring_version != SCORING_VERSION:
+        # v2 never compared this, so a provider on other rules was mirrored
+        # unnoticed (B26).
+        raise MirroredScoreError(
+            f"record was computed under {submission.scoring_version!r}, but this build "
+            f"implements {SCORING_VERSION!r}"
+        )
 
     try:
         verify_evaluation(submission)
     except SignatureError as exc:
         raise MirroredScoreError(
             f"record's signature does not verify against {provider!r}: {exc}. "
-            "The DB layer cannot mint a record for a hotkey it does not hold, so "
+            "The hub cannot mint a record for a hotkey it does not hold, so "
             "this is either corruption in transit or a forgery"
         ) from exc
 
@@ -107,22 +115,21 @@ def verify_mirrored(
             f"provider {provider!r} holds no validator permit on netuid={netuid}"
         )
 
-    if (
-        snapshot_content_hash is not None
-        and submission.snapshot_content_hash != snapshot_content_hash
-    ):
+    if epoch_content_hash is not None and submission.epoch_content_hash != epoch_content_hash:
         raise MirroredScoreError(
-            f"record describes snapshot {submission.snapshot_content_hash[:12]}… "
-            f"but this validator fetched {snapshot_content_hash[:12]}…; the two "
-            "were served different corpora for the same day"
+            f"record names epoch {submission.epoch_content_hash[:12]}, but the signed epoch "
+            f"for the day is {epoch_content_hash[:12]}; the two describe different days"
         )
 
-    weights = {result.hotkey: result.weight for result in submission.results}
+    # Rows carry earned units only, never burn, so they sum with the burn to the
+    # provider's vector exactly. Zero rows are left out, as the provider left
+    # them out of what it sent.
+    weights = {result.hotkey: result.weight for result in submission.results if result.weight}
     if not weights and not submission.burned_weight:
         raise MirroredScoreError("record carries no weights to submit")
     if submission.burned_weight:
-        # Added, not merely acknowledged. A provider that also holds a miner
-        # row would otherwise have its burn overwrite that row, so it is summed.
+        # Added, not merely acknowledged. A provider whose burn hotkey also
+        # earned has a row of its own, and its burn adds to it.
         weights[burn_hotkey] = weights.get(burn_hotkey, 0) + submission.burned_weight
     return weights
 

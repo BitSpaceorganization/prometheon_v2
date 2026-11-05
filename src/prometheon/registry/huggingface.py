@@ -1,7 +1,7 @@
 """Independent verification of a miner's Hugging Face repository.
 
 One question is answered here, from the public API and not from anything the
-miner or the DB layer says: **does the repository at this exact commit contain
+miner or the hub says: **does the repository at this exact commit contain
 only permitted files, and are any of them weights?**
 
 There used to be a second question -- whether ``miner.py`` was byte-for-byte

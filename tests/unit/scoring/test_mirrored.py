@@ -8,9 +8,10 @@ import pytest
 from bittensor_wallet import Keypair
 
 from prometheon.chain.metagraph import MetagraphView
-from prometheon.dbclient.auth import sign_evaluation
-from prometheon.dbclient.models import EvaluationSubmission, MinerResult, ModelStatus
+from prometheon.hub.auth import sign_evaluation
+from prometheon.hub.models import EvaluationSubmission, MinerResult, ModelStatus
 from prometheon.scoring.mirrored import MirroredScoreError, verify_mirrored
+from prometheon.version import SCORING_VERSION
 
 pytestmark = pytest.mark.unit
 
@@ -53,9 +54,9 @@ def record(provider: Keypair, **overrides: object) -> EvaluationSubmission:
         "date": DAY,
         "netuid": NETUID,
         "validator_hotkey": provider.ss58_address,
-        "scoring_version": "prometheon-scoring/2.1",
+        "scoring_version": SCORING_VERSION,
         "policy_version": "2026-08-07",
-        "snapshot_content_hash": HASH_A,
+        "epoch_content_hash": HASH_A,
         "corpus_content_hash": HASH_B,
         "labelled_test_count": 10,
         "labelled_production_count": 2,
@@ -89,7 +90,7 @@ def test_a_well_formed_record_yields_its_weights() -> None:
         netuid=NETUID,
         metagraph=metagraph(provider.ss58_address),
         burn_hotkey=BURN,
-        snapshot_content_hash=HASH_A,
+        epoch_content_hash=HASH_A,
     )
     # The burn is part of the vector. Asserting the miner rows alone is what
     # let a dropped burn ship: every provenance check passed, and the only
@@ -98,7 +99,7 @@ def test_a_well_formed_record_yields_its_weights() -> None:
 
 
 def test_a_record_from_another_validator_is_refused() -> None:
-    """Pinning the provider is what stops the DB layer choosing who to trust."""
+    """Pinning the provider is what stops the hub choosing who to trust."""
     other = keypair(2)
     with pytest.raises(MirroredScoreError, match="mirrors"):
         verify_mirrored(
@@ -170,10 +171,10 @@ def test_a_provider_without_a_permit_is_refused() -> None:
         )
 
 
-def test_a_record_describing_a_different_snapshot_is_refused() -> None:
-    """Catches being served a stale day, or a different corpus for the same day."""
+def test_a_record_naming_a_different_epoch_is_refused() -> None:
+    """Catches being served a stale day, or a record for another day's content."""
     provider = keypair(1)
-    with pytest.raises(MirroredScoreError, match="different corpora"):
+    with pytest.raises(MirroredScoreError, match="describe different days"):
         verify_mirrored(
             record(provider),
             provider=provider.ss58_address,
@@ -181,7 +182,7 @@ def test_a_record_describing_a_different_snapshot_is_refused() -> None:
             netuid=NETUID,
             metagraph=metagraph(provider.ss58_address),
             burn_hotkey=BURN,
-            snapshot_content_hash="c" * 64,
+            epoch_content_hash="c" * 64,
         )
 
 
@@ -203,7 +204,7 @@ def test_the_vector_sums_to_what_the_provider_submitted() -> None:
         netuid=NETUID,
         metagraph=metagraph(provider.ss58_address),
         burn_hotkey=BURN,
-        snapshot_content_hash=HASH_A,
+        epoch_content_hash=HASH_A,
     )
     expected = sum(r.weight for r in signed.results) + signed.burned_weight
     assert sum(weights.values()) == expected
@@ -222,14 +223,14 @@ def test_a_record_that_burned_nothing_carries_no_burn_row() -> None:
         netuid=NETUID,
         metagraph=metagraph(provider.ss58_address),
         burn_hotkey=BURN,
-        snapshot_content_hash=HASH_A,
+        epoch_content_hash=HASH_A,
     )
     assert BURN not in weights
 
 
 def test_a_provider_that_is_also_a_miner_has_its_burn_summed_not_overwritten() -> None:
-    """The owner hotkey can hold a miner row too. Assigning rather than adding
-    would discard whichever of the two was written second."""
+    """The owner hotkey can earn as a miner too. Its row carries its earnings and
+    the record carries its burn, so the two add and neither is counted twice."""
     provider = keypair(1)
     signed = record(provider, results=(result(BURN, 7, 300),))
     weights = verify_mirrored(
@@ -239,6 +240,38 @@ def test_a_provider_that_is_also_a_miner_has_its_burn_summed_not_overwritten() -
         netuid=NETUID,
         metagraph=metagraph(provider.ss58_address),
         burn_hotkey=BURN,
-        snapshot_content_hash=HASH_A,
+        epoch_content_hash=HASH_A,
     )
     assert weights[BURN] == 300 + signed.burned_weight
+
+
+def test_a_record_computed_under_other_rules_is_refused() -> None:
+    """v2 never compared the scoring version, so a provider on other rules was
+    mirrored without anyone noticing (B26)."""
+    provider = keypair(1)
+    with pytest.raises(MirroredScoreError, match="computed under"):
+        verify_mirrored(
+            record(provider, scoring_version="prometheon-scoring/2.1"),
+            provider=provider.ss58_address,
+            day=DAY,
+            netuid=NETUID,
+            metagraph=metagraph(provider.ss58_address),
+            burn_hotkey=BURN,
+            epoch_content_hash=HASH_A,
+        )
+
+
+def test_zero_rows_are_left_out_of_the_vector() -> None:
+    """A provider does not send a hotkey it gave nothing to."""
+    provider = keypair(1)
+    signed = record(provider, results=(result("5Miner", 7, 1000), result("5Idle", 8, 0)))
+    weights = verify_mirrored(
+        signed,
+        provider=provider.ss58_address,
+        day=DAY,
+        netuid=NETUID,
+        metagraph=metagraph(provider.ss58_address),
+        burn_hotkey=BURN,
+        epoch_content_hash=HASH_A,
+    )
+    assert "5Idle" not in weights
