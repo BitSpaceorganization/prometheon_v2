@@ -2,14 +2,17 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    # v3 is the integration branch for the relaunch. Every squash merge into it
+    # gets a full run, the same as main, because a person checks it afterwards
+    # and it has to stay releasable.
+    branches: [main, v3]
   pull_request:
 
 permissions:
   contents: read
 
-# Superseded pull request runs are cancelled. Runs on main are not, so every
-# commit that lands there keeps its result.
+# Superseded pull request runs are cancelled. Runs on main and v3 are not, so
+# every commit that lands there keeps its result.
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
