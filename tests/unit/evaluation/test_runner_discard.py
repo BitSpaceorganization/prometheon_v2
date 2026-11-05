@@ -63,3 +63,61 @@ def test_a_sibling_revision_of_the_same_repo_survives(tmp_path: Path) -> None:
 def test_a_path_that_is_not_there_is_not_an_error(tmp_path: Path) -> None:
     """Failing to reclaim space must never stop a cycle."""
     assert discard_checkpoint(str(tmp_path / "gone")) == 0
+
+
+def test_a_blob_another_revision_still_uses_is_kept(tmp_path: Path) -> None:
+    """S9: revisions share a blob whenever a file is unchanged between them.
+
+    v2 deleted every blob the discarded snapshot linked to, so a file shared
+    with another revision -- another miner's commitment of the same repo --
+    was left dangling under that revision.
+    """
+    snap = _snapshot(tmp_path, size=8192)
+    shared = tmp_path / "blobs" / "5ba2ed"
+    shared.write_bytes(b"t" * 300)
+    (snap / "tokenizer.json").symlink_to(shared)
+    other = tmp_path / "snapshots" / ("b" * 40)
+    other.mkdir(parents=True)
+    (other / "tokenizer.json").symlink_to(shared)
+
+    freed = discard_checkpoint(str(snap))
+
+    assert not snap.exists()
+    assert not (tmp_path / "blobs" / "deadbeef").exists(), "the unshared weights still go"
+    assert shared.exists()
+    assert (other / "tokenizer.json").read_bytes() == b"t" * 300
+    # The weights blob and the regular config.json, not the shared tokenizer.
+    assert freed == 8192 + len("{}")
+
+
+def test_nothing_outside_the_repos_blobs_is_deleted(tmp_path: Path) -> None:
+    """Whatever a link points at, only the cache's own blobs are ever removed."""
+    repo = tmp_path / "models--org--name"
+    snap = _snapshot(repo)
+    elsewhere = tmp_path / "precious.txt"
+    elsewhere.write_text("not a cache file")
+    (snap / "notes.txt").symlink_to(elsewhere)
+
+    discard_checkpoint(str(snap))
+
+    assert elsewhere.read_text() == "not a cache file"
+    assert not (repo / "blobs" / "deadbeef").exists()
+
+
+def test_a_file_that_cannot_be_read_does_not_raise(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """S9's second half: v2 called stat() outside any try, against "never raises"."""
+    snap = _snapshot(tmp_path)
+    real_stat = Path.stat
+
+    def flaky(self: Path, *args: object, **kwargs: object) -> object:
+        if self.name == "config.json":
+            raise PermissionError("denied")
+        return real_stat(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "stat", flaky)
+    freed = discard_checkpoint(str(snap))
+
+    assert freed >= 0
+    assert not (tmp_path / "blobs" / "deadbeef").exists()
