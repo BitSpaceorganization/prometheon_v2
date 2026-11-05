@@ -361,9 +361,10 @@ def blocks_until_weights_allowed(subtensor: Any, *, netuid: int, hotkey: str) ->
         return 0
 
     view = sync_metagraph_view(subtensor, netuid=netuid)
-    try:
-        uid = view.hotkeys.index(hotkey)
-    except ValueError:
+    # The hotkey's uid, not its row: the SDK's row order need not be uid order,
+    # and a row index here asks the chain about somebody else's last update (S10).
+    uid = view.uid_for(hotkey)
+    if uid is None:
         # Not registered. Let the submission itself produce that error, which
         # says so far more clearly than a silent skip would.
         return 0

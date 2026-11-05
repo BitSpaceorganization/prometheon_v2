@@ -11,13 +11,25 @@ import pytest
 pytestmark = pytest.mark.unit
 
 
+def _view(*, uids: tuple[int, ...], hotkeys: tuple[str, ...]) -> Any:
+    from prometheon.chain.metagraph import MetagraphView
+
+    return MetagraphView(
+        netuid=1,
+        uids=uids,
+        hotkeys=hotkeys,
+        stake_rao=(1,) * len(uids),
+        validator_permit=(True,) * len(uids),
+    )
+
+
 class TestTheRateLimitWaitsOneBlockLonger:
     """B16: the chain allows a new set only after *more* than the limit has passed."""
 
     def _waiting(self, monkeypatch: pytest.MonkeyPatch, *, limit: int, elapsed: int) -> int:
         from prometheon.chain import subtensor as chain
 
-        view = SimpleNamespace(hotkeys=["5Validator"])
+        view = _view(uids=(0,), hotkeys=("5Validator",))
         monkeypatch.setattr(chain, "sync_metagraph_view", lambda *_a, **_k: view)
         node = SimpleNamespace(
             weights_rate_limit=lambda netuid: limit,
@@ -35,6 +47,30 @@ class TestTheRateLimitWaitsOneBlockLonger:
 
     def test_well_inside_the_limit(self, monkeypatch: pytest.MonkeyPatch) -> None:
         assert self._waiting(monkeypatch, limit=100, elapsed=40) == 61
+
+
+def test_the_rate_limit_is_asked_about_the_validators_uid_not_its_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """S10: rows need not be in uid order. v2 passed the row index as the uid.
+
+    Here the validator sits in row 0 with uid 7, and uid 0 belongs to a neuron
+    that updated long ago. Asking about uid 0 would report the window clear
+    while the validator is still inside it.
+    """
+    from prometheon.chain import subtensor as chain
+
+    view = _view(uids=(7, 0), hotkeys=("5Validator", "5Other"))
+    monkeypatch.setattr(chain, "sync_metagraph_view", lambda *_a, **_k: view)
+    asked: list[int] = []
+
+    def since(netuid: int, uid: int) -> int:
+        asked.append(uid)
+        return {7: 10, 0: 10_000}[uid]
+
+    node = SimpleNamespace(weights_rate_limit=lambda netuid: 100, blocks_since_last_update=since)
+    assert chain.blocks_until_weights_allowed(node, netuid=1, hotkey="5Validator") == 91
+    assert asked == [7]
 
 
 def test_the_registry_package_exports_only_what_exists() -> None:

@@ -104,13 +104,14 @@ def verify_mirrored(
             "this is either corruption in transit or a forgery"
         ) from exc
 
-    uid = metagraph.uid_for(provider)
-    if uid is None:
+    if not metagraph.is_registered(provider):
         raise MirroredScoreError(
             f"provider {provider!r} is not registered on netuid={netuid}; a "
             "deregistered validator's scores are not worth submitting"
         )
-    if not metagraph.validator_permit[uid]:
+    # By hotkey, never by indexing the permit column with a uid: the columns
+    # are in the SDK's row order, which need not be uid order (S10).
+    if not metagraph.has_validator_permit(provider):
         raise MirroredScoreError(
             f"provider {provider!r} holds no validator permit on netuid={netuid}"
         )
