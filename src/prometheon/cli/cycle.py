@@ -45,7 +45,13 @@ from prometheon.chain.weights import (
     to_u16_chain_vector,
 )
 from prometheon.config import Config
-from prometheon.errors import CommitmentError, ConfigError, EvaluationError, SubtensorError
+from prometheon.errors import (
+    CommitmentError,
+    ConfigError,
+    EvaluationError,
+    SubtensorError,
+    ValidatorFaultError,
+)
 from prometheon.evaluation.corpus import (
     EvaluationCorpus,
     ItemSource,
@@ -68,7 +74,12 @@ from prometheon.hub.models import Epoch, EpochMiner, MinerResult, ModelStatus, P
 from prometheon.labelling.batch import LabelledCorpus, label_items
 from prometheon.labelling.client import ChatCompletionClient
 from prometheon.labelling.prompt import LabelItem
-from prometheon.registry.validation import MinerEntry, MinerValidation, ModelRegistry
+from prometheon.registry.validation import (
+    InvalidReason,
+    MinerEntry,
+    MinerValidation,
+    ModelRegistry,
+)
 from prometheon.scoring.combine import WeightSplit, combine_weights
 from prometheon.scoring.dataset import DatasetScore, DatasetSubmission, score_dataset
 from prometheon.scoring.dedupe import CorpusEntry, drop_near_duplicates
@@ -178,6 +189,7 @@ def run_cycle(
     entries, statuses = _model_entries(epoch, eligible_by_hotkey)
     say(f"verifying {len(entries)} paid models of eligible miners against Hugging Face")
     validations = tuple(registry.validate(entries))
+    _stop_on_upstream_outage(validations)
     valid = [result for result in validations if result.valid]
     say(f"{len(valid)} of {len(validations)} models can be evaluated")
 
@@ -498,9 +510,29 @@ def _model_entries(
                 commitment=commitment,
                 decode_error=decode_error,
                 commit_block=model.commit_block,
+                expected_fingerprint=model.fingerprint,
             )
         )
     return entries, statuses
+
+
+def _stop_on_upstream_outage(validations: tuple[MinerValidation, ...]) -> None:
+    """Hugging Face not answering this validator must not score a miner out.
+
+    Checked before labelling, so stopping costs nothing but a retry. v2 marked
+    such a miner ineligible for the day on this validator only, so its vector
+    diverged from everyone else's for a reason that had nothing to do with the
+    model (B21).
+    """
+    unreachable = [
+        result for result in validations if result.reason is InvalidReason.UPSTREAM_UNAVAILABLE
+    ]
+    if unreachable:
+        raise ValidatorFaultError(
+            f"Hugging Face could not be reached to verify {len(unreachable)} model(s), first "
+            f"{unreachable[0].hotkey}: {unreachable[0].detail}. Stopping before anything is "
+            "labelled; the previous vector stays in place until a retry succeeds"
+        )
 
 
 def _corpus_entries(data: DayData) -> list[CorpusEntry]:

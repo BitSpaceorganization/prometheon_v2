@@ -1,45 +1,42 @@
-"""The eligibility pipeline: which miners may be scored on their model.
+"""The eligibility pipeline: which frozen models a validator will run.
 
-Six checks run per miner, in a fixed order, and the first failure is the
-reason reported. The order goes from cheapest and most local to most expensive
-and most remote, so a miner with no commitment costs no requests, and the reason
-a miner sees names the first thing they can fix.
+The checks run per model, in a fixed order, and the first failure is the reason
+reported. The order goes from cheapest and most local to most remote, so a
+model with no commitment costs no requests, and the reason names the first
+thing its miner can fix.
 
-    1. a commitment exists and decodes
+    1. the commitment is well formed
     2. its revision is a 40-character commit SHA
-    3. the Hugging Face repo passes the manifest: weights, config and tokenizer
-    4. the architecture is one the evaluation image's transformers can load
-    5. the weights fit the size ceiling every validator has to run them on
-    6. no earlier miner committed the same revision SHA
+    3. the repository passes the manifest: permitted files only, weights in
+       Git LFS, a config, at most a few hundred weight files
+    4. the architecture is one the evaluation runtime's transformers can load
+    5. the weights, and everything else, fit the size ceilings
+    6. the weights fingerprint matches the one the epoch froze
+    7. no earlier commitment holds the same weights
 
-An attack this pipeline no longer has to defend against is worth naming.
-While miners served their own models, a commitment could pin an immutable SHA
-on chain while the deployment served a branch the miner could move after
-verification passed, so the *deployed source* had to be read and hashed to
-catch it. Validators now fetch the checkpoint at the committed SHA themselves.
-There is no deployment to lie about: what is scored is what was committed,
-because the validator is the one that resolved it.
+Checks 3 to 6 come from one Hugging Face listing and one small config read,
+before anything is downloaded.
 
-Checks 4 and 5 are the ones to understand now. Both exist because every
-validator must run every eligible model on its own hardware, so a model that
-cannot load, or cannot fit, is not a private mistake by one miner -- it is work
-the whole subnet attempts and fails at simultaneously. Both are answered from
-the Hugging Face API before anything is downloaded.
+**Duplicates are decided by file content (7).** v2 grouped on the git revision
+SHA, so one extra commit on a copied model gave it a new SHA and it passed (B7).
+The fingerprint is the sha256 over the sorted Git LFS sha256s of the weight
+files, read from the API at the frozen revision, so renaming a shard or adding a
+commit changes nothing. Only models that passed checks 1 to 6 compete, so a
+broken repository cannot block a working copy of the same weights. The earliest
+``commit_block`` wins, then the lower hotkey; the hub publishes the first block
+at which each hotkey committed each fingerprint, so re-committing an unchanged
+model does not lose the claim.
 
-Check 6 resolves duplicates across *every* well-formed commitment, including the
-ones that failed an earlier check. A copy must not become eligible because the
-miner it copied happened to be cold that day. Otherwise the cheapest strategy in
-the subnet is to publish someone else's model and wait for theirs to blink. It
-groups on the **revision SHA alone**, never on the repo id: a Hugging Face repo
-is a git repo, so mirroring one into another namespace preserves its commit SHAs
-exactly, and a key that included the repo string put the original and its mirror
-in separate groups and flagged neither.
+**Who is unavailable matters.** A repository that is gone or private is the
+miner's loss on every validator alike. Hugging Face failing to answer one
+validator is that validator's fault, reported separately so the cycle can stop
+rather than score a miner out of the day.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from typing import Final
 
@@ -48,14 +45,22 @@ from prometheon.errors import (
     CommitmentDecodeError,
     CommitmentError,
     DuplicateModelError,
+    FingerprintMismatchError,
     ManifestViolationError,
     ModelTooLargeError,
     RegistryError,
+    RegistryUnavailableError,
+    RepoUnavailableError,
     RevisionFormatError,
 )
-from prometheon.registry.huggingface import HuggingFaceClient, require_valid_repo_id
+from prometheon.registry.huggingface import (
+    HuggingFaceClient,
+    RepoSnapshot,
+    require_valid_repo_id,
+    weights_fingerprint,
+)
 from prometheon.registry.loadability import ArchitectureUnsupportedError, require_loadable
-from prometheon.revision import is_valid_revision, require_valid_revision
+from prometheon.revision import require_valid_revision
 
 
 class InvalidReason(str, Enum):
@@ -75,9 +80,13 @@ class InvalidReason(str, Enum):
     #: The weights exceed what every validator is expected to be able to run.
     MODEL_TOO_LARGE = ModelTooLargeError.code
     DUPLICATE_MODEL = DuplicateModelError.code
-    #: Hugging Face could not be reached. Not the miner's fault, but an
-    #: unverifiable model is still not a scorable one.
-    UPSTREAM_UNAVAILABLE = RegistryError.code
+    #: The weights at the frozen revision are not the ones the epoch names.
+    FINGERPRINT_MISMATCH = FingerprintMismatchError.code
+    #: The repository or revision is gone, private or gated.
+    REPO_UNAVAILABLE = RepoUnavailableError.code
+    #: Hugging Face could not be reached. Never the miner's fault: a cycle that
+    #: sees this stops rather than scoring the model out.
+    UPSTREAM_UNAVAILABLE = RegistryUnavailableError.code
 
 
 #: The block of a commitment nobody could read.
@@ -118,6 +127,9 @@ class MinerEntry:
     commitment: ModelCommitment | None = None
     decode_error: str | None = None
     commit_block: int = UNKNOWN_COMMIT_BLOCK
+    #: The fingerprint the epoch froze. Empty when there is none to compare
+    #: against, as in ``prometheon model verify`` before a model is committed.
+    expected_fingerprint: str = ""
 
 
 @dataclass(frozen=True)
@@ -136,6 +148,10 @@ class MinerValidation:
     model_type: str = ""
     #: Total weight bytes, as the API reported them for check 5.
     weight_bytes: int = 0
+    #: Everything that is not weights, in bytes.
+    non_weight_bytes: int = 0
+    #: The weights fingerprint, once check 6 has computed it.
+    fingerprint: str = ""
 
 
 def _outcome(
@@ -145,7 +161,8 @@ def _outcome(
     reason: InvalidReason | None,
     detail: str,
     model_type: str = "",
-    weight_bytes: int = 0,
+    snapshot: RepoSnapshot | None = None,
+    fingerprint: str = "",
 ) -> MinerValidation:
     return MinerValidation(
         uid=entry.uid,
@@ -157,105 +174,81 @@ def _outcome(
         hf_revision=commitment.hf_revision if commitment is not None else "",
         commit_block=entry.commit_block,
         model_type=model_type,
-        weight_bytes=weight_bytes,
+        weight_bytes=snapshot.weight_bytes if snapshot is not None else 0,
+        non_weight_bytes=snapshot.non_weight_bytes if snapshot is not None else 0,
+        fingerprint=fingerprint,
     )
 
 
-def _duplicate_losers(entries: Sequence[MinerEntry]) -> dict[int, MinerEntry]:
-    """Position in ``entries`` -> the miner that committed the same model first.
+def _registry_reason(exc: RegistryError) -> InvalidReason:
+    if isinstance(exc, RepoUnavailableError):
+        return InvalidReason.REPO_UNAVAILABLE
+    if isinstance(exc, ManifestViolationError):
+        return InvalidReason.MANIFEST_VIOLATION
+    return InvalidReason.UPSTREAM_UNAVAILABLE
 
-    **Grouped on the revision SHA alone, not on ``(repo, revision)``.** Putting
-    the repo id in the key defeats the check against the cheapest attack there
-    is.
 
-    A Hugging Face model repo is a git repo. ``git clone --mirror`` followed by
-    a push into another namespace preserves every commit SHA byte for byte, so
-    a copycat can commit ``(copycat/guard, <the original's SHA>)``
-    and pass checks 1-5 honestly: it is the same tree, so the file manifest
-    matches, the architecture is loadable, and the weights are the same size.
-    Only the repo string differs, so keying on it put the original and
-    the mirror in different groups and neither was ever flagged. One model
-    could then hold rank 1 and rank 2 and collect 4500 of the 5000bp model
-    pool using a second hotkey.
+def _resolve_duplicates(results: list[MinerValidation]) -> list[MinerValidation]:
+    """Among models that passed every other check, the earliest holds its weights.
 
-    Two genuinely distinct models sharing a 40-hex git commit SHA is not
-    something that happens by accident, so this has no realistic false positive.
-
-    **Known hazard: priority is the block of the *current* commitment, and the
-    chain resets that on every re-commit.** A miner who re-commits the same
-    revision after republishing gets a fresh,
-    higher block, so a copycat who mirrored them in the meantime now sorts
-    first and takes the claim.
-
-    Block ordering is kept regardless, because the alternative is worse. It is
-    the *adversarially* correct key: a copycat cannot commit a revision SHA
-    before that SHA exists, so against an attacker starting from nothing the
-    original always sorts first. Ordering by uid instead would be stable under
-    re-commit but would hand every claim to whoever registered earliest, and
-    that is a strictly better attack: sit on a low uid and mirror anything good.
-    Fixing the honest case properly needs a first-seen ledger, and a ledger
-    that validators derive independently is a ledger they can disagree about,
-    which turns a rare miner-facing hazard into routine weight divergence.
-
-    The practical consequence for miners is documented in ``docs/miner.md``:
-    re-committing re-dates your claim, so do not re-commit an unchanged model
-    without reason.
+    Ordered by ``(commit_block, hotkey)``: two commitments really can land in one
+    block, and the hotkey settles that the same way on every validator.
     """
-    grouped: dict[str, list[tuple[int, int, int]]] = {}
-    for position, entry in enumerate(entries):
-        commitment = entry.commitment
-        if entry.decode_error is not None or commitment is None:
-            continue
-        if not is_valid_revision(commitment.hf_revision):
-            continue
-        grouped.setdefault(commitment.hf_revision, []).append(
-            (entry.commit_block, entry.uid, position)
-        )
+    holders: dict[str, MinerValidation] = {}
+    for result in sorted(
+        (result for result in results if result.valid),
+        key=lambda result: (result.commit_block, result.hotkey),
+    ):
+        holders.setdefault(result.fingerprint, result)
 
-    losers: dict[int, MinerEntry] = {}
-    for claims in grouped.values():
-        if len(claims) < 2:
+    resolved: list[MinerValidation] = []
+    for result in results:
+        holder = holders.get(result.fingerprint) if result.valid else None
+        if holder is None or holder.hotkey == result.hotkey:
+            resolved.append(result)
             continue
-        # Lower uid breaks a same-block tie so every validator agrees; two
-        # commitments really can land in one block.
-        ordered = sorted(claims)
-        winner = entries[ordered[0][2]]
-        for _block, _uid, position in ordered[1:]:
-            losers[position] = winner
-    return losers
+        resolved.append(
+            replace(
+                result,
+                valid=False,
+                reason=InvalidReason.DUPLICATE_MODEL,
+                detail=(
+                    f"{result.hf_repo}@{result.hf_revision} carries the same weights as "
+                    f"{holder.hf_repo}@{holder.hf_revision}, committed first by {holder.hotkey}"
+                ),
+            )
+        )
+    return resolved
 
 
 class ModelRegistry:
     """Runs the eligibility pipeline against live Hugging Face state.
 
-    ``max_weight_bytes`` is the ceiling from ``[evaluation]``. It is a
-    constructor argument rather than a module constant because it describes the
-    hardware validators agreed to run, which is a subnet policy decision and
-    lives in config with the others that move emissions.
+    The ceilings come from ``[evaluation]``. They describe the hardware and the
+    disk every validator agreed to provide, which is a subnet policy decision
+    and lives in config with the others that move emissions.
     """
 
-    def __init__(self, *, huggingface: HuggingFaceClient, max_weight_bytes: int = 0) -> None:
+    def __init__(
+        self,
+        *,
+        huggingface: HuggingFaceClient,
+        max_weight_bytes: int = 0,
+        max_non_weight_bytes: int = 0,
+    ) -> None:
         self._huggingface = huggingface
         self._max_weight_bytes = max_weight_bytes
+        self._max_non_weight_bytes = max_non_weight_bytes
 
     def validate(self, entries: Sequence[MinerEntry]) -> list[MinerValidation]:
         """Verdicts for every entry, in the order given."""
-        losers = _duplicate_losers(entries)
-        # Duplicates and re-commitments of an unchanged model would otherwise
-        # re-fetch the same repository once per miner. Only deterministic
-        # verdicts are cached; an upstream outage is retried per miner because
-        # it may well have cleared.
-        repo_verdicts: dict[tuple[str, str], RegistryError | None] = {}
-        return [
-            self._validate_one(entry, losers.get(position), repo_verdicts)
-            for position, entry in enumerate(entries)
-        ]
+        # A listing is deterministic for a commit SHA, so two entries on one
+        # revision share it. An outage is not cached: it may have cleared.
+        listings: dict[tuple[str, str], RepoSnapshot] = {}
+        return _resolve_duplicates([self._validate_one(entry, listings) for entry in entries])
 
     def _validate_one(
-        self,
-        entry: MinerEntry,
-        duplicate_of: MinerEntry | None,
-        repo_verdicts: dict[tuple[str, str], RegistryError | None],
+        self, entry: MinerEntry, listings: dict[tuple[str, str], RepoSnapshot]
     ) -> MinerValidation:
         # 1 -- the commitment exists, decoded, and names usable identifiers.
         if entry.decode_error is not None:
@@ -263,7 +256,7 @@ class ModelRegistry:
                 entry,
                 None,
                 reason=InvalidReason.COMMITMENT_MALFORMED,
-                detail=f"on-chain commitment could not be decoded: {entry.decode_error}",
+                detail=f"commitment could not be decoded: {entry.decode_error}",
             )
         commitment = entry.commitment
         if commitment is None:
@@ -271,22 +264,16 @@ class ModelRegistry:
                 entry,
                 None,
                 reason=InvalidReason.COMMITMENT_MISSING,
-                detail="no model commitment on chain",
+                detail="no model commitment",
             )
         try:
             require_valid_repo_id(commitment.hf_repo)
         except RegistryError as exc:
             return _outcome(
-                entry,
-                commitment,
-                reason=InvalidReason.COMMITMENT_MALFORMED,
-                detail=str(exc),
+                entry, commitment, reason=InvalidReason.COMMITMENT_MALFORMED, detail=str(exc)
             )
 
-        # 2 -- a moving reference is not a commitment. Re-checked here even
-        # though the decoder enforces it, because eligibility must not rest on
-        # another module continuing to hold an invariant it never promised the
-        # registry.
+        # 2 -- a moving reference is not a commitment.
         try:
             require_valid_revision(commitment.hf_revision)
         except RevisionFormatError as exc:
@@ -294,24 +281,17 @@ class ModelRegistry:
                 entry, commitment, reason=InvalidReason.REVISION_NOT_SHA, detail=str(exc)
             )
 
-        # 3 -- the published repository.
+        # 3 -- the repository at that commit.
+        key = (commitment.hf_repo, commitment.hf_revision)
         try:
-            self._verify_repository(commitment.hf_repo, commitment.hf_revision, repo_verdicts)
-        except ManifestViolationError as exc:
-            return _outcome(
-                entry, commitment, reason=InvalidReason.MANIFEST_VIOLATION, detail=str(exc)
-            )
+            snapshot = listings.get(key)
+            if snapshot is None:
+                snapshot = self._huggingface.verify_repository(*key)
+                listings[key] = snapshot
         except RegistryError as exc:
-            return _outcome(
-                entry, commitment, reason=InvalidReason.UPSTREAM_UNAVAILABLE, detail=str(exc)
-            )
+            return _outcome(entry, commitment, reason=_registry_reason(exc), detail=str(exc))
 
         # 4 -- the evaluation runtime can load this architecture at all.
-        #
-        # Answered from `config.json`, before anything is downloaded. An
-        # architecture the pinned transformers does not know is not a slow
-        # model or a bad model: it is one that raises at load, on every
-        # validator, every day, until the miner commits something else.
         try:
             model_type = require_loadable(
                 self._huggingface, commitment.hf_repo, commitment.hf_revision
@@ -322,57 +302,51 @@ class ModelRegistry:
                 commitment,
                 reason=InvalidReason.ARCHITECTURE_UNSUPPORTED,
                 detail=str(exc),
+                snapshot=snapshot,
             )
         except RegistryError as exc:
             return _outcome(
-                entry, commitment, reason=InvalidReason.UPSTREAM_UNAVAILABLE, detail=str(exc)
+                entry, commitment, reason=_registry_reason(exc), detail=str(exc), snapshot=snapshot
             )
+        model_type = model_type or ""
 
-        # 5 -- the weights fit the hardware every validator is expected to have.
-        #
-        # Also answered from the API rather than by downloading. A model over
-        # the ceiling is not one validator's problem: every validator on the
-        # subnet would pull it and fail to fit it, at the same time, having
-        # already paid for the bandwidth.
-        try:
-            weight_bytes = self._huggingface.weight_bytes(
-                commitment.hf_repo, commitment.hf_revision
-            )
-        except RegistryError as exc:
-            return _outcome(
-                entry,
-                commitment,
-                reason=InvalidReason.UPSTREAM_UNAVAILABLE,
-                detail=str(exc),
-                model_type=model_type or "",
-            )
-        if self._max_weight_bytes and weight_bytes > self._max_weight_bytes:
+        # 5 -- the weights fit the hardware every validator is expected to have,
+        # and nothing else in the repository is big enough to fill their disks.
+        too_large = self._size_problem(commitment, snapshot)
+        if too_large:
             return _outcome(
                 entry,
                 commitment,
                 reason=InvalidReason.MODEL_TOO_LARGE,
-                detail=(
-                    f"{commitment.hf_repo}@{commitment.hf_revision} carries "
-                    f"{weight_bytes / 1024**3:.1f} GiB of weights, over the "
-                    f"{self._max_weight_bytes / 1024**3:.1f} GiB ceiling every validator "
-                    "must be able to load"
-                ),
-                model_type=model_type or "",
-                weight_bytes=weight_bytes,
+                detail=too_large,
+                model_type=model_type,
+                snapshot=snapshot,
             )
 
-        # 6 -- an earlier commitment of the same model wins.
-        if duplicate_of is not None:
+        # 6 -- the weights are the ones the day froze.
+        try:
+            fingerprint = weights_fingerprint(snapshot)
+        except ManifestViolationError as exc:
             return _outcome(
                 entry,
                 commitment,
-                reason=InvalidReason.DUPLICATE_MODEL,
+                reason=InvalidReason.MANIFEST_VIOLATION,
+                detail=str(exc),
+                model_type=model_type,
+                snapshot=snapshot,
+            )
+        if entry.expected_fingerprint and fingerprint != entry.expected_fingerprint:
+            return _outcome(
+                entry,
+                commitment,
+                reason=InvalidReason.FINGERPRINT_MISMATCH,
                 detail=(
-                    f"{commitment.hf_repo}@{commitment.hf_revision} was committed first by "
-                    f"uid {duplicate_of.uid} ({duplicate_of.hotkey})"
+                    f"{commitment.hf_repo}@{commitment.hf_revision} fingerprints as "
+                    f"{fingerprint[:12]}, but the epoch froze {entry.expected_fingerprint[:12]}"
                 ),
-                model_type=model_type or "",
-                weight_bytes=weight_bytes,
+                model_type=model_type,
+                snapshot=snapshot,
+                fingerprint=fingerprint,
             )
 
         return _outcome(
@@ -380,30 +354,26 @@ class ModelRegistry:
             commitment,
             reason=None,
             detail="verified",
-            model_type=model_type or "",
-            weight_bytes=weight_bytes,
+            model_type=model_type,
+            snapshot=snapshot,
+            fingerprint=fingerprint,
         )
 
-    # -- steps ------------------------------------------------------------
-
-    def _verify_repository(
-        self,
-        repo: str,
-        revision: str,
-        repo_verdicts: dict[tuple[str, str], RegistryError | None],
-    ) -> None:
-        key = (repo, revision)
-        if key in repo_verdicts:
-            cached = repo_verdicts[key]
-            if cached is not None:
-                raise cached
-            return
-        try:
-            self._huggingface.verify_repository(repo, revision)
-        except ManifestViolationError as exc:
-            repo_verdicts[key] = exc
-            raise
-        repo_verdicts[key] = None
+    def _size_problem(self, commitment: ModelCommitment, snapshot: RepoSnapshot) -> str:
+        where = f"{commitment.hf_repo}@{commitment.hf_revision}"
+        if self._max_weight_bytes and snapshot.weight_bytes > self._max_weight_bytes:
+            return (
+                f"{where} carries {snapshot.weight_bytes / 1024**3:.1f} GiB of weights, over the "
+                f"{self._max_weight_bytes / 1024**3:.1f} GiB ceiling every validator must be "
+                "able to load"
+            )
+        if self._max_non_weight_bytes and snapshot.non_weight_bytes > self._max_non_weight_bytes:
+            return (
+                f"{where} carries {snapshot.non_weight_bytes / 1024**2:.1f} MiB of files that are "
+                f"not weights, over the {self._max_non_weight_bytes / 1024**2:.1f} MiB ceiling. "
+                "Every validator downloads all of it"
+            )
+        return ""
 
 
 def eligible_miners(results: Iterable[MinerValidation]) -> list[MinerValidation]:

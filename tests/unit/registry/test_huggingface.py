@@ -88,8 +88,12 @@ def test_list_files_returns_the_revision_file_list() -> None:
     calls = Calls()
     snapshot = client(hf_handler(calls=calls)).list_files(REPO, REVISION)
 
-    assert snapshot == RepoSnapshot(repo=REPO, revision=REVISION, files=tuple(CONFORMING_FILES))
+    assert isinstance(snapshot, RepoSnapshot)
+    assert snapshot.files == tuple(sorted(CONFORMING_FILES))
     assert calls.paths() == [f"/api/models/{REPO}/revision/{REVISION}"]
+    # One request carries names, sizes and LFS objects together.
+    assert calls.requests[0].url.params.get("blobs") == "true"
+    assert all(entry.lfs_sha256 for entry in snapshot.weight_files)
 
 
 def test_a_read_token_is_sent_as_a_bearer_header() -> None:

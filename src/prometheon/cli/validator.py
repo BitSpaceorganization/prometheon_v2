@@ -517,6 +517,7 @@ def cmd_run(args: argparse.Namespace) -> int:
             registry=ModelRegistry(
                 huggingface=huggingface,
                 max_weight_bytes=config.evaluation.max_weight_bytes,
+                max_non_weight_bytes=config.evaluation.max_non_weight_bytes,
             ),
             labeller=labeller,
             policy=policy,

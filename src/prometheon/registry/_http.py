@@ -33,7 +33,7 @@ from typing import Any, Final, TypeVar
 
 import httpx
 
-from prometheon.errors import RegistryError
+from prometheon.errors import RegistryError, RegistryUnavailableError, RepoUnavailableError
 
 #: Default ceiling for a JSON body. Generous for a revision listing, and far
 #: below anything that would threaten a validator's memory.
@@ -65,13 +65,15 @@ def _raise_for_status(response: httpx.Response, what: str) -> None:
     code = response.status_code
     if code in _RETRYABLE_STATUS:
         raise _RetryableStatusError(code)
-    if code == 404:
+    if code in (404, 410):
         # A private or gated repository can answer 404 rather than 403, so
         # "does not exist" alone accused miners of a missing repository when the
         # real fault was one nobody outside their account can read.
-        raise RegistryError(f"{what} does not exist, or is not publicly readable (HTTP 404)")
+        raise RepoUnavailableError(
+            f"{what} does not exist, or is not publicly readable (HTTP {code})"
+        )
     if code in (401, 403):
-        raise RegistryError(f"{what} is not publicly readable (HTTP {code})")
+        raise RepoUnavailableError(f"{what} is not publicly readable (HTTP {code})")
     if code >= 400:
         raise RegistryError(f"{what} failed with HTTP {code}")
 
@@ -184,7 +186,7 @@ class RegistryHttpClient:
                 last_error = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
             if attempt < self._retries:
                 self._sleep(self._backoff_seconds * (2**attempt))
-        raise RegistryError(
+        raise RegistryUnavailableError(
             f"{what} is unavailable after {self._retries + 1} attempts ({last_error})"
         )
 

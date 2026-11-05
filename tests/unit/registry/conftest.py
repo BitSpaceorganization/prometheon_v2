@@ -8,6 +8,7 @@ socket or touches a file.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Callable
 
@@ -60,23 +61,27 @@ MODEL_TYPE = "qwen2"
 SHARD_BYTES = 4 * 1024**3
 
 
+def lfs_sha(name: str, weights: str = "w1") -> str:
+    """A stable stand-in for a Git LFS object id: same weights, same id."""
+    return hashlib.sha256(f"{weights}:{name}".encode()).hexdigest()
+
+
 def revision_payload(
-    *, files: tuple[str, ...] = CONFORMING_FILES, sha: str = REVISION
+    *, files: tuple[str, ...] = CONFORMING_FILES, sha: str = REVISION, weights: str = "w1"
 ) -> dict[str, object]:
-    """The shape the Hugging Face revision endpoint answers with."""
-    return {
-        "id": REPO,
-        "sha": sha,
-        "siblings": [
-            {
-                "rfilename": name,
-                # Only weight shards carry a size worth counting, and the live
-                # API only reports sizes when asked with `?blobs=true`.
-                "size": SHARD_BYTES if name.endswith(".safetensors") else 512,
-            }
-            for name in files
-        ],
-    }
+    """The shape the Hugging Face revision endpoint answers with ``?blobs=true``.
+
+    Taken from a live response: every sibling carries a ``size``, and files
+    stored in Git LFS also carry ``lfs: {sha256, size, pointerSize}``.
+    """
+    siblings: list[dict[str, object]] = []
+    for name in files:
+        size = SHARD_BYTES if name.endswith(".safetensors") else 512
+        sibling: dict[str, object] = {"rfilename": name, "size": size}
+        if name.endswith(".safetensors"):
+            sibling["lfs"] = {"sha256": lfs_sha(name, weights), "size": size, "pointerSize": 134}
+        siblings.append(sibling)
+    return {"id": REPO, "sha": sha, "siblings": siblings}
 
 
 def hf_handler(

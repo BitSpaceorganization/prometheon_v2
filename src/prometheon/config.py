@@ -149,6 +149,12 @@ class EvaluationConfig(BaseModel):
     #: bandwidth on every validator at once.
     max_weight_bytes: int = Field(default=24 * 1024**3, gt=0)
 
+    #: Ceiling on everything in a repository that is not weights, in bytes:
+    #: config, tokenizer, README. Every validator downloads all of it, so a
+    #: multi-gigabyte README is a way to fill every validator's disk at once.
+    #: Real tokenizers are a few megabytes.
+    max_non_weight_bytes: int = Field(default=64 * 1024**2, gt=0)
+
     #: Torch dtype the weights are loaded in, pinned rather than inferred.
     #:
     #: Two validators must reach the same verdict on the same item, and dtype
