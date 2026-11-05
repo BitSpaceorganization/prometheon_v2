@@ -2,67 +2,75 @@
   <img src="Prometheon_Logo.svg" width="120" alt="Prometheon" />
 </p>
 
-# Prometheon V2
+# Prometheon
 
-A Bittensor subnet that develops, benchmarks, and continuously improves **open-source content-moderation models**.
+Prometheon is a Bittensor subnet whose goal is an **AI moderation agent**. It starts with text content moderation: a model that reads a post and decides whether it breaks a written policy. It is built for platforms, communities and businesses that need moderation.
 
-> **Phase scope.** This repository is Phase 2 and replaces the Phase 1 activity-reward mechanism entirely. Phase 1 lives in `prometheon_v1` and is no longer the reward path.
+> **Status: pre-launch.** The subnet is not registered yet. The team will register it and announce the netuid then. Until that announcement, nothing in this repository refers to a live subnet: the netuid, the chain endpoint and the treasury coldkey are required settings with no default, and every end-to-end test runs on a local chain ([`docs/localnet.md`](./docs/localnet.md)).
 
 ---
 
-## What this subnet does
+## What the subnet does
 
-Miners compete to build the best moderation model, and they supply the data it is measured on.
+Miners earn in two ways, and every validator scores both from the same signed daily record:
 
-1. **A miner grows a BitFan Fan Group.** Its members write posts and replies they believe violate the platform's content policy, marked as **test content**. Those are recorded, never published.
-2. **The subnet collects a day of content**: that test content, plus a sample of real production content.
-3. **Validators label it** against [`content_policy.md`](./content_policy.md), producing the day's ground truth.
-4. **Miners publish a moderation model** to Hugging Face, committing `(hf_repo, revision_sha)` on chain. Nothing is deployed and nothing is served: weights are the whole submission.
-5. **Validators run every model themselves**, on their own GPUs, over the labelled corpus, and set one weight vector.
-
-Two things are rewarded, in equal measure: **contributing usable evaluation data**, and **building the model that judges it best**.
+1. **Data, 70% of emission.** A miner leads a group on [BitFan](https://bitfan.ai), a separate consumer product and Prometheon's first data partner. Identity-verified members of the group write test posts and say whether each one breaks the policy. Validators label every post themselves and pay for the claims their labeller confirms.
+2. **Models, 30% of emission.** A miner publishes moderation model weights on Hugging Face and commits the repository and revision on chain. Validators download every eligible model whose fee is paid, run it on their own hardware over the day's content, and pay the three best: 25%, 4% and 1% of emission.
 
 ```text
-BitFan users write test content   →   subnet DB layer   →   validators label it
-                                                              ↓
-miners publish models to HF  →  validators download and run them  →  set_weights
+BitFan ──daily feed──▶ hub ──signed epoch──▶ validators ──▶ label, run every model, score
+                        ▲                         │
+          chain index ──┘                         └──▶ set_weights, publish a signed record
 ```
+
+The **hub** is a small service the owner team runs. Each day it combines BitFan's feed with what the chain says (registered neurons, frozen model commitments, credit payments), signs the result, and hands it to validators. Validators check that signature against a key pinned in their config, then do the rest themselves: labelling, running models, scoring and setting weights.
+
+BitFan and Prometheon are separate products. They share no database, no login and no code. Other data partners can be added later on the same feed format.
+
+### Roadmap
+
+1. **Now:** text moderation against one policy, [`content_policy.md`](./content_policy.md).
+2. Multiple policies, and image and video moderation.
+3. Bot detection, fraud detection and account-farming detection.
+4. The agent: moderating platforms, Discord, Telegram and other social traffic end to end.
+
+**The reward split moves with the roadmap.** It starts at 70% data and 30% models, because inviting real people and getting them to write test content costs far more today than training a text model. As user numbers grow and the model requirements get harder, the team expects the share for model training and agent development to reach 80 to 90%. Any change ships as a new scoring version that every validator adopts together. It is never a quiet config edit.
 
 ---
 
-## What makes the measurement trustworthy
+## The rules, exactly
 
-Code in this repository enforces each of these. There is no rule anyone has to remember to follow.
+These match the code under `scoring_version = "prometheon-scoring/3.0"`. [`docs/scoring.md`](./docs/scoring.md) has the arithmetic with worked examples.
 
-**A miner is never scored on content its own users wrote.** Test items carry their contributing miner, and each model's accuracy is computed only over other miners' items. Watermarking your own submissions buys nothing.
+| Rule | Value |
+|---|---|
+| Data pool | 70% of emission, split among the top 10 eligible miners in proportion to their data score |
+| Data score | `2 × min(V_pos, V_neg) × (V_pos + V_neg) / S`, after near-duplicates are removed |
+| Model pool | 25%, 4% and 1% of emission to the top three models |
+| Unfilled places | An unfilled model place goes to the lowest-ranked winner present: two models get 25% and 5%, and one model gets 30%. A pool burns only when nobody qualifies for it |
+| Eligible miner | At least **10** identity-verified active members **and** at least **30** members in total, as counted in the signed epoch. Both pools. Every member is phone-verified, and the 30 includes the 10 |
+| Whose content counts | Only identity-verified people on BitFan (Stripe Identity). See below |
+| Model fee | 50 alpha per new model, paid in advance as a credit. No refunds |
+| Burn | Anything nobody qualifies for is weighted to the subnet owner hotkey |
 
-Miners also cannot see the corpus they are measured on. A day's test content is released to miners two days later, after the evaluation that used it has finished. Memorisation is not a strategy.
+`S` is a miner's test posts for the day after near-duplicates are removed. `V_pos` counts posts claimed violating that the validator's labeller confirmed violating. `V_neg` counts posts claimed compliant that it confirmed compliant. Because the score uses `min(V_pos, V_neg)`, a flood of one class earns nothing.
 
-Every model runs identical code. Miners supply weights and nothing else. The inference path is one subnet-authored script, hash-pinned, running inside one subnet-built container image, and validators check both from outside, against the deployment itself. A hash proves which bytes are on disk; pinning the image is what makes them run somewhere the miner did not assemble. A score difference is a model difference.
+### Whose content counts
 
-**Verdicts cannot be malformed, and a model cannot refuse.** Decoding is forced-choice: the engine compares probability mass on `YES` against `NO` and takes the larger. Nothing is generated freely, so there is no output to parse and no refusal to interpret.
+Only content from people who passed identity verification (Stripe Identity) on BitFan. BitFan's export includes only human accounts at that level that aren't banned or on hold, in groups whose leader wallet is a registered, unbanned hotkey. BitFan also limits each person to 5 violating and 5 compliant test posts per UTC day. Validators refuse any test line in the feed that doesn't carry `"verified": true`.
 
-The corpus contains text written to violate policy, some of it written to manipulate a classifier. Items are therefore judged one at a time, never concatenated, so an instruction buried in one post cannot reach the verdict on another.
+Be clear about what a validator can and can't check. It can check that the feed is the one the hub signed and that every line is well formed. **It can't check identity verification itself, or the member counts.** Those come from BitFan through the hub. They are published with every epoch, so anyone can compare them afterwards.
 
-Validators verify eligibility themselves, from chain commitments and Hugging Face. The subnet's own database is not trusted for it.
+### Model submissions and credits
 
----
+A miner pays 50 alpha of stake to the treasury coldkey on the subnet (`prometheon credits buy` sends the `transfer_stake`) and gets one credit. A credit is spent when a new set of weights first appears in a frozen epoch. Re-committing the same weights costs nothing. A model without a credit is listed as `unpaid` and isn't scored. It's picked up at the next freeze after a credit arrives. Credits belong to the coldkey that paid, and are shared by every hotkey under it. **There are no refunds.** The ledger is public, with the block number and extrinsic hash of every entry.
 
-## Repository layout
+### How the owner team takes part
 
-```text
-src/prometheon/chain/       commitments, metagraph, weight submission
-src/prometheon/registry/    model eligibility: manifest, hashes, provenance, duplicates
-src/prometheon/dbclient/    the /v2 client, its contract, and an in-memory fake
-src/prometheon/labelling/   ground-truth labelling with injection-hardened batching
-src/prometheon/evaluation/  corpus assembly and model execution
-src/prometheon/scoring/     dataset and model rewards, allocation, burn
-src/prometheon/security/    canonical JSON encoding and hotkey signatures
-src/prometheon/cli/         the miner and validator command surface
-content_policy.md           the authority for every verdict
-configs/                    pre-pinned example configuration
-docs/                       operator guides and the contracts other teams build against
-```
+- **The owner runs a validator like everyone else, with this public CLI.** It uses no private build and gets no special inputs.
+- **The owner runs the hub**, which signs each day's epoch. That signature is a trust point: validators score what the hub signed. The hub can't label content, run models or set anyone's weights, and everything it signs is published.
+- **Burned emission is weighted to the subnet owner hotkey.** That happens only when nobody qualifies for a pool, or for the units of a miner that deregistered before weights were sent.
+- **The treasury coldkey**, set at launch, receives model fees.
 
 ---
 
@@ -73,86 +81,69 @@ Requires Python `>=3.10,<3.15` and a `btcli`-managed Bittensor wallet.
 ```bash
 git clone https://github.com/BitSpaceorganization/prometheon_v2
 cd prometheon_v2
-uv sync
+uv sync                    # miners, and validators in endpoint mode
+uv sync --extra wrapper    # validators that run models (the default, local mode)
 ```
 
-Every command below assumes `uv run` in front of `prometheon`. To drop the prefix, `source .venv/bin/activate` once.
+`--extra wrapper` installs torch and transformers, which run the models. Without them, a local-mode validator that has a model to run stops at a pre-flight check before it labels anything.
 
 ---
 
 ## Miners
 
-You need a Fan Group that clears **both** floors: **at least 50 registered members**, accounts that have joined your group, **and at least 25 active members**, members whose 7-day activity score clears the platform's active threshold. Both gates apply to both reward streams; the active floor is the anti-farming half a sign-up farm fails.
-
-Register your Fan Group, then connect your **Talisman** wallet (or another Substrate wallet, polkadot-js, SubWallet, Nova) with the **Connect Wallet** button in the bitfan.ai site header and sign the ownership proof, which binds your mining hotkey to your leader account. That is a platform step, not a subnet command, and nothing else works until it is done.
-
 ```bash
-# 1. Commit the model on chain; this is the submission
-uv run prometheon model commit --config ~/prometheon-mainnet.toml
+cp configs/finney.example.toml ~/prometheon.toml
+# fill in: [chain] netuid, [wallet], [hub], [credits] treasury_coldkey, [miner]
 
-# 2. Check what a validator will conclude about your deployment
-uv run prometheon model verify --config ~/prometheon-mainnet.toml
+uv run prometheon credits balance --config ~/prometheon.toml
+uv run prometheon credits buy --config ~/prometheon.toml --dry-run    # then without --dry-run
+uv run prometheon model commit --config ~/prometheon.toml
+uv run prometheon model verify --config ~/prometheon.toml
 ```
 
-Your Hugging Face repository holds **weights, config and tokenizer, no executable code at all**. Any other file and your deployment is not scored. See [`docs/miner.md`](./docs/miner.md).
-
-
----
+Your Hugging Face repository holds **weights, config and tokenizer only, with no executable code**. Read [`docs/miner.md`](./docs/miner.md) before you pay for a credit.
 
 ## Validators
 
-There are two ways to run one, and they cost very different things:
-
-| | `score_source = "local"` (default) | `score_source = "endpoint"` |
-|---|---|---|
-| Hardware | **8 × RTX 5090 (256 GB) or better** | **CPU only, no GPU** |
-| Labelling key | yours to pay for | none |
-| Cycle | hours | seconds |
-| What you submit | what you measured | what another validator measured |
-| Consensus | an independent opinion | a copy of one |
-
-**Local mode requires those GPUs.** Every eligible model is downloaded and run
-over the whole corpus daily, so it is the cost of validating rather than a
-suggestion.
-
-**Endpoint mode needs no GPU and no labelling key.** It fetches a signed record
-another validator published, checks its provenance, and submits its weights,
-which is how you validate without a GPU budget. It also contributes no
-independent opinion, and consensus only detects a wrong provider by validators
-disagreeing with it, so read the trade-off before choosing it.
-
-See [`docs/validator.md`](./docs/validator.md#hardware).
-
-
-A validator runs **one cycle per day**, starting at 04:00 UTC against the previous day's data.
-
 ```bash
-cp configs/mainnet.example.toml ~/prometheon-mainnet.toml   # then edit [wallet]
-export OPENAI_API_KEY="…"        # you pay for ground-truth labelling
-# no inference key: in local mode a validator downloads each model and runs it
-# on its own GPU. In endpoint mode neither this key nor a GPU is needed.
+cp configs/finney.example.toml ~/prometheon.toml
+# fill in: [chain] netuid, [wallet], [hub] base_url and epoch key, [labelling]
+export OPENAI_API_KEY="..."     # you pay for ground-truth labelling
 
-uv run prometheon validator run --config ~/prometheon-mainnet.toml
+uv run prometheon validator run --config ~/prometheon.toml    # one day; dry_run = true first
 ```
 
-Each stage is runnable on its own for debugging. See [`docs/validator.md`](./docs/validator.md).
+A validator scores yesterday once a day at 04:00 UTC, and re-posts its weights every 30 minutes. Local mode needs serious GPUs. Endpoint mode needs none, but it copies another validator's opinion. Read [`docs/validator.md`](./docs/validator.md) before choosing.
 
 ---
+
+## Repository layout
+
+```text
+src/prometheon/hub/         the hub client: signed epochs, feed files, results, credits; a fake hub
+src/prometheon/chain/       metagraph, commitments, weight submission, stake transfers
+src/prometheon/registry/    model checks against Hugging Face: manifest, size, fingerprint, duplicates
+src/prometheon/labelling/   ground-truth labelling with injection-hardened batching
+src/prometheon/evaluation/  corpus assembly and the forced-choice model engine
+src/prometheon/scoring/     near-duplicates, data and model scores, the split, burn
+src/prometheon/security/    canonical JSON and signatures
+src/prometheon/cli/         the miner and validator commands
+tools/localnet/             a whole cycle on a local chain, with real extrinsics
+content_policy.md           the authority for every verdict
+configs/                    example configuration
+docs/                       guides, the scoring rules and the hub contract
+```
 
 ## Documentation
 
 | Document | Purpose |
 |---|---|
 | [`content_policy.md`](./content_policy.md) | The authority for every verdict |
-| [`docs/miner.md`](./docs/miner.md) | Publishing, deploying, and committing a model |
+| [`docs/scoring.md`](./docs/scoring.md) | How emissions are computed, with worked examples |
+| [`docs/miner.md`](./docs/miner.md) | Earning from data and from models; credits |
 | [`docs/validator.md`](./docs/validator.md) | Running the daily cycle |
-| [`docs/scoring.md`](./docs/scoring.md) | How emissions are computed |
-
----
-
-## Status
-
-Phase 2 targets Bittensor **mainnet netuid 108**.
+| [`docs/hub-contract.md`](./docs/hub-contract.md) | The signed epoch, the feed lines, and the hub's routes |
+| [`docs/localnet.md`](./docs/localnet.md) | Running the whole cycle on a local chain |
 
 ## License
 

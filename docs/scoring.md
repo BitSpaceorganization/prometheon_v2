@@ -1,242 +1,200 @@
 # Scoring
 
-How a day's work becomes one weight vector. Every constant here lives in
-`[scoring]` in your config, so a validator can read the numbers that decide
-emissions without reading the code.
+How one day becomes one weight vector, under `scoring_version = "prometheon-scoring/3.0"`.
 
-A share of miner emission (`miner_burn_share_bp`, **0 by default**) burns to the
-subnet owner (uid 0) before any miner is paid. At the default nothing is
-withheld, and the whole of it is the miner pool, split evenly:
+Every number on this page is in `[scoring]` in your config, and the example configs set each one explicitly. They're not enforced by consensus. Two validators running the same code with different values compute different vectors from the same inputs, and the odd one out loses vtrust. A config without `scoring_version`, or with a different one, refuses to load, so a copy made under older rules fails loudly instead of running new code on old numbers.
+
+All arithmetic is in exact integers and fractions. No float touches a payout.
 
 ```text
-100% miner emission
-├─  0%  burn, withheld to the owner (uid 0); 0 by default
-└─ 100% miner pool
-   ├─ ½  dataset contribution, did you supply usable evaluation data?
-   └─ ½  model performance, is your model the best judge of it?
+1,000,000 units per validator per day
+├─ 700,000  data pool      top 10 eligible miners, in proportion to data score
+└─ 300,000  model pool     250,000 / 40,000 / 10,000 to the top three models
+anything nobody qualifies for → the subnet owner hotkey (burn)
 ```
 
-So dataset contribution is **50%** of total emission and model performance
-**50%**. `dataset_share_bp = 5000` is that even split expressed in basis points
-of the pool.
-
-The two halves are independent, and the dataset half is the one a miner can earn
-with no deployed model at all: data is what every model is measured against, and
-it accrues daily from real users.
-
-Both numbers are config, and neither is enforced by consensus. Two validators
-running identical code with different values compute different weight vectors
-from the same inputs, and the minority loses vtrust for a configuration
-difference rather than a disagreement about the field. Change them together with
-the rest of the network, not alone.
-All of it is computed inside one cycle and combined into a **single**
-`set_weights`; the chain sees one final weight vector, burn included.
+The split starts at 70% data and 30% models, because real contributors cost far more today than training a text model. The team expects the model and agent share to reach 80 to 90% as the user base grows and the model requirements get harder. That will ship as a new scoring version.
 
 ---
 
-## Dataset contribution (⅔ of the pool, 40% of total)
+## Who is scored
 
-A miner's users submit balanced test content: for each item they claim whether
-it violates policy or is compliant. Each validator labels every item with its
-own labeller and rewards only the claims the labeller confirms, so the claim is
-a prior, never trusted as ground truth, and a member cannot inflate `V` by
-claiming everything violates.
+The day's **signed epoch** lists every neuron registered at the freeze, with two counts from BitFan. A miner is **eligible** when:
 
 ```text
-V = items correctly labelled      (the claim matched the labeller's verdict)
-S = items submitted
-score = V × (V / S)  =  V² / S
+verified_active_members ≥ min_verified_active_members   (10)
+members                 ≥ min_members                   (30)
 ```
 
-The second factor is submission accuracy, and multiplying by it is what makes
-noise unprofitable:
+Every member is phone-verified, and `members` includes the verified active ones. One gate covers both pools. An ineligible miner's test posts still enter the corpus, because they're verified human content, but the miner earns nothing, and its model isn't evaluated.
 
-| Submitted | Valid | Accuracy | Score |
-|---|---|---|---|
-| 100 | 50 | 50% | **25** |
-| 50 | 50 | 100% | **50** |
-| 200 | 100 | 50% | **50** |
-
-Submitting fifty good items beats submitting a hundred items of which half are
-junk, by exactly the factor by which the junk diluted them. Volume still pays,
-but only when it is accurate volume.
-
-`S = 0` scores `0`. There is no division by zero, and a miner who submitted
-nothing contributed nothing.
-
-An item may also carry `ground_truth_violating`, the true label attached by a
-platform that generated the content itself. A validator that trusts that source
-for *its own* groups may score `claimed_violating == ground_truth_violating`
-directly, skipping the labeller for those items. It is only ever used for a
-source a validator already trusts; content it does not source is still labelled
-independently, so the field is a cost saving, not a lever on anyone's score.
-
-**The pool goes to the top 10 contributors**, split proportionally to score.
-Fewer than ten eligible contributors and the pool divides among those present
-rather than burning the remainder.
+The hub also publishes its own `eligible` flag, for its dashboard. Validators don't use it. They apply their configured floors to the two counts.
 
 ---
 
-## Model performance (⅓ of the pool, 20% of total)
+## Data pool, 70%
+
+### 1. Near-duplicates out
+
+Before anything is labelled, the whole day's test corpus is de-duplicated across all miners. Each post's text is normalised:
+
+1. Unicode NFKC
+2. lower case
+3. every run of whitespace becomes one space
+4. punctuation, symbols, format and control characters, and variation selectors are deleted
+5. runs of spaces collapse to one, and the ends are trimmed
+
+Two posts are the same post if their normalised texts are identical, or if their 64-bit SimHashes, over character 3-grams, are within `near_duplicate_max_hamming` bits (3). Posts are compared in `(created_at, id)` order. Each is checked only against the posts kept so far, and only the earliest of a group is kept, whoever wrote it.
+
+### 2. The score
+
+For each eligible miner's remaining posts:
+
+```text
+S      = posts remaining after near-duplicates
+V_pos  = claimed violating, and the labeller says violating
+V_neg  = claimed compliant, and the labeller says compliant
+
+amount  = 2 × min(V_pos, V_neg)
+quality = (V_pos + V_neg) / S
+score   = amount × quality
+```
+
+The labeller is the validator's own, prompted with [`content_policy.md`](../content_policy.md). A post it excludes as unusable counts in `S` and in neither `V`.
+
+| S | V_pos | V_neg | amount | quality | score |
+|---|---|---|---|---|---|
+| 10 | 5 | 5 | 10 | 1 | **10** |
+| 10 | 6 | 4 | 8 | 1 | **8** |
+| 10 | 3 | 5 | 6 | 0.8 | **4.8** |
+| 40 | 40 | 0 | 0 | 1 | **0**, a flood of one class |
+| 20 | 5 | 5 | 10 | 0.5 | **5**, half the posts were wrong |
+| 0 | 0 | 0 | 0 | | **0** |
+
+### 3. The split
+
+The top `dataset_top_n` (10) miners with a score above zero split 700,000 units in proportion to score. If fewer qualify, those present share the whole pool. Ranking is score descending, then hotkey ascending. If nobody scores above zero, the pool burns.
+
+---
+
+## Model pool, 30%
+
+### Which models run
+
+A model is evaluated only if all of these hold:
+
+- it's in the epoch's frozen `models` list with `payment = "paid"`
+- its hotkey is eligible
+- it passes the registry checks against Hugging Face: manifest, architecture, size, and the weights fingerprint must equal the one the hub froze
+- no earlier model has the same fingerprint, where earlier means first commit block, then hotkey
+
+The others are published with a status: `unpaid`, `duplicate`, `ineligible`, `invalid` or `unreachable`.
 
 ### Accuracy
 
-Every eligible model is run over the whole corpus: test content from *other*
-miners carrying whichever verdict labelling gave it, plus production content. It
-is scored on how often it agreed with the ground truth (the validator's own
-labeller).
-
-The test corpus is now deliberately balanced, submitters label roughly half
-their items compliant, so a model can no longer win by answering "violating" to
-everything: accuracy only rises by getting both classes right. A correctly
-labelled compliant item is a genuine negative and one of the harder ones to
-identify; a mislabelled item still costs its author (it counts in `S`, not `V`)
-and is measured on the model half too.
+Each model runs over the day's labelled corpus: every test post that survived de-duplication, from all miners, plus the production sample. **Test posts from the model's own coldkey are left out**, across every hotkey under that coldkey.
 
 ```text
-accuracy = correct / total
+accuracy = correct / scored
 ```
 
-Raw accuracy, for now. It is prevalence-sensitive: as the number
-of eligible miners grows, test positives accumulate and the corpus tilts toward
-`YES`, which flatters a model that simply answers `YES`. Admitting non-violating
-test content slows that drift -- it is the only negative supply that grows with
-the field rather than independently of it -- but does not stop it.
-
-That is survivable while the field is small and production content dominates,
-and it stops being survivable later. **The trigger to watch is the ratio of
-test positives to production negatives.** Once positives exceed roughly nine
-times negatives, a degenerate always-`YES` model starts beating a competent
-one, and accuracy should move to balanced accuracy. Validators log the ratio
-every cycle so the switch is made on evidence rather than on a hunch.
+A batch that fails is scored incorrect. If every batch of a model fails, the validator checks that it can still run a model at all. If it can't, the cycle stops instead of scoring the field zero.
 
 ### Efficiency
 
-Lower token usage is better, but only slightly. Accuracy is what matters.
-
 ```text
 t̄ᵢ    = total tokens ÷ items whose batch reported usage
-T₉₀   = 90th percentile of t̄ across models that reported usage
-tᵢ    = clamp(t̄ᵢ / T₉₀, 0, 1)
-score = accuracy × (1 − λ·tᵢ)                  λ = 0.15
+P₉₀   = 90th percentile of t̄ across models that reported usage
+tᵢ    = clamp(t̄ᵢ / P₉₀, 0, 1)
+score = accuracy × (1 − λ·tᵢ)                 λ = efficiency_lambda_bp = 15%
 ```
 
-The denominator is **items whose batch reported usage**, not items scored. A
-failed batch is scored incorrect but reports no tokens, and averaging its zero
-in would make a broken model look cheap. The two differ for any model that had
-a batch fail.
+- **The spread guard.** If the coefficient of variation of `t̄` across the field is below `efficiency_min_cv_bp` (10%), λ is zero for the day. Forced-choice decoding makes token counts nearly uniform, so this is the usual case.
+- **A model that reported no usage isn't free.** It takes `t = 1` and stays out of `P₉₀` and the spread guard.
+- **Multiplicative, and capped at 15%.** Efficiency can't overturn a wider accuracy gap.
 
-A model that reported no usage **at all** is not treated as free. It takes
-`t = 1`, the full discount, and takes no part in `T₉₀` or the spread guard.
-Otherwise a deployment that answered nothing would be the most efficient model
-in the field, and every model would have an incentive to stop reporting.
+### Ranks and places
 
-Five choices behind that formula:
-
-**Per-item mean.** Self-exclusion means each miner is scored on a slightly
-different set, so totals are not comparable across miners.
-
-**The 90th percentile.** Taking the maximum instead would let one model with a
-runaway prompt inflate the denominator and squash everyone else's differences
-into nothing.
-
-**Multiplicative, not additive.** A cheap-but-wrong model cannot buy rank:
-`0.40 × 1.00` still loses to `0.60 × 0.85`.
-
-**λ = 0.15 caps it.** Efficiency can never overturn an accuracy gap wider than
-fifteen points.
-
-**The guard.** Decoding is forced-choice, so completion tokens are one per item
-for everyone and the real variation is tokenizer efficiency on the policy and
-content, a narrow spread. When the coefficient of variation across models falls
-below 10%, λ is set to **zero** for that cycle. A term that is not
-discriminating must not contribute randomness to close rankings.
-
-### Rank shares
+- A model scored on fewer than `model_min_scored_items` (100) items isn't ranked.
+- A score of zero is never paid.
+- Ranking is score descending, then accuracy descending, then hotkey ascending.
 
 ```text
-rank 1 → 30%   of total miner emission
-rank 2 → 15%
-rank 3 →  5%
-             = the model half of the pool (50% of total)
+model_rank_shares_bp = [2500, 400, 100]      shares of TOTAL emission
+
+three winners   25%   4%   1%
+two winners     25%   5%           the empty third place goes to the lowest winner present
+one winner      30%
+none            the 30% burns
 ```
-
-Ranking is by score descending, with ties broken on accuracy descending and
-then hotkey ascending. Never on dictionary order, which would make the result
-depend on iteration and differ between validators.
-
-With fewer than three valid models the shares **renormalise** across those
-present. Two models take `3000/4500` and `1500/4500` of the model pool, so
-nothing is left unallocated because the field was thin.
-
-Two gates decide whether a model may hold a rank share at all:
-
-**It must have been measured.** A model scored on fewer than
-`model_min_scored_items` items (default 100) is not ranked. Accuracy over one
-item is 100% or 0% and means nothing either way, but it would sort above a
-model that answered 4999 of 5000 correctly and take twice its emission. This is
-reachable rather than hypothetical, because a miner's own test content is
-excluded from the corpus it is scored on.
-
-**It must have scored above zero.** Ranking in the top three is not the same as
-having earned something. A model that answered nothing all day scores zero, and
-a zero is never paid. Otherwise a dead deployment collects, and a field in
-which *every* model scores zero would distribute half of miner emission in
-hotkey alphabetical order, identically on every validator, where consensus
-could not correct it.
 
 ---
 
 ## Burn
 
-The subnet owner's hotkey receives any portion with nobody eligible to claim
-it. There is no standing burn in normal operation. With eligible miners present,
-the full miner emission is distributed.
+Burned units are weighted to the subnet owner hotkey, read from the chain.
 
-| Situation | Result |
+| Situation | Burns |
 |---|---|
-| No dataset-eligible miners | the dataset half burns |
-| No model-eligible miners | the model half burns |
-| No model scored above zero | the model half burns |
-| No model met the measurement floor | the model half burns |
-| Neither half has a claimant | the whole miner emission burns |
+| No eligible miner scores above zero for data | 700,000 |
+| No model qualifies | 300,000 |
+| Both | everything |
+| A paid hotkey deregisters between scoring and sending | that hotkey's units |
 
-**Everything above happens behind one entry gate.** A hotkey is scored at all
-only if it is on the day's eligible-miner list, which the subnet data layer
-derives from Fan Group active-member counts. Not on the list, and neither half
-pays: no commitment is read, no model is evaluated, and any test content its
-users wrote is not counted towards the dataset half.
-
-Past that gate the two streams are independent. A miner whose users contributed
-that day but who has deployed no model earns from the dataset pool; a miner with
-a deployed model whose users contributed nothing earns from the model pool.
+A departed hotkey's units are never redistributed to the rest of the field. That would let a single deregistration change everyone else's pay.
 
 ---
 
-## Allocation
+## From units to the chain
 
-Both pools allocate integer weight units by **largest remainder**, so the parts
-sum to the pool exactly rather than approximately. Remainder ties break on
-hotkey ascending.
+Units resolve to uids against a fresh metagraph at send time, then scale to `u16` values summing to exactly 65,535. The scaling uses largest remainder, with ties broken by remainder, then units, then hotkey, then uid. The SDK then rescales so the largest weight is 65,535, which is what the chain stores.
 
-Floating-point shares that "nearly" sum to the pool produce a different final
-vector on different machines, and two validators that disagree by one weight
-unit have diverged for no reason at all.
+Every allocation on this page uses largest remainder too. Floors first, then one unit at a time to the largest remainders, with ties by hotkey. Parts always sum to the pool exactly.
 
----
+## Worked example
+
+These are the numbers in `tests/integration/test_validator_run.py`, which drives `prometheon validator run` end to end and checks each one. The setup:
+
+- **Miners:** A, B, C and D. D has 14 verified active members but only 29 members, so it's ineligible.
+- **Data:** A has 6 violating and 4 compliant posts, all confirmed. B has 5 and 5. C has 3 confirmed violating and 7 claimed compliant, of which the labeller finds 2 violating.
+- **Models:** A misses nothing, C misses 3 items and B misses 6.
+
+```text
+data scores        A 8      B 10     C 4.8         total 22.8
+exact shares       A 245,614.04   B 307,017.54   C 147,368.42
+floors             245,614 + 307,017 + 147,368 = 699,999 → 1 left, largest remainder B
+data units         A 245,614      B 307,018      C 147,368
+
+models             A first 250,000    C second 40,000    B third 10,000
+
+units              A 495,614      B 317,018      C 187,368      burn 0
+u16                A 32,480.06    B 20,775.77    C 12,279.16  → floors 65,534, +1 to B
+sent               A 32,480       B 20,776       C 12,279
+```
+
+Now make every eligible miner claim only violating posts. Each has `V_neg = 0`, every data score is 0, and the 700,000 burns:
+
+```text
+units              owner 700,000   A 250,000   C 40,000   B 10,000
+u16                45,874.5        16,383.75   2,621.4    655.35   → floors 65,533
+sent               45,875          16,384      2,621      655      (+1 to A, +1 to owner)
+```
+
+## The published record
+
+After sending, each validator signs a record of the day and posts it to the hub. For every eligible miner, and every hotkey with a listed model, the record carries:
+
+- `S`, `V_pos` and `V_neg`, and the data score in millionths
+- the model status, accuracy, rank and score
+- `weight`, the units that hotkey earned
+
+`burned_weight` is everything sent to the owner hotkey. The rows plus `burned_weight` sum to exactly 1,000,000 and reproduce the vector the validator sent. The record also names the epoch it scored, by `epoch_content_hash`, so anyone holding the same epoch can recompute it.
 
 ## Determinism, and where it ends
 
-Everything on this page is a pure function of the labelled corpus and the
-evaluation results. Given identical inputs, every validator computes an
-identical weight vector. No clock, no randomness, no iteration order.
+Given the same epoch, the same labels and the same model verdicts, every validator computes the same vector, with no clock, no randomness and no dependence on iteration order. Two inputs can legitimately differ between validators:
 
-The inputs are not identical, and that is expected. Ground-truth labelling
-calls a language model, and two validators labelling the same borderline item
-can legitimately disagree. Chain consensus arbitrates the difference; a
-validator whose labels drift far from the field loses vtrust.
+- **Labels.** The labeller is a language model, and two validators can disagree on a borderline post.
+- **Model verdicts on near-ties.** Different GPUs can put slightly different probability on `YES` and `NO`.
 
-Model inference is a smaller source of divergence than it appears: forced-choice
-decoding is deterministic given weights and input, so two validators sending the
-same item to the same deployment get the same verdict, floating-point boundary
-cases aside.
+Chain consensus arbitrates both. That's what it's for.
