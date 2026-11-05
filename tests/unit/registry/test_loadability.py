@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from prometheon.errors import RegistryError
+from prometheon.errors import ManifestViolationError, RegistryError
 from prometheon.registry.loadability import (
     ArchitectureUnsupportedError,
     known_model_types,
@@ -38,12 +38,15 @@ class TestReadingTheDeclaredArchitecture:
     def test_a_declared_model_type_is_read(self) -> None:
         assert model_type_of(FakeClient({"model_type": "qwen2"}), "r", "a" * 40) == "qwen2"
 
-    def test_an_unreadable_config_is_not_an_error_here(self) -> None:
-        """The manifest check reports a broken repository, and reports it better."""
-        assert model_type_of(FakeClient(fail=True), "r", "a" * 40) == ""
+    def test_an_unreadable_config_is_an_error_not_a_pass(self) -> None:
+        """B17: a swallowed fetch failure used to read as "no type declared",
+        which passes, so an outage or a missing config sailed through."""
+        with pytest.raises(RegistryError):
+            model_type_of(FakeClient(fail=True), "r", "a" * 40)
 
-    def test_malformed_json_is_not_an_error_here(self) -> None:
-        assert model_type_of(FakeClient(b"{not json"), "r", "a" * 40) == ""
+    def test_malformed_json_is_the_miners_to_fix(self) -> None:
+        with pytest.raises(ManifestViolationError, match="not JSON"):
+            model_type_of(FakeClient(b"{not json"), "r", "a" * 40)
 
     def test_a_config_without_the_field_reads_as_unknown(self) -> None:
         assert model_type_of(FakeClient({"architectures": ["X"]}), "r", "a" * 40) == ""

@@ -36,7 +36,7 @@ from prometheon.config import (
     ScoringConfig,
     WalletConfig,
 )
-from prometheon.errors import ConfigError
+from prometheon.errors import ConfigError, ValidatorFaultError
 from prometheon.evaluation.engine import ModerationResult, Verdict
 from prometheon.hub.auth import CallerRole
 from prometheon.hub.client import HubClient
@@ -141,8 +141,13 @@ class FakeChain:
 class StubRegistry(ModelRegistry):
     """Eligibility without Hugging Face: every entry it is handed is valid."""
 
-    def __init__(self, invalid: set[str] | None = None) -> None:
+    def __init__(
+        self,
+        invalid: set[str] | None = None,
+        reason: InvalidReason = InvalidReason.MANIFEST_VIOLATION,
+    ) -> None:
         self._invalid = invalid or set()
+        self._reason = reason
 
     def validate(self, entries: Any) -> list[MinerValidation]:
         self.seen = [entry.hotkey for entry in entries]
@@ -151,9 +156,7 @@ class StubRegistry(ModelRegistry):
                 uid=entry.uid,
                 hotkey=entry.hotkey,
                 valid=entry.hotkey not in self._invalid,
-                reason=(
-                    InvalidReason.MANIFEST_VIOLATION if entry.hotkey in self._invalid else None
-                ),
+                reason=self._reason if entry.hotkey in self._invalid else None,
                 detail="",
                 hf_repo=entry.commitment.hf_repo,
                 hf_revision=entry.commitment.hf_revision,
@@ -680,4 +683,29 @@ def test_a_model_that_cannot_be_run_costs_only_its_miner(
     assert by_hotkey[MINER_A.ss58_address].correct == by_hotkey[MINER_A.ss58_address].total
     rows = {row.hotkey: row for row in build_results(result)}
     assert rows[MINER_B.ss58_address].model_status is ModelStatus.UNREACHABLE
+    assert dict(result.split.model_units) == {MINER_A.ss58_address: 250_000}
+
+
+def test_hugging_face_not_answering_stops_the_cycle_before_labelling(
+    config: Config, world: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B21: an outage on this validator must not score a miner out of the day."""
+    registry = StubRegistry({MINER_B.ss58_address}, reason=InvalidReason.UPSTREAM_UNAVAILABLE)
+    labelled: list[str] = []
+    monkeypatch.setattr(
+        "prometheon.cli.cycle.label_items",
+        lambda *args, **kwargs: labelled.append("called"),
+    )
+    with pytest.raises(ValidatorFaultError, match="could not be reached"):
+        _run(config, world, accuracy={}, monkeypatch=monkeypatch, registry=registry)
+    assert not labelled
+
+
+def test_a_repository_the_miner_removed_costs_only_that_miner(
+    config: Config, world: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    registry = StubRegistry({MINER_B.ss58_address}, reason=InvalidReason.REPO_UNAVAILABLE)
+    result = _run(config, world, accuracy={}, monkeypatch=monkeypatch, registry=registry)
+    rows = {row.hotkey: row for row in build_results(result)}
+    assert rows[MINER_B.ss58_address].model_status is ModelStatus.INVALID
     assert dict(result.split.model_units) == {MINER_A.ss58_address: 250_000}

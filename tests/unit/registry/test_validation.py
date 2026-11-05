@@ -18,7 +18,7 @@ from prometheon.registry.validation import (
     eligible_miners,
 )
 
-from .conftest import CONFORMING_FILES, Calls
+from .conftest import CONFORMING_FILES, Calls, lfs_sha
 
 pytestmark = pytest.mark.unit
 
@@ -46,6 +46,14 @@ class Repo:
     #: transformers knows, so the default exercises the accepting path.
     model_type: str = "qwen2"
     shard_bytes: int = SHARD_BYTES
+    other_bytes: int = 512
+    #: Which weights the repository holds. Two repositories with the same
+    #: value hold byte-identical weight files, whatever their names or commits.
+    weights: str = "w1"
+    #: Weight files left out of Git LFS, so they carry no content hash.
+    not_in_lfs: tuple[str, ...] = ()
+    #: Explicit LFS ids by file name, for tests that rename shards.
+    lfs: dict[str, str] | None = None
 
 
 class World:
@@ -83,19 +91,18 @@ class World:
             state = self.repos.get((repo, revision))
             if state is None:
                 return httpx.Response(404, json={"error": "not found"})
-            return httpx.Response(
-                200,
-                json={
-                    "sha": revision,
-                    "siblings": [
-                        {
-                            "rfilename": name,
-                            "size": state.shard_bytes if name.endswith(".safetensors") else 512,
-                        }
-                        for name in state.files
-                    ],
-                },
-            )
+            siblings: list[dict[str, object]] = []
+            for name in state.files:
+                weight = name.endswith(".safetensors")
+                sibling: dict[str, object] = {
+                    "rfilename": name,
+                    "size": state.shard_bytes if weight else state.other_bytes,
+                }
+                if weight and name not in state.not_in_lfs:
+                    oid = (state.lfs or {}).get(name) or lfs_sha(name, state.weights)
+                    sibling["lfs"] = {"sha256": oid}
+                siblings.append(sibling)
+            return httpx.Response(200, json={"sha": revision, "siblings": siblings})
         if "/resolve/" in path:
             repo, _, tail = path.lstrip("/").partition("/resolve/")
             revision, _, _filename = tail.partition("/")
@@ -130,6 +137,7 @@ def entry(
     commit: ModelCommitment | None = None,
     decode_error: str | None = None,
     block: int = 100,
+    fingerprint: str = "",
 ) -> MinerEntry:
     return MinerEntry(
         uid=uid,
@@ -137,6 +145,7 @@ def entry(
         commitment=commitment() if commit is None and decode_error is None else commit,
         decode_error=decode_error,
         commit_block=block,
+        expected_fingerprint=fingerprint,
     )
 
 
@@ -194,8 +203,9 @@ def test_executable_code_in_the_repository_makes_a_miner_ineligible() -> None:
     assert only(world, entry()).reason is InvalidReason.MANIFEST_VIOLATION
 
 
-def test_a_repository_that_does_not_exist_is_an_upstream_failure() -> None:
-    assert only(World(repos={}), entry()).reason is InvalidReason.UPSTREAM_UNAVAILABLE
+def test_a_repository_that_does_not_exist_is_the_miners_to_fix() -> None:
+    """Gone, private or gated is the miner's loss on every validator alike."""
+    assert only(World(repos={}), entry()).reason is InvalidReason.REPO_UNAVAILABLE
 
 
 def test_hugging_face_being_down_never_marks_a_miner_dishonest() -> None:
@@ -248,47 +258,147 @@ class TestTheModelHasToBeRunnableByEveryValidator:
 # -- duplicates --------------------------------------------------------------
 
 
-def _two_miners_on_one_model(*, block_a: int, block_b: int) -> tuple[World, list[MinerEntry]]:
-    world = World(repos={(REPO_A, REV_A): Repo(), (REPO_B, REV_A): Repo()})
+def _two_miners(
+    repo_a: Repo, repo_b: Repo, *, block_a: int, block_b: int, rev_b: str = REV_A
+) -> tuple[World, list[MinerEntry]]:
+    world = World(repos={(REPO_A, REV_A): repo_a, (REPO_B, rev_b): repo_b})
     entries = [
         entry(uid=1, hotkey=HOTKEY_A, commit=commitment(repo=REPO_A), block=block_a),
-        entry(uid=2, hotkey=HOTKEY_B, commit=commitment(repo=REPO_B), block=block_b),
+        entry(
+            uid=2,
+            hotkey=HOTKEY_B,
+            commit=commitment(repo=REPO_B, revision=rev_b),
+            block=block_b,
+        ),
     ]
     return world, entries
 
 
-class TestMirroringDoesNotDefeatTheDuplicateCheck:
-    """Grouped on the revision SHA alone, never on the repo id.
+class TestDuplicatesAreDecidedByTheWeights:
+    """B7: duplicates compare file content, the LFS sha256 of each weight file.
 
-    A Hugging Face repo is a git repo: `git clone --mirror` into another
-    namespace preserves every commit SHA byte for byte. A key including the
-    repo string put the original and its mirror in different groups and flagged
-    neither.
+    v2 grouped on the git revision SHA, so a copy with one extra commit had a
+    new SHA and passed every check.
     """
 
-    def test_a_mirrored_repo_with_the_same_sha_is_caught(self) -> None:
-        world, entries = _two_miners_on_one_model(block_a=500, block_b=100)
+    def test_a_copy_with_an_extra_commit_is_still_a_duplicate(self) -> None:
+        world, entries = _two_miners(Repo(), Repo(), block_a=100, block_b=500, rev_b=REV_B)
+        first, second = world.registry().validate(entries)
+
+        assert first.valid
+        assert second.reason is InvalidReason.DUPLICATE_MODEL
+        assert first.fingerprint == second.fingerprint
+
+    def test_a_mirror_into_another_namespace_is_a_duplicate(self) -> None:
+        world, entries = _two_miners(Repo(), Repo(), block_a=500, block_b=100)
         first, second = world.registry().validate(entries)
 
         assert first.reason is InvalidReason.DUPLICATE_MODEL
         assert second.valid
 
-    def test_the_earliest_commitment_wins_regardless_of_input_order(self) -> None:
-        world, entries = _two_miners_on_one_model(block_a=100, block_b=500)
+    def test_renaming_the_shards_changes_nothing(self) -> None:
+        renamed = (
+            ".gitattributes",
+            "config.json",
+            "model-00001-of-00002.safetensors",
+            "model-00002-of-00002.safetensors",
+            "tokenizer.json",
+        )
+        original = (
+            ".gitattributes",
+            "config.json",
+            "model.safetensors",
+            "model-extra.safetensors",
+            "tokenizer.json",
+        )
+        world, entries = _two_miners(
+            Repo(
+                files=original,
+                lfs={"model.safetensors": "1" * 64, "model-extra.safetensors": "2" * 64},
+            ),
+            Repo(
+                files=renamed,
+                lfs={
+                    "model-00001-of-00002.safetensors": "2" * 64,
+                    "model-00002-of-00002.safetensors": "1" * 64,
+                },
+            ),
+            block_a=100,
+            block_b=200,
+            rev_b=REV_B,
+        )
         first, second = world.registry().validate(entries)
 
         assert first.valid
         assert second.reason is InvalidReason.DUPLICATE_MODEL
 
-    def test_genuinely_distinct_models_are_not_grouped(self) -> None:
-        world = World(repos={(REPO_A, REV_A): Repo(), (REPO_B, REV_B): Repo()})
-        results = world.registry().validate(
-            [
-                entry(uid=1, hotkey=HOTKEY_A, commit=commitment(repo=REPO_A, revision=REV_A)),
-                entry(uid=2, hotkey=HOTKEY_B, commit=commitment(repo=REPO_B, revision=REV_B)),
-            ]
+    def test_different_weights_are_different_models(self) -> None:
+        world, entries = _two_miners(
+            Repo(), Repo(weights="w2"), block_a=100, block_b=200, rev_b=REV_B
         )
-        assert all(result.valid for result in results)
+        assert all(result.valid for result in world.registry().validate(entries))
+
+    def test_a_broken_earlier_copy_cannot_block_a_working_one(self) -> None:
+        """Only models that passed every other check hold their weights."""
+        world, entries = _two_miners(
+            Repo(files=(*CONFORMING_FILES, "train.py")),
+            Repo(),
+            block_a=100,
+            block_b=500,
+            rev_b=REV_B,
+        )
+        first, second = world.registry().validate(entries)
+
+        assert first.reason is InvalidReason.MANIFEST_VIOLATION
+        assert second.valid
+
+    def test_one_block_is_settled_by_the_lower_hotkey(self) -> None:
+        world, entries = _two_miners(Repo(), Repo(), block_a=100, block_b=100, rev_b=REV_B)
+        results = {result.hotkey: result for result in world.registry().validate(entries)}
+        winner = min(HOTKEY_A, HOTKEY_B)
+        assert results[winner].valid
+        assert not results[max(HOTKEY_A, HOTKEY_B)].valid
+
+
+class TestTheFrozenFingerprint:
+    def test_weights_that_differ_from_the_frozen_ones_are_refused(self) -> None:
+        result = only(World(), entry(fingerprint="0" * 64))
+        assert result.reason is InvalidReason.FINGERPRINT_MISMATCH
+
+    def test_the_frozen_fingerprint_is_accepted(self) -> None:
+        computed = only(World(), entry()).fingerprint
+        assert only(World(), entry(fingerprint=computed)).valid
+
+    def test_weights_outside_git_lfs_cannot_be_fingerprinted(self) -> None:
+        world = World(
+            repos={(REPO_A, REV_A): Repo(not_in_lfs=("model-00001-of-00002.safetensors",))}
+        )
+        result = only(world, entry())
+        assert result.reason is InvalidReason.MANIFEST_VIOLATION
+        assert "LFS" in result.detail
+
+
+class TestTheRepositoryMustBeUsable:
+    def test_a_repository_without_a_config_is_refused_before_download(self) -> None:
+        """B17: v2 let it pass here and fail at load instead."""
+        files = tuple(name for name in CONFORMING_FILES if name != "config.json")
+        result = only(World(repos={(REPO_A, REV_A): Repo(files=files)}), entry())
+        assert result.reason is InvalidReason.MANIFEST_VIOLATION
+        assert "config.json" in result.detail
+
+    def test_oversized_files_that_are_not_weights_are_refused(self) -> None:
+        """B11: every validator downloads the whole repository."""
+        world = World(repos={(REPO_A, REV_A): Repo(other_bytes=100 * 1024**2)})
+        registry = ModelRegistry(
+            huggingface=HuggingFaceClient(
+                endpoint=HF_ENDPOINT, transport=httpx.MockTransport(world._hf), retries=0
+            ),
+            max_weight_bytes=CEILING,
+            max_non_weight_bytes=64 * 1024**2,
+        )
+        (result,) = registry.validate([entry()])
+        assert result.reason is InvalidReason.MODEL_TOO_LARGE
+        assert "not weights" in result.detail
 
 
 def test_results_are_returned_in_the_order_given() -> None:

@@ -72,6 +72,10 @@ batch_size = 100
 # leaves headroom on a 32 GB card, which is the floor a validator is expected
 # to own. Enforced from the Hugging Face API before anything is downloaded.
 max_weight_bytes = 25769803776
+# Ceiling on everything that is not weights (config, tokenizer, README).
+# Every validator downloads the whole repository, so this keeps one miner from
+# filling every validator's disk.
+max_non_weight_bytes = 67108864
 # Pinned, not inferred. The same checkpoint in float16 and bfloat16 puts
 # different mass on YES and NO, so a near-tie can flip between two validators
 # that differ only in a default.

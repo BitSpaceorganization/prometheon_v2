@@ -165,9 +165,33 @@ class ModelTooLargeError(RegistryError):
 
 
 class DuplicateModelError(RegistryError):
-    """Another hotkey committed this exact model first."""
+    """Another hotkey committed the same weights first."""
 
     code: str = "registry.duplicate_model"
+
+
+class RepoUnavailableError(RegistryError):
+    """The repository or revision is gone, private or gated: the miner's to fix.
+
+    Distinct from :class:`RegistryUnavailableError` because the two must be
+    treated oppositely. A repository a miner deleted is that miner's loss on
+    every validator alike; Hugging Face failing to answer one validator is that
+    validator's fault and must not decide who is scored.
+    """
+
+    code: str = "registry.repo_unavailable"
+
+
+class RegistryUnavailableError(RegistryError):
+    """Hugging Face did not answer after the retries: a validator-side fault."""
+
+    code: str = "registry.upstream_unavailable"
+
+
+class FingerprintMismatchError(RegistryError):
+    """The weights at the frozen revision are not the ones the epoch names."""
+
+    code: str = "registry.fingerprint_mismatch"
 
 
 # ---------------------------------------------------------------------------
@@ -270,6 +294,20 @@ class ModelResponseError(EvaluationError):
     code: str = "evaluation.response_invalid"
 
 
+class ValidatorFaultError(PrometheonError):
+    """Something on this validator's side failed, so this cycle must not submit.
+
+    A miner's model that will not download or load scores zero on every
+    validator alike, which is fair. The same symptom caused by this validator,
+    a missing package, a full disk, a GPU driver, an unreachable Hugging Face,
+    would score every miner zero here only, and submitting that vector pays the
+    burn hotkey for a validator's outage (v2 did exactly that: B10). So it stops
+    the cycle instead, and the previous vector keeps being re-posted.
+    """
+
+    code: str = "validator.fault"
+
+
 # ---------------------------------------------------------------------------
 # Scoring
 # ---------------------------------------------------------------------------
@@ -292,6 +330,7 @@ __all__ = [
     "EpochVerificationError",
     "EvaluationError",
     "FeedFileError",
+    "FingerprintMismatchError",
     "HubAuthError",
     "HubError",
     "LabelResponseError",
@@ -301,6 +340,8 @@ __all__ = [
     "ModelTooLargeError",
     "PrometheonError",
     "RegistryError",
+    "RegistryUnavailableError",
+    "RepoUnavailableError",
     "RevisionFormatError",
     "ScoringError",
     "SecurityError",
@@ -309,6 +350,7 @@ __all__ = [
     "SignatureFormatError",
     "SignatureVerificationError",
     "SubtensorError",
+    "ValidatorFaultError",
     "WeightSubmissionError",
     "WeightsVersionMismatchError",
 ]

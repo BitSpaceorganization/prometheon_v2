@@ -188,6 +188,7 @@ def cmd_verify(args: argparse.Namespace) -> int:
         registry = ModelRegistry(
             huggingface=huggingface,
             max_weight_bytes=config.evaluation.max_weight_bytes,
+            max_non_weight_bytes=config.evaluation.max_non_weight_bytes,
         )
         result = registry.validate([MinerEntry(uid=uid, hotkey=hotkey, commitment=commitment)])[0]
 
@@ -202,7 +203,14 @@ def cmd_verify(args: argparse.Namespace) -> int:
                     "weights",
                     f"{result.weight_bytes / 1024**3:.1f} GiB" if result.weight_bytes else "-",
                 ),
-                ("eligible", "yes" if result.valid else "no"),
+                (
+                    "other files",
+                    f"{result.non_weight_bytes / 1024**2:.1f} MiB"
+                    if result.non_weight_bytes
+                    else "-",
+                ),
+                ("fingerprint", result.fingerprint or "-"),
+                ("passes checks", "yes" if result.valid else "no"),
             ]
         )
     )

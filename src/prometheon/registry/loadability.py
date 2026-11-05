@@ -15,9 +15,9 @@ the model then raises at load on every validator, on the same day, scoring zero
 everywhere for a reason no miner-visible surface reports.
 
 The check is cheap and local: read `model_type` out of the repository's
-`config.json` and ask the frozen list whether that release knows it. It runs
-while the miner still has a choice -- before committing on chain, and again
-before any validator spends bandwidth on the download.
+`config.json` and ask the frozen list whether that release knows it. It runs in
+`prometheon model verify`, before a miner commits, and again before any
+validator spends bandwidth on the download.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Final
 
-from prometheon.errors import RegistryError
+from prometheon.errors import ManifestViolationError, RegistryError
 
 #: `config.json` is small. A checkpoint shipping a huge one is not one this can
 #: reason about anyway.
@@ -47,17 +47,22 @@ class ArchitectureUnsupportedError(RegistryError):
 
 
 def model_type_of(client: Any, repo: str, revision: str) -> str:
-    """The ``model_type`` a repository declares, or ``""`` if it declares none."""
-    try:
-        raw = client.fetch_file(repo, revision, "config.json", max_bytes=_MAX_CONFIG_BYTES)
-    except RegistryError:
-        # A repository with no readable config.json fails the manifest check
-        # anyway, and that check reports it better than this one would.
-        return ""
+    """The ``model_type`` a repository declares, or ``""`` if it declares none.
+
+    A fetch failure propagates. v2 swallowed every one and returned ``""``,
+    which passes, so a Hugging Face outage, or a repository with no config,
+    sailed through this check and failed at load instead, with validators
+    publishing different verdicts for the same model (B17). The manifest check
+    now requires ``config.json``, and a config that is not JSON is the miner's
+    to fix.
+    """
+    raw = client.fetch_file(repo, revision, "config.json", max_bytes=_MAX_CONFIG_BYTES)
     try:
         config = json.loads(raw)
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        return ""
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ManifestViolationError(
+            f"config.json in {repo}@{revision} is not JSON: {exc}"
+        ) from exc
     model_type = config.get("model_type") if isinstance(config, dict) else None
     return model_type if isinstance(model_type, str) else ""
 

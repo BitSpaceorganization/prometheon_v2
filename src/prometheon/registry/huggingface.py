@@ -1,8 +1,10 @@
 """Independent verification of a miner's Hugging Face repository.
 
-One question is answered here, from the public API and not from anything the
-miner or the hub says: **does the repository at this exact commit contain
-only permitted files, and are any of them weights?**
+Answered here, from the public API and not from anything the miner or the hub
+says: **does the repository at this exact commit contain only permitted files,
+does it carry weights and a config, how large is it, and which weights are
+they?** The last is the weights fingerprint, which is how duplicates are found:
+by file content, not by git commit (v2's B7).
 
 There used to be a second question -- whether ``miner.py`` was byte-for-byte
 the canonical engine -- because miners served their own models and the engine
@@ -19,11 +21,12 @@ different weights tomorrow.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Final
+from typing import Any, Final
 
 import httpx
 
@@ -117,6 +120,14 @@ FILE_MANIFEST: Final[frozenset[str]] = frozenset(
 SHARD_PREFIX: Final[str] = "model-"
 SHARD_SUFFIX: Final[str] = ".safetensors"
 
+#: The most weight files a repository may hold. Every file is one request for
+#: every validator downloading it, so a repository split into thousands of tiny
+#: shards could exhaust a validator's request budget on its own. Real
+#: checkpoints of the permitted size use a few dozen at most.
+MAX_WEIGHT_FILES: Final[int] = 256
+
+_LFS_SHA_RE: Final[re.Pattern[str]] = re.compile(r"^[0-9a-f]{64}$")
+
 
 def file_manifest() -> frozenset[str]:
     """Every fixed filename a conforming repository may contain."""
@@ -131,12 +142,63 @@ def file_allowed(name: str) -> bool:
 
 
 @dataclass(frozen=True)
+class RepoFile:
+    """One file at one commit, as the API describes it with ``?blobs=true``."""
+
+    name: str
+    #: Bytes, or ``None`` when the API reported no size.
+    size: int | None
+    #: The Git LFS object's sha256, or ``None`` for a file not stored in LFS.
+    lfs_sha256: str | None
+
+
+@dataclass(frozen=True)
 class RepoSnapshot:
     """The file list of one repository at one commit."""
 
     repo: str
     revision: str
     files: tuple[str, ...]
+    entries: tuple[RepoFile, ...] = ()
+
+    @property
+    def weight_files(self) -> tuple[RepoFile, ...]:
+        return tuple(entry for entry in self.entries if entry.name.endswith(SHARD_SUFFIX))
+
+    @property
+    def weight_bytes(self) -> int:
+        """Total size of the weights. Unknown sizes must be refused first."""
+        return sum(entry.size or 0 for entry in self.weight_files)
+
+    @property
+    def non_weight_bytes(self) -> int:
+        return sum(
+            entry.size or 0 for entry in self.entries if not entry.name.endswith(SHARD_SUFFIX)
+        )
+
+
+def weights_fingerprint(snapshot: RepoSnapshot) -> str:
+    """sha256 over the sorted LFS sha256s of every weight file, newline-joined.
+
+    The same formula the hub uses at the freeze, recorded in the wire notes.
+    File names do not count, so renaming a shard changes nothing; any change to
+    any weight file's content changes it. A weight file not stored in LFS has
+    no content hash the API will give, so it cannot be fingerprinted and the
+    repository is refused.
+    """
+    digests: list[str] = []
+    for entry in snapshot.weight_files:
+        if entry.lfs_sha256 is None or not _LFS_SHA_RE.match(entry.lfs_sha256):
+            raise ManifestViolationError(
+                f"{snapshot.repo}@{snapshot.revision}: {entry.name} is not stored in Git LFS, so "
+                "its content cannot be fingerprinted. Store weights with LFS"
+            )
+        digests.append(entry.lfs_sha256)
+    if not digests:
+        raise ManifestViolationError(
+            f"{snapshot.repo}@{snapshot.revision} has no weights to fingerprint"
+        )
+    return hashlib.sha256("\n".join(sorted(digests)).encode("utf-8")).hexdigest()
 
 
 class HuggingFaceClient(RegistryHttpClient):
@@ -172,26 +234,31 @@ class HuggingFaceClient(RegistryHttpClient):
     # -- fetching ---------------------------------------------------------
 
     def list_files(self, repo: str, revision: str) -> RepoSnapshot:
-        """Every file present at ``revision``, as the API reports it."""
+        """Every file present at ``revision``, with sizes and LFS hashes.
+
+        One request: ``?blobs=true`` is what makes the API report a size and an
+        LFS object for each file, and every later check reads from this answer.
+        """
         require_valid_repo_id(repo)
         require_valid_revision(revision)
         what = f"Hugging Face repo {repo}@{revision}"
 
-        payload = self.get_json(f"/api/models/{repo}/revision/{revision}", what=what)
+        payload = self.get_json(f"/api/models/{repo}/revision/{revision}?blobs=true", what=what)
 
         siblings = payload.get("siblings")
         if not isinstance(siblings, list):
             raise RegistryError(f"{what} returned no file list")
 
-        files: list[str] = []
+        entries: list[RepoFile] = []
         for sibling in siblings:
             if not isinstance(sibling, dict):
                 continue
             name = sibling.get("rfilename")
             if isinstance(name, str) and name:
-                files.append(name)
-        if not files:
+                entries.append(_repo_file(name, sibling))
+        if not entries:
             raise RegistryError(f"{what} lists no files")
+        files = [entry.name for entry in entries]
 
         # The API echoes the commit it resolved. Anything other than the commit
         # asked for means the file list describes a different tree than the one
@@ -200,42 +267,16 @@ class HuggingFaceClient(RegistryHttpClient):
         if isinstance(resolved, str) and _SHA_RE.match(resolved) and resolved != revision:
             raise RegistryError(f"{what} resolved to commit {resolved}")
 
-        return RepoSnapshot(repo=repo, revision=revision, files=tuple(sorted(files)))
+        return RepoSnapshot(
+            repo=repo,
+            revision=revision,
+            files=tuple(sorted(files)),
+            entries=tuple(sorted(entries, key=lambda entry: entry.name)),
+        )
 
     def weight_bytes(self, repo: str, revision: str) -> int:
-        """Total size of the weight shards at ``revision``, in bytes.
-
-        Read from the API rather than by downloading, because the point is to
-        refuse an oversized model *before* every validator on the subnet spends
-        an hour pulling it. `?blobs=true` is what makes the API report sizes at
-        all; without it `siblings` carries names only.
-
-        Returns ``0`` when the API reports no sizes. A missing number is not
-        evidence of a small model, so callers treat it as unknown rather than
-        as a pass.
-        """
-        require_valid_repo_id(repo)
-        require_valid_revision(revision)
-        what = f"Hugging Face repo {repo}@{revision}"
-        payload = self.get_json(f"/api/models/{repo}/revision/{revision}?blobs=true", what=what)
-        siblings = payload.get("siblings")
-        if not isinstance(siblings, list):
-            return 0
-
-        total = 0
-        for sibling in siblings:
-            if not isinstance(sibling, dict):
-                continue
-            name = sibling.get("rfilename")
-            size = sibling.get("size")
-            if (
-                isinstance(name, str)
-                and name.endswith(SHARD_SUFFIX)
-                and isinstance(size, int)
-                and size > 0
-            ):
-                total += size
-        return total
+        """Total size of the weight files at ``revision``, in bytes."""
+        return self.list_files(repo, revision).weight_bytes
 
     def fetch_file(
         self, repo: str, revision: str, filename: str, *, max_bytes: int = MAX_FILE_BYTES
@@ -262,10 +303,30 @@ class HuggingFaceClient(RegistryHttpClient):
             raise ManifestViolationError(
                 f"{snapshot.repo}@{snapshot.revision} contains files outside the manifest: {shown}"
             )
-        if not any(name.endswith(SHARD_SUFFIX) for name in snapshot.files):
+        weights = [name for name in snapshot.files if name.endswith(SHARD_SUFFIX)]
+        if not weights:
             raise ManifestViolationError(
                 f"{snapshot.repo}@{snapshot.revision} contains no {SHARD_SUFFIX} weights, "
                 f"so there is no model to serve"
+            )
+        if len(weights) > MAX_WEIGHT_FILES:
+            raise ManifestViolationError(
+                f"{snapshot.repo}@{snapshot.revision} splits its weights into {len(weights)} "
+                f"files; at most {MAX_WEIGHT_FILES} are accepted"
+            )
+        # The engine cannot load a checkpoint without its config, and reading
+        # the architecture needs it too. v2 let a repository without one pass
+        # here and score zero at load instead (B17).
+        if "config.json" not in snapshot.files:
+            raise ManifestViolationError(
+                f"{snapshot.repo}@{snapshot.revision} has no config.json, so it cannot be loaded"
+            )
+        unsized = [entry.name for entry in snapshot.entries if entry.size is None]
+        if snapshot.entries and unsized:
+            raise ManifestViolationError(
+                f"{snapshot.repo}@{snapshot.revision}: Hugging Face reports no size for "
+                f"{', '.join(unsized[:_MAX_REPORTED_FILES])}, so it cannot be checked against "
+                "the size ceilings"
             )
 
     def verify_repository(self, repo: str, revision: str) -> RepoSnapshot:
@@ -281,16 +342,30 @@ class HuggingFaceClient(RegistryHttpClient):
         return snapshot
 
 
+def _repo_file(name: str, sibling: dict[str, Any]) -> RepoFile:
+    size = sibling.get("size")
+    lfs = sibling.get("lfs")
+    lfs_sha = lfs.get("sha256") if isinstance(lfs, dict) else None
+    return RepoFile(
+        name=name,
+        size=size if isinstance(size, int) and not isinstance(size, bool) and size >= 0 else None,
+        lfs_sha256=lfs_sha if isinstance(lfs_sha, str) else None,
+    )
+
+
 __all__ = [
     "DEFAULT_HF_ENDPOINT",
     "FILE_MANIFEST",
     "MAX_FILE_BYTES",
+    "MAX_WEIGHT_FILES",
     "SHARD_PREFIX",
     "SHARD_SUFFIX",
     "HuggingFaceClient",
+    "RepoFile",
     "RepoSnapshot",
     "file_allowed",
     "file_manifest",
     "is_valid_repo_id",
     "require_valid_repo_id",
+    "weights_fingerprint",
 ]
