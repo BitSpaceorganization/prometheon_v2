@@ -171,51 +171,6 @@ class DuplicateModelError(RegistryError):
 
 
 # ---------------------------------------------------------------------------
-# Subnet DB layer
-# ---------------------------------------------------------------------------
-
-
-class DbLayerError(PrometheonError):
-    """A call to the subnet DB layer failed.
-
-    Carries the HTTP status and the layer's own error code when the failure
-    came from a response, so a caller can distinguish "not released yet" from
-    "you are not a validator" without parsing prose.
-    """
-
-    code: str = "db.error"
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        status_code: int | None = None,
-        error_code: str | None = None,
-    ) -> None:
-        super().__init__(message)
-        self.status_code = status_code
-        self.error_code = error_code
-
-
-class SnapshotNotReadyError(DbLayerError):
-    """The day's snapshot has not been built yet. Wait and retry."""
-
-    code: str = "db.snapshot_not_ready"
-
-
-class EmbargoedError(DbLayerError):
-    """A miner asked for a dataset still inside its embargo window."""
-
-    code: str = "db.embargoed"
-
-
-class NotAuthorizedError(DbLayerError):
-    """The hotkey is not a registered validator on this netuid."""
-
-    code: str = "db.not_authorized"
-
-
-# ---------------------------------------------------------------------------
 # The hub: the signed daily epoch and the results it stores
 # ---------------------------------------------------------------------------
 
@@ -331,9 +286,7 @@ __all__ = [
     "CommitmentDecodeError",
     "CommitmentError",
     "ConfigError",
-    "DbLayerError",
     "DuplicateModelError",
-    "EmbargoedError",
     "EpochMissingError",
     "EpochNotReadyError",
     "EpochVerificationError",
@@ -346,7 +299,6 @@ __all__ = [
     "ManifestViolationError",
     "ModelResponseError",
     "ModelTooLargeError",
-    "NotAuthorizedError",
     "PrometheonError",
     "RegistryError",
     "RevisionFormatError",
@@ -356,7 +308,6 @@ __all__ = [
     "SignatureError",
     "SignatureFormatError",
     "SignatureVerificationError",
-    "SnapshotNotReadyError",
     "SubtensorError",
     "WeightSubmissionError",
     "WeightsVersionMismatchError",

@@ -6,23 +6,24 @@ Two properties decide whether a cycle is fair, and both live here.
 matters because a batch is scored as a unit: if two validators split the corpus
 differently, a single failed batch costs the two of them different amounts and
 their weight vectors diverge for a reason that has nothing to do with the
-model. The order is therefore derived from the snapshot's ``content_hash`` by
+model. The order is therefore derived from the epoch's content hash by
 sorting on a keyed SHA-256 digest rather than by seeding an RNG. A digest sort
 is reproducible in any language and any runtime, so a third party recomputing
 the cycle gets our order without running our code. ``random.shuffle`` would pin
 the subnet to one interpreter's generator.
 
-**A miner is never scored on test content its own users contributed.** Test
-items are written by miners' users specifically to violate policy, so a miner
-who has seen its own submissions holds answers nobody else holds. The exclusion
-is applied when building the per-miner view. That is also why the per-miner
-denominator is exposed alongside it: two miners legitimately face different
-corpus sizes, and every downstream count has to be taken from the view rather
-than from the corpus.
+**A miner is never scored on test content contributed under its own coldkey.**
+Test items are written by miners' members, and a miner who has seen them holds
+answers nobody else holds. The exclusion is by coldkey, not by hotkey: one party
+running two hotkeys under one coldkey must not have one hotkey's model scored
+on the other's content (v2 excluded by exact hotkey only, bug B9). It is applied
+when building the per-miner view, which is why the per-miner denominator is
+exposed alongside it: miners legitimately face different corpus sizes.
 """
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass
@@ -30,6 +31,7 @@ from enum import Enum
 from typing import Final, TypeVar
 
 from prometheon.errors import EvaluationError
+from prometheon.security.canonical_json import to_canonical_bytes
 
 #: Mirrors the evaluation engine's own limits. Exceeding either would make the
 #: engine reject the whole batch, scoring good items as incorrect; failing here
@@ -50,8 +52,8 @@ _T = TypeVar("_T")
 class ItemSource(str, Enum):
     """Where an item came from, which decides how it may be used."""
 
-    #: Miner-attributed content, submitted to violate policy. Positives only,
-    #: and excluded from the contributing miner's own view.
+    #: Miner-attributed test content, claimed violating or claimed compliant,
+    #: and excluded from every view under the contributor's coldkey.
     TEST = "test"
 
     #: Platform production content with no author. Supplies the negatives.
@@ -70,6 +72,9 @@ class LabelledItem:
     #: enforcing that here means a mislabelled production item can never reach
     #: the self-exclusion path and quietly shrink someone's corpus.
     contributor_hotkey: str | None = None
+    #: The contributor's coldkey, from the frozen epoch. Self-exclusion keys on
+    #: this, so every hotkey under one coldkey is excluded together.
+    contributor_coldkey: str | None = None
 
     def __post_init__(self) -> None:
         if not self.item_id:
@@ -84,14 +89,18 @@ class LabelledItem:
                 f"item {self.item_id!r} has {len(self.content)} characters of content, "
                 f"over the {MAX_CONTENT_CHARS} the evaluation engine accepts"
             )
-        if self.source is ItemSource.TEST and not self.contributor_hotkey:
+        if self.source is ItemSource.TEST and not (
+            self.contributor_hotkey and self.contributor_coldkey
+        ):
             raise EvaluationError(
-                f"test item {self.item_id!r} has no contributor hotkey, so it cannot be "
-                "excluded from its contributor's own evaluation"
+                f"test item {self.item_id!r} has no contributor hotkey and coldkey, so it "
+                "cannot be excluded from its contributor's own evaluation"
             )
-        if self.source is ItemSource.PRODUCTION and self.contributor_hotkey is not None:
+        if self.source is ItemSource.PRODUCTION and (
+            self.contributor_hotkey is not None or self.contributor_coldkey is not None
+        ):
             raise EvaluationError(
-                f"production item {self.item_id!r} carries a contributor hotkey; "
+                f"production item {self.item_id!r} carries a contributor; "
                 "production content is unattributed"
             )
 
@@ -104,7 +113,7 @@ class MinerCorpusCounts:
     total: int
     positives: int
     negatives: int
-    #: Test items dropped because this miner's own users contributed them.
+    #: Test items dropped because they came from this miner's own coldkey.
     excluded: int
 
 
@@ -142,21 +151,27 @@ class EvaluationCorpus:
     def production_items(self) -> int:
         return sum(1 for item in self.items if item.source is ItemSource.PRODUCTION)
 
-    def for_miner(self, hotkey: str) -> tuple[LabelledItem, ...]:
-        """This miner's view: everything except test items it contributed.
+    def for_miner(self, hotkey: str, coldkey: str) -> tuple[LabelledItem, ...]:
+        """This miner's view: everything except test items from its coldkey.
 
+        The hotkey is checked as well as the coldkey, so a corpus item whose
+        coldkey was somehow missing still cannot reach its own contributor.
         Relative order is preserved, so removing items cannot reshuffle what is
         left and every miner's batches line up with the same global sequence.
         """
-        if not hotkey:
+        if not hotkey or not coldkey:
             raise EvaluationError(
-                "a miner hotkey is required to build a corpus view; an empty hotkey "
-                "would exclude nothing and score a miner on its own test items"
+                "a miner hotkey and coldkey are required to build a corpus view; an empty "
+                "one would exclude nothing and score a miner on its own test items"
             )
-        return tuple(item for item in self.items if item.contributor_hotkey != hotkey)
+        return tuple(
+            item
+            for item in self.items
+            if item.contributor_coldkey != coldkey and item.contributor_hotkey != hotkey
+        )
 
-    def counts_for_miner(self, hotkey: str) -> MinerCorpusCounts:
-        view = self.for_miner(hotkey)
+    def counts_for_miner(self, hotkey: str, coldkey: str) -> MinerCorpusCounts:
+        view = self.for_miner(hotkey, coldkey)
         positives = sum(1 for item in view if item.violating)
         return MinerCorpusCounts(
             hotkey=hotkey,
@@ -190,9 +205,9 @@ def build_corpus(
     non-violating test items took the same day to 81:1 using labels that had
     already been paid for and were being discarded.
 
-    A non-violating test item still costs its author: it counts in ``S`` and not
-    in ``V``, which is the submission-accuracy term. What changes is only that
-    the model half gets to be measured on it too.
+    A test item whose claim the labeller rejected still costs its author: it
+    counts in ``S`` and in neither ``V``. What changes is only that the models
+    get to be measured on it too.
     """
     if not content_hash.strip():
         raise EvaluationError(
@@ -238,6 +253,24 @@ def _add(collected: list[LabelledItem], seen: set[str], item: LabelledItem) -> N
     collected.append(item)
 
 
+def corpus_content_hash(*, date: dt.date, labelled: Sequence[tuple[str, bool]]) -> str:
+    """Hash over the labelled corpus a validator actually evaluated.
+
+    ``labelled`` is ``(item_id, violates)`` pairs. Published beside the epoch
+    hash because the two answer different questions: the epoch hash says "we
+    were given the same day", this says "we made the same calls about it". A
+    labeller disagreement shows up here and nowhere else.
+    """
+    digests = sorted(
+        hashlib.sha256(to_canonical_bytes({"id": item_id, "violates": violates})).digest()
+        for item_id, violates in labelled
+    )
+    collection = hashlib.sha256(b"".join(digests)).hexdigest()
+    return hashlib.sha256(
+        to_canonical_bytes({"date": date.isoformat(), "labelled": collection})
+    ).hexdigest()
+
+
 def iter_batches(items: Sequence[_T], size: int) -> Iterator[tuple[_T, ...]]:
     """Yield fixed-size batches, the last one short if it has to be."""
     if size < 1 or size > MAX_ITEMS_PER_REQUEST:
@@ -257,6 +290,7 @@ __all__ = [
     "LabelledItem",
     "MinerCorpusCounts",
     "build_corpus",
+    "corpus_content_hash",
     "corpus_order_key",
     "iter_batches",
 ]

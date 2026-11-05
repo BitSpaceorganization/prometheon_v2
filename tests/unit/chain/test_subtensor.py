@@ -57,9 +57,6 @@ class FakeSubtensor:
     def get_commitment(self, *, netuid: int, uid: int) -> Any:
         return self._answer("commitment")
 
-    def get_commitment_metadata(self, *, netuid: int, hotkey_ss58: str) -> Any:
-        return self._answer("commitment_metadata")
-
     def set_weights(self, **kwargs: Any) -> Any:
         self.calls.append(kwargs)
         return self._answer("set_weights")
@@ -72,7 +69,6 @@ class CompatibleClient:
     def get_subnet_hyperparameters(self, *, netuid: int) -> Any: ...
     def get_subnet_owner_hotkey(self, *, netuid: int) -> Any: ...
     def get_commitment(self, *, netuid: int, uid: int) -> Any: ...
-    def get_commitment_metadata(self, *, netuid: int, hotkey_ss58: str) -> Any: ...
     def set_weights(self, **kwargs: Any) -> Any: ...
 
 
@@ -477,7 +473,6 @@ class TestSdkCompatibilityGate:
             "get_subnet_hyperparameters",
             "get_subnet_owner_hotkey",
             "get_commitment",
-            "get_commitment_metadata",
             "set_weights",
         ):
             assert name in message
@@ -486,7 +481,7 @@ class TestSdkCompatibilityGate:
     def test_a_read_intent_client_is_diagnosed_not_just_rejected(self) -> None:
         """The 11.x mis-pin, named as what it is.
 
-        An operator who installs 11.x sees a client missing five methods. Left
+        An operator who installs 11.x sees a client missing every method. Left
         at that, the obvious reading is "upgrade further", which is the wrong
         direction. The message has to say the generation is different.
         """

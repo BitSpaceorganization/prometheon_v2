@@ -5,8 +5,8 @@ module so it can be tested without building a parser.
 
 Two conventions hold throughout:
 
-**Results on stdout, progress on stderr.** ``prometheon dataset pull`` can be
-piped straight into a file while still printing what it is doing to a terminal.
+**Results on stdout, progress on stderr.** A command's summary can be piped
+straight into a file while it still prints what it is doing to a terminal.
 
 **No traceback ever reaches an operator.** Every typed failure renders as one
 greppable ``error [code] message`` line with a non-zero exit. A traceback means
@@ -18,7 +18,6 @@ from __future__ import annotations
 import argparse
 import sys
 from collections.abc import Sequence
-from pathlib import Path
 
 from prometheon.cli import miner, validator
 from prometheon.cli._common import EXIT_FAILED, EXIT_USAGE, fail, note
@@ -86,24 +85,6 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--hf-repo")
     verify.add_argument("--hf-revision", help="check these values instead of the chain")
     verify.set_defaults(handler=miner.cmd_verify)
-
-    # -- dataset ----------------------------------------------------------
-    dataset = commands.add_parser("dataset", help="released evaluation data").add_subparsers(
-        dest="subcommand", required=True
-    )
-    pull = with_config(
-        dataset.add_parser(
-            "pull",
-            help="download a released day's test content as JSONL",
-            description=(
-                "Subject to the two-day embargo: a day's test content is released "
-                "after the evaluation that used it has finished."
-            ),
-        )
-    )
-    pull.add_argument("--date", help="YYYY-MM-DD (default: yesterday)")
-    pull.add_argument("--output", type=Path, help="write here instead of stdout")
-    pull.set_defaults(handler=validator.cmd_dataset_pull)
 
     # -- validator --------------------------------------------------------
     validator_commands = commands.add_parser(

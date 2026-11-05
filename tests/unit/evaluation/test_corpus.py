@@ -20,6 +20,13 @@ pytestmark = pytest.mark.unit
 
 MINER_A = "5FA0miner_a"
 MINER_B = "5FB0miner_b"
+#: A second hotkey run by the owner of MINER_A's coldkey.
+MINER_A2 = "5FA2miner_a2"
+COLDKEYS = {MINER_A: "5ColdA", MINER_A2: "5ColdA", MINER_B: "5ColdB"}
+
+
+def cold(hotkey: str) -> str:
+    return COLDKEYS.get(hotkey, f"{hotkey}-cold")
 
 
 def make_test_item(item_id: str, hotkey: str = MINER_A, *, violating: bool = True) -> LabelledItem:
@@ -29,6 +36,7 @@ def make_test_item(item_id: str, hotkey: str = MINER_A, *, violating: bool = Tru
         violating=violating,
         source=ItemSource.TEST,
         contributor_hotkey=hotkey,
+        contributor_coldkey=cold(hotkey),
     )
 
 
@@ -125,7 +133,7 @@ def test_a_miner_is_not_scored_on_its_own_test_items() -> None:
         production=[production_item("p1")],
     )
 
-    view_ids = {item.item_id for item in corpus.for_miner(MINER_A)}
+    view_ids = {item.item_id for item in corpus.for_miner(MINER_A, cold(MINER_A))}
     assert view_ids == {"theirs", "p1"}
 
 
@@ -133,13 +141,13 @@ def test_production_items_are_never_excluded() -> None:
     corpus = build(tests=[make_test_item("mine", MINER_A)], production=[production_item("p1")])
 
     for hotkey in (MINER_A, MINER_B, "5FC0unknown"):
-        assert "p1" in {item.item_id for item in corpus.for_miner(hotkey)}
+        assert "p1" in {item.item_id for item in corpus.for_miner(hotkey, cold(hotkey))}
 
 
 def test_a_miner_with_no_contributions_sees_the_whole_corpus() -> None:
     corpus = build(tests=[make_test_item("t1", MINER_A)], production=[production_item("p1")])
 
-    assert len(corpus.for_miner("5FC0stranger")) == corpus.size
+    assert len(corpus.for_miner("5FC0stranger", cold("5FC0stranger"))) == corpus.size
 
 
 def test_exclusion_preserves_the_global_order() -> None:
@@ -147,15 +155,33 @@ def test_exclusion_preserves_the_global_order() -> None:
     corpus = build(tests=tests, production=[production_item(f"p{i}") for i in range(20)])
 
     global_order = [item.item_id for item in corpus.items]
-    view_order = [item.item_id for item in corpus.for_miner(MINER_A)]
+    view_order = [item.item_id for item in corpus.for_miner(MINER_A, cold(MINER_A))]
 
     assert view_order == [item_id for item_id in global_order if item_id in set(view_order)]
 
 
-def test_an_empty_hotkey_is_refused_rather_than_excluding_nothing() -> None:
+def test_an_empty_hotkey_or_coldkey_is_refused_rather_than_excluding_nothing() -> None:
     corpus = build()
-    with pytest.raises(EvaluationError, match="hotkey"):
-        corpus.for_miner("")
+    with pytest.raises(EvaluationError, match="hotkey and coldkey"):
+        corpus.for_miner("", "5ColdA")
+    with pytest.raises(EvaluationError, match="hotkey and coldkey"):
+        corpus.for_miner(MINER_A, "")
+
+
+def test_every_hotkey_under_one_coldkey_is_excluded_together() -> None:
+    """B9: v2 excluded by exact hotkey, so a second hotkey's content was fair game."""
+    corpus = build(
+        tests=[
+            make_test_item("mine", MINER_A),
+            make_test_item("my-other-hotkey", MINER_A2),
+            make_test_item("theirs", MINER_B),
+        ],
+        production=[production_item("p1")],
+    )
+
+    view_ids = {item.item_id for item in corpus.for_miner(MINER_A, cold(MINER_A))}
+    assert view_ids == {"theirs", "p1"}
+    assert {item.item_id for item in corpus.for_miner(MINER_A2, cold(MINER_A2))} == view_ids
 
 
 # --- counts -----------------------------------------------------------------
@@ -175,14 +201,14 @@ def test_counts_report_the_per_miner_denominator() -> None:
         ],
     )
 
-    counts = corpus.counts_for_miner(MINER_A)
+    counts = corpus.counts_for_miner(MINER_A, cold(MINER_A))
     assert counts.total == 4
     assert counts.excluded == 2
     assert counts.positives == 2  # t3 plus the violating production item
     assert counts.negatives == 2
     assert counts.total == counts.positives + counts.negatives
 
-    other = corpus.counts_for_miner(MINER_B)
+    other = corpus.counts_for_miner(MINER_B, cold(MINER_B))
     assert other.total == 5
     assert other.excluded == 1
 
@@ -239,8 +265,16 @@ def test_an_empty_content_hash_is_refused() -> None:
 
 
 def test_a_test_item_needs_a_contributor() -> None:
-    with pytest.raises(EvaluationError, match="contributor hotkey"):
+    with pytest.raises(EvaluationError, match="contributor hotkey and coldkey"):
         LabelledItem(item_id="t1", content="x", violating=True, source=ItemSource.TEST)
+    with pytest.raises(EvaluationError, match="contributor hotkey and coldkey"):
+        LabelledItem(
+            item_id="t1",
+            content="x",
+            violating=True,
+            source=ItemSource.TEST,
+            contributor_hotkey=MINER_A,
+        )
 
 
 def test_production_content_may_not_carry_an_author() -> None:
@@ -274,7 +308,7 @@ def test_an_empty_item_id_is_refused() -> None:
 def test_an_empty_corpus_is_allowed_and_reports_zero() -> None:
     corpus = build(tests=[], production=[])
     assert corpus.size == 0
-    assert corpus.counts_for_miner(MINER_A).total == 0
+    assert corpus.counts_for_miner(MINER_A, cold(MINER_A)).total == 0
 
 
 # --- batching ---------------------------------------------------------------

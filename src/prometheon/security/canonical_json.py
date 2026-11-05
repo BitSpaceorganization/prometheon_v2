@@ -23,7 +23,8 @@ from typing import Any, Final
 
 from prometheon.errors import CanonicalEncodingError
 
-#: Requests from a miner or validator CLI to the subnet DB layer.
+#: Requests from a validator CLI to the hub. The string is unchanged from v2,
+#: when the service was called the DB layer: the hub verifies this exact domain.
 DOMAIN_DB_REQUEST: Final[str] = "PROMETHEON_V2_DB_REQUEST"
 
 #: A validator's signed evaluation result for one cycle.

@@ -1,10 +1,9 @@
 """Model eligibility: what a validator verifies for itself before scoring.
 
-Nothing here is taken on trust. The DB layer supplies the list of miners to
-consider; every claim about what those miners published is re-derived from the
-chain commitment and the public Hugging Face API. Two validators running this
-module against the same block reach the same verdicts, so the model half of
-emission stays auditable.
+The hub's signed epoch says which models were frozen for the day; every claim
+about what those models are is re-derived from the public Hugging Face API at
+the frozen revision. Two validators running this module against the same epoch
+reach the same verdicts, so the model pool stays auditable.
 """
 
 from prometheon.registry.huggingface import (

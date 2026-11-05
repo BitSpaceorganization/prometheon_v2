@@ -65,10 +65,6 @@ _REQUIRED_ACCESSORS: Final[tuple[str, ...]] = (
     "get_subnet_hyperparameters",
     "get_subnet_owner_hotkey",
     "get_commitment",
-    # Supplies the block a commitment was written in, which is what settles a
-    # duplicate-model claim. Absent, duplicate resolution silently degrades to
-    # uid order, the attack `registry.validation` exists to prevent.
-    "get_commitment_metadata",
     "set_weights",
 )
 
@@ -111,8 +107,8 @@ def assert_sdk_compatible(subtensor: Any) -> None:
     can carry any version it likes.
 
     The message names every missing accessor at once. An 11.x client is missing
-    all five, and an operator who fixes them one traceback at a time learns
-    that fact five deploys later.
+    all of them, and an operator who fixes them one traceback at a time learns
+    that fact several deploys later.
     """
     missing = [name for name in _REQUIRED_ACCESSORS if not callable(getattr(subtensor, name, None))]
     if not missing:

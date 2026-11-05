@@ -37,9 +37,9 @@ from collections.abc import Callable
 #: posts per cutoff window so losing one to a collision is free.
 RESUBMIT_MINUTES: tuple[int, ...] = (0, 30)
 
-#: When the daily cycle starts, UTC. Late enough that the DB layer has finished
-#: building the previous day -- it publishes days before it has finished them,
-#: so starting at 00:05 fetches a snapshot that is still growing.
+#: When the daily cycle starts, UTC. The hub builds each day's epoch at 01:00
+#: and retries BitFan's feed until 03:30, so by 04:00 the epoch is normally
+#: there; a cycle that still finds it missing waits for the next boundary.
 DEFAULT_CYCLE_HOUR = 4
 
 

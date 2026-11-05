@@ -19,6 +19,7 @@ from typing import Any, ClassVar
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from prometheon.errors import ConfigError
+from prometheon.security.signatures import is_ed25519_public_key
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -57,14 +58,34 @@ class WalletConfig(BaseModel):
     hotkey: str = Field(min_length=1)
 
 
-class DbLayerConfig(BaseModel):
-    """The subnet DB layer: the only bridge to platform-sourced data."""
+class HubConfig(BaseModel):
+    """The hub: where the signed daily epoch comes from and results go."""
 
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", frozen=True)
 
     base_url: str = Field(min_length=1)
     request_timeout_seconds: float = Field(default=60.0, gt=0)
     max_retries: int = Field(default=3, ge=0)
+    #: The hub's Ed25519 public keys, by ``key_id``: 64 lowercase hex each.
+    #:
+    #: Pinned here, from the release notes, and never taken from the hub itself:
+    #: a key the hub could change is a signature that proves nothing. More than
+    #: one entry lets a key rotation overlap. Empty is allowed so a miner's config
+    #: still loads; a validator refuses to score until a key is pinned.
+    epoch_keys: dict[str, str] = Field(default_factory=dict)
+
+    @field_validator("epoch_keys")
+    @classmethod
+    def _keys_are_ed25519(cls, keys: dict[str, str]) -> dict[str, str]:
+        for key_id, public_key in keys.items():
+            if not key_id or len(key_id) > 64:
+                raise ValueError(f"epoch key id {key_id!r} must be 1 to 64 characters")
+            if not is_ed25519_public_key(public_key):
+                raise ValueError(
+                    f"epoch key {key_id!r} must be 64 lowercase hex characters (a raw "
+                    "32-byte Ed25519 public key)"
+                )
+        return keys
 
 
 class LabellingConfig(BaseModel):
@@ -94,7 +115,7 @@ class LabellingConfig(BaseModel):
 
         The gpt-5 reasoning line accepts only its own default of 1 and answers
         an explicit 0 with HTTP 400. Left to be discovered at run time that
-        surfaces *after* the snapshot is fetched and hours into a cycle, as a
+        surfaces *after* the epoch is fetched and hours into a cycle, as a
         provider error with no hint that the fix is one line of config. It is
         knowable the moment the file is read, so it is refused here.
         """
@@ -213,6 +234,17 @@ class ScoringConfig(BaseModel):
     #: of labelling and evaluation before anything complained.
     model_rank_shares_bp: tuple[int, ...] = Field(default=(2500, 400, 100), min_length=1)
 
+    #: The entry gate, for both pools: a miner counts only with at least this
+    #: many identity-verified active members in its group. The hub publishes the
+    #: count and its own flag, and both must clear; see
+    #: :func:`prometheon.hub.epoch.is_eligible`.
+    min_verified_active_members: int = Field(default=10, ge=0)
+
+    #: Two items whose normalised text has 64-bit SimHashes within this many bits
+    #: are one item, and only the earliest counts. Bounded, because each bit
+    #: allowed narrows the band index that makes the comparison fast.
+    near_duplicate_max_hamming: int = Field(default=3, ge=0, le=7)
+
     #: The smallest number of scored items a model may hold a rank share on.
     #:
     #: Accuracy over one item is 100% or 0% and means nothing either way, but
@@ -246,8 +278,8 @@ class ScoringConfig(BaseModel):
     #: right.
     #:
     #: What it does still give you: the record is signed by the provider's
-    #: hotkey and verified here, so the DB layer cannot forge one, and the
-    #: snapshot hash is checked against the day being scored so a stale or
+    #: hotkey and verified here, so the hub cannot forge one, and its epoch hash
+    #: is checked against the signed epoch for the day, so a stale or
     #: substituted record is refused rather than submitted.
     score_source: ScoreSource = ScoreSource.LOCAL
 
@@ -255,8 +287,8 @@ class ScoringConfig(BaseModel):
     #: ``endpoint``. Required in that mode and ignored otherwise.
     #:
     #: Pinned by hotkey, not left to whoever answers: the record is verified
-    #: against *this* address, so a DB layer serving somebody else's record --
-    #: or its own -- fails the signature check instead of being submitted.
+    #: against *this* address, so a hub serving somebody else's record -- or
+    #: its own -- fails the signature check instead of being submitted.
     score_provider: str = ""
 
     @model_validator(mode="after")
@@ -271,11 +303,9 @@ class ScoringConfig(BaseModel):
                 "score_source = 'endpoint' requires score_provider to name the "
                 "validator hotkey whose published record to mirror.\n"
                 "\n"
-                "To see who has published for a day:\n"
-                "    curl <db.base_url>/v2/evaluations/2026-01-31\n"
-                "\n"
-                "That lists every record for the date; each names its "
-                "validator_hotkey. Pin one of those.\n"
+                "A validator's record for a day is public on the hub:\n"
+                "    GET <hub.base_url>/api/v1/results/<YYYY-MM-DD>/<validator hotkey>\n"
+                "Read a few before you pin one.\n"
                 "\n"
                 "It is not filled in for you on purpose. Mirroring submits "
                 "whatever that hotkey published, so choosing it is a trust "
@@ -336,7 +366,7 @@ class Config(BaseModel):
 
     chain: ChainConfig
     wallet: WalletConfig
-    db: DbLayerConfig
+    hub: HubConfig
     labelling: LabellingConfig = LabellingConfig()
     evaluation: EvaluationConfig = EvaluationConfig()
     scoring: ScoringConfig = ScoringConfig()
@@ -366,8 +396,8 @@ __all__ = [
     "ChainConfig",
     "ChainNetwork",
     "Config",
-    "DbLayerConfig",
     "EvaluationConfig",
+    "HubConfig",
     "LabellingConfig",
     "MinerRuntimeConfig",
     "ScoreSource",

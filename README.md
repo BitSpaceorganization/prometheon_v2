@@ -92,9 +92,6 @@ uv run prometheon model commit --config ~/prometheon-mainnet.toml
 
 # 2. Check what a validator will conclude about your deployment
 uv run prometheon model verify --config ~/prometheon-mainnet.toml
-
-# 3. Pull released datasets to train against
-uv run prometheon dataset pull --config ~/prometheon-mainnet.toml --date 2026-08-05
 ```
 
 Your Hugging Face repository holds **weights, config and tokenizer, no executable code at all**. Any other file and your deployment is not scored. See [`docs/miner.md`](./docs/miner.md).
@@ -149,7 +146,6 @@ Each stage is runnable on its own for debugging. See [`docs/validator.md`](./doc
 | [`content_policy.md`](./content_policy.md) | The authority for every verdict |
 | [`docs/miner.md`](./docs/miner.md) | Publishing, deploying, and committing a model |
 | [`docs/validator.md`](./docs/validator.md) | Running the daily cycle |
-| [`docs/db-api-contract.md`](./docs/db-api-contract.md) | The `/v2` interface the subnet DB layer implements |
 | [`docs/scoring.md`](./docs/scoring.md) | How emissions are computed |
 
 ---

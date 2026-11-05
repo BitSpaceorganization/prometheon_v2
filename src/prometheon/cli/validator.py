@@ -1,4 +1,4 @@
-"""Validator commands: run a cycle, and pull a released dataset.
+"""Validator commands: run a cycle, re-post its weights, mirror, schedule.
 
 ``run`` wires the real world into :mod:`prometheon.cli.cycle` and does the two
 things a cycle cannot do for itself: submit weights, and publish the record.
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import hashlib
 import json
 import re
 import time
@@ -30,16 +31,17 @@ from prometheon.cli._common import (
 from prometheon.cli.cycle import (
     SCORING_VERSION,
     CycleResult,
+    Policy,
     build_results,
     run_cycle,
     submit_allocation,
     submit_weights,
 )
 from prometheon.config import Config, ScoreSource
-from prometheon.dbclient import auth
-from prometheon.dbclient.client import DbClient
-from prometheon.dbclient.models import EvaluationSubmission
 from prometheon.errors import ConfigError
+from prometheon.hub import auth
+from prometheon.hub.client import HubClient
+from prometheon.hub.models import EvaluationSubmission
 from prometheon.labelling.client import OpenAICompatibleClient
 from prometheon.registry.huggingface import HuggingFaceClient
 from prometheon.registry.validation import ModelRegistry
@@ -75,28 +77,46 @@ def _policy_version(text: str) -> str:
     return match.group("version").strip() if match else ""
 
 
-def _policy_text(args: argparse.Namespace) -> tuple[str, str]:
-    """The policy every verdict is judged against, and its version line.
+def _policy_text(args: argparse.Namespace) -> Policy:
+    """The policy every verdict is judged against, its version and its hash.
 
     Read from a file rather than embedded, so a validator can prove which text
-    it used and two validators can diff theirs. The version goes into the signed
-    record, which makes a mid-cycle policy change visible instead of merely
-    confusing.
+    it used. The hash is compared with the one the day's epoch froze, so a
+    validator labelling against a different text stops instead of computing
+    different ground truth. The version goes into the signed record.
     """
-    path = Path(args.policy) if args.policy else Path("content_policy.md")
+    path = Path(getattr(args, "policy", None) or "content_policy.md")
     if not path.is_file():
         raise ConfigError(
             f"no content policy at {path}. Pass --policy, or run from the "
             "repository root where content_policy.md lives"
         )
-    text = path.read_text(encoding="utf-8")
+    raw = path.read_bytes()
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ConfigError(f"{path} is not UTF-8 text: {exc}") from exc
     version = _policy_version(text)
     if not version:
         raise ConfigError(
             f"{path} carries no 'Version:' line. Every verdict is published "
             "against a policy version so a disagreement can be attributed"
         )
-    return text, version
+    if len(version) > 64:
+        raise ConfigError(f"{path} declares a version over 64 characters: {version[:70]!r}")
+    return Policy(text=text, version=version, sha256=hashlib.sha256(raw).hexdigest())
+
+
+def _hub_client(config: Config, *, keypair: Any = None) -> HubClient:
+    """A client for the configured hub, signing as ``keypair`` when given one."""
+    return HubClient(
+        base_url=config.hub.base_url,
+        netuid=config.chain.netuid,
+        epoch_keys=config.hub.epoch_keys,
+        keypair=keypair,
+        timeout_seconds=config.hub.request_timeout_seconds,
+        max_retries=config.hub.max_retries,
+    )
 
 
 #: Where a completed cycle leaves the vector it submitted, so it can be posted
@@ -161,7 +181,7 @@ MIRROR_LOOKBACK_DAYS: Final[int] = 3
 
 
 def _mirrored_for(
-    db: Any,
+    hub: Any,
     config: Config,
     *,
     day: dt.date,
@@ -178,8 +198,8 @@ def _mirrored_for(
     caller should look at an older day, and failing that keep what it holds.
     """
     try:
-        submission = db.get_evaluation(day, provider)
-        snapshot = db.get_snapshot(day)
+        submission = hub.get_result(day, provider)
+        verified = hub.get_public_epoch(day)
         return verify_mirrored(
             submission,
             provider=provider,
@@ -187,7 +207,7 @@ def _mirrored_for(
             netuid=config.chain.netuid,
             metagraph=metagraph,
             burn_hotkey=burn_hotkey,
-            snapshot_content_hash=snapshot.content_hash,
+            epoch_content_hash=verified.content_hash,
         )
     except Exception:
         return None
@@ -216,7 +236,7 @@ def _refresh_mirrored(
     before for the rest of the day.
 
     Re-reading the day already held would not have helped, because a published
-    record is immutable: the DB layer accepts an identical resend and refuses a
+    record is immutable: the hub accepts an identical resend and refuses a
     revision. The only thing worth looking for is a *newer* day, which is what
     this does.
 
@@ -225,7 +245,7 @@ def _refresh_mirrored(
     request, and then at most ``MIRROR_LOOKBACK_DAYS`` of them.
 
     **Never raises.** Weights stop counting once ``activity_cutoff`` passes, so
-    a DB layer that is down, or a day the provider has not published yet, must
+    a hub that is down, or a day the provider has not published yet, must
     not stop this validator submitting. Both are ordinary and neither is worth
     a line in the log; the caller falls back to the vector on disk.
     """
@@ -243,16 +263,11 @@ def _refresh_mirrored(
 
     try:
         metagraph = chain.sync_metagraph_view(subtensor, netuid=config.chain.netuid)
-        with DbClient(
-            base_url=config.db.base_url,
-            netuid=config.chain.netuid,
-            keypair=wallet.hotkey,
-            timeout_seconds=config.db.request_timeout_seconds,
-            max_retries=config.db.max_retries,
-        ) as db:
+        # Public reads: a mirror needs no signature to fetch a published record.
+        with _hub_client(config) as hub:
             for candidate in candidates:
                 weights = _mirrored_for(
-                    db,
+                    hub,
                     config,
                     day=candidate,
                     provider=provider,
@@ -262,7 +277,7 @@ def _refresh_mirrored(
                 if weights is not None:
                     return candidate, weights
     except Exception:
-        # Could not even reach the DB layer. Keep re-posting; see the docstring.
+        # Could not even reach the hub. Keep re-posting; see the docstring.
         return None
     return None
 
@@ -397,18 +412,12 @@ def cmd_mirror(args: argparse.Namespace) -> int:
     metagraph = chain.sync_metagraph_view(subtensor, netuid=config.chain.netuid)
     burn_hotkey = chain.read_subnet_owner_hotkey(subtensor, netuid=config.chain.netuid)
 
-    with DbClient(
-        base_url=config.db.base_url,
-        netuid=config.chain.netuid,
-        keypair=wallet.hotkey,
-        timeout_seconds=config.db.request_timeout_seconds,
-        max_retries=config.db.max_retries,
-    ) as db:
+    with _hub_client(config) as hub:
         note(f"fetching {provider}'s record for {day.isoformat()}")
-        submission = db.get_evaluation(day, provider)
-        # The snapshot this validator can see for itself, so a record describing
-        # a different corpus is caught rather than trusted.
-        snapshot = db.get_snapshot(day)
+        submission = hub.get_result(day, provider)
+        # The signed epoch this validator can verify for itself, so a record
+        # describing a different day is caught rather than trusted.
+        verified = hub.get_public_epoch(day)
         weights = verify_mirrored(
             submission,
             provider=provider,
@@ -416,7 +425,7 @@ def cmd_mirror(args: argparse.Namespace) -> int:
             netuid=config.chain.netuid,
             metagraph=metagraph,
             burn_hotkey=burn_hotkey,
-            snapshot_content_hash=snapshot.content_hash,
+            epoch_content_hash=verified.content_hash,
         )
 
     out(
@@ -425,7 +434,7 @@ def cmd_mirror(args: argparse.Namespace) -> int:
                 ("day", day.isoformat()),
                 ("provider", provider),
                 ("scoring version", submission.scoring_version),
-                ("snapshot", submission.snapshot_content_hash[:12]),
+                ("epoch", submission.epoch_content_hash[:12]),
                 ("corpus", submission.corpus_content_hash[:12]),
                 ("weighted hotkeys", str(len(weights))),
                 ("burn", str(submission.burned_weight)),
@@ -476,7 +485,12 @@ def cmd_run(args: argparse.Namespace) -> int:
         # mode they chose; the config decides what it does.
         return cmd_mirror(args)
     day = _target_day(args)
-    policy, policy_version = _policy_text(args)
+    policy = _policy_text(args)
+    if not config.hub.epoch_keys:
+        raise ConfigError(
+            "no hub key is pinned under [hub.epoch_keys], so the day's epoch cannot be "
+            "verified. Copy the key from the release notes of the version you run"
+        )
 
     # Read here purely to fail fast with a message that says what the key is
     # for. The labelling client reads it again from the same variable when it is
@@ -491,20 +505,14 @@ def cmd_run(args: argparse.Namespace) -> int:
     started = int(time.time())
 
     with (
-        DbClient(
-            base_url=config.db.base_url,
-            netuid=config.chain.netuid,
-            keypair=wallet.hotkey,
-            timeout_seconds=config.db.request_timeout_seconds,
-            max_retries=config.db.max_retries,
-        ) as db,
+        _hub_client(config, keypair=wallet.hotkey) as hub,
         HuggingFaceClient() as huggingface,
         OpenAICompatibleClient(config.labelling) as labeller,
     ):
         result = run_cycle(
             config=config,
             day=day,
-            db=db,
+            hub=hub,
             subtensor=subtensor,
             registry=ModelRegistry(
                 huggingface=huggingface,
@@ -512,7 +520,6 @@ def cmd_run(args: argparse.Namespace) -> int:
             ),
             labeller=labeller,
             policy=policy,
-            policy_version=policy_version,
             now=started,
             progress=note,
         )
@@ -552,8 +559,8 @@ def cmd_run(args: argparse.Namespace) -> int:
                     netuid=config.chain.netuid,
                     validator_hotkey=hotkey,
                     scoring_version=SCORING_VERSION,
-                    policy_version=policy_version,
-                    snapshot_content_hash=result.snapshot.manifest.content_hash,
+                    policy_version=policy.version,
+                    epoch_content_hash=result.epoch_content_hash,
                     corpus_content_hash=result.corpus_hash,
                     labelled_test_count=sum(
                         1 for item in result.corpus.items if item.source.value == "test"
@@ -567,7 +574,7 @@ def cmd_run(args: argparse.Namespace) -> int:
                     completed_at=completed,
                 ),
             )
-            accepted = db.submit_evaluation(submission)
+            accepted = hub.submit_result(submission)
             note(f"results published: {accepted.model_dump_json()}")
         else:
             note("submit_results is off: this cycle is not auditable by anyone else")
@@ -637,59 +644,32 @@ def cmd_schedule(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-def cmd_dataset_pull(args: argparse.Namespace) -> int:
-    """Download a released day's test content as JSONL.
-
-    Subject to the embargo: a day's test content is released two days later, so
-    the corpus a cycle scored cannot be studied until after it was used.
-    """
-    config = load(args.config)
-    day = _target_day(args)
-    wallet = open_wallet(config)
-
-    with DbClient(
-        base_url=config.db.base_url,
-        netuid=config.chain.netuid,
-        keypair=wallet.hotkey,
-        timeout_seconds=config.db.request_timeout_seconds,
-        max_retries=config.db.max_retries,
-    ) as db:
-        items = db.fetch_test_content(day)
-
-    lines = [
-        json.dumps(
-            {"id": item.id, "content": item.content, "author_hotkey": item.author_hotkey},
-            ensure_ascii=False,
-            sort_keys=True,
-        )
-        for item in items
-    ]
-    if args.output:
-        args.output.write_text("\n".join(lines) + "\n", encoding="utf-8")
-        note(f"wrote {len(lines)} items to {args.output}")
-    else:
-        for line in lines:
-            out(line)
-    return EXIT_OK
-
-
 def _summary(result: object, rows: tuple[object, ...]) -> str:
     from prometheon.cli.cycle import CycleResult
 
     assert isinstance(result, CycleResult)
     eligible = [item for item in result.validations if item.valid]
+    feed = result.data.feed
     return table(
         [
             ("day", result.day.isoformat()),
-            ("snapshot", result.snapshot.manifest.content_hash),
+            ("epoch", result.epoch_content_hash),
+            ("frozen block", str(result.epoch.frozen_block)),
             ("corpus", result.corpus_hash),
+            (
+                "feed lines",
+                f"{len(feed.test)} test, {len(feed.production)} production, "
+                f"{len(feed.rejected)} rejected",
+            ),
+            ("near-duplicates", f"{len(result.duplicates)} removed"),
+            ("eligible miners", f"{len(result.eligible)}/{len(result.epoch.miners)}"),
             ("corpus items", str(len(result.corpus.items))),
             (
                 "labelled",
                 f"{len(result.labelled.labels)} ok, {len(result.labelled.excluded_ids)} excluded",
             ),
             ("labelling calls", str(result.labelled.calls)),
-            ("models eligible", f"{len(eligible)}/{len(result.validations)}"),
+            ("models verified", f"{len(eligible)}/{len(result.validations)}"),
             ("models evaluated", str(len(result.evaluations))),
             ("efficiency lambda", f"{result.ranking.applied_lambda_bp}bp"),
             ("token spread", f"{result.ranking.mean_token_cv_micros / 10_000:.2f}%"),
@@ -700,4 +680,4 @@ def _summary(result: object, rows: tuple[object, ...]) -> str:
     )
 
 
-__all__ = ["cmd_dataset_pull", "cmd_run"]
+__all__ = ["cmd_mirror", "cmd_resubmit", "cmd_run", "cmd_schedule"]
