@@ -1,9 +1,12 @@
-# Prometheon V2, localnet, for development against a local chain and the
-# in-memory DB fake. Nothing here reaches a real service.
+# Prometheon on a local development chain: the whole cycle with real
+# extrinsics and nothing public. docs/localnet.md walks through starting the
+# chain, registering a subnet and running a cycle against a local hub.
 
 [chain]
-network = "local"
-netuid = 1
+# The opentensor subtensor localnet image, published on this port.
+network = "ws://127.0.0.1:9945"
+# REQUIRED: the netuid `btcli subnet create` printed on your local chain.
+netuid = 0
 version_key = 0
 # Off for localnet only: a dev chain will not match a deployed version key.
 fail_on_weights_version_mismatch = false
@@ -27,7 +30,7 @@ max_retries = 0
 
 [labelling]
 # A local OpenAI-compatible server. Any hosted provider works here too -- see
-# the mainnet example for the OpenAI and OpenRouter settings, and for why the
+# the finney example for the OpenAI and OpenRouter settings, and for why the
 # model id has to change with the base_url rather than independently of it.
 model = "gpt-5.6-sol"
 base_url = "http://127.0.0.1:8601/v1"
@@ -43,6 +46,8 @@ batch_size = 10
 batch_size = 10
 
 [scoring]
+# The rules this file was written for; see configs/finney.example.toml.
+scoring_version = "prometheon-scoring/3.0"
 # These decide emissions. Every share is a slice of total emission, not a ratio
 # of a pool. A pool nobody qualifies for burns to the subnet owner hotkey. Every
 # validator must run the same values: they are not enforced by consensus, so a

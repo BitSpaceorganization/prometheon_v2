@@ -15,6 +15,8 @@ import pytest
 from prometheon.cli.main import build_parser
 from prometheon.cli.validator import _policy_version
 from prometheon.config import Config, ScoringConfig, load_config
+from prometheon.errors import ConfigError, OutdatedConfigError
+from prometheon.version import SCORING_VERSION
 
 pytestmark = pytest.mark.contract
 
@@ -23,6 +25,16 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def _configs() -> list[Path]:
     return sorted((ROOT / "configs").glob("*.example.toml"))
+
+
+def _filled_in(path: Path, tmp_path: Path) -> Path:
+    """The example as an operator would have it, with a netuid filled in."""
+    copy = tmp_path / path.name
+    copy.write_text(
+        path.read_text(encoding="utf-8").replace("\nnetuid = 0\n", "\nnetuid = 7\n"),
+        encoding="utf-8",
+    )
+    return copy
 
 
 class TestTheShippedConfigsLoad:
@@ -37,8 +49,26 @@ class TestTheShippedConfigsLoad:
         assert _configs(), "configs/*.example.toml is how a new operator starts"
 
     @pytest.mark.parametrize("path", _configs(), ids=lambda p: p.name)
-    def test_the_example_loads(self, path: Path) -> None:
-        assert isinstance(load_config(path), Config)
+    def test_the_example_refuses_to_load_until_a_netuid_is_filled_in(self, path: Path) -> None:
+        """No netuid is announced yet, so a copy must not point anywhere by accident."""
+        with pytest.raises(ConfigError, match="netuid"):
+            load_config(path)
+
+    @pytest.mark.parametrize("path", _configs(), ids=lambda p: p.name)
+    def test_the_example_loads_once_filled_in(self, path: Path, tmp_path: Path) -> None:
+        assert isinstance(load_config(_filled_in(path, tmp_path)), Config)
+
+    @pytest.mark.parametrize("path", _configs(), ids=lambda p: p.name)
+    def test_the_example_names_the_rules_it_was_written_for(self, path: Path) -> None:
+        assert f'scoring_version = "{SCORING_VERSION}"' in path.read_text(encoding="utf-8")
+
+    def test_no_example_names_a_netuid_as_prometheons(self) -> None:
+        """Mainnet 108 belongs to another project; testnet is not used."""
+        import re
+
+        for path in _configs():
+            text = path.read_text(encoding="utf-8")
+            assert not re.search(r"\b(108|481)\b", text), path.name
 
     @pytest.mark.parametrize("path", _configs(), ids=lambda p: p.name)
     def test_every_emission_affecting_field_is_visible(self, path: Path) -> None:
@@ -53,7 +83,9 @@ class TestTheShippedConfigsLoad:
         assert not missing, f"{path.name} does not mention {missing}"
 
     @pytest.mark.parametrize("path", _configs(), ids=lambda p: p.name)
-    def test_the_labelling_temperature_suits_the_model_it_ships_with(self, path: Path) -> None:
+    def test_the_labelling_temperature_suits_the_model_it_ships_with(
+        self, path: Path, tmp_path: Path
+    ) -> None:
         """A shipped config must survive its own first cycle.
 
         The blocker: the examples named a gpt-5 reasoning model and left
@@ -69,7 +101,7 @@ class TestTheShippedConfigsLoad:
         stops ground truth wandering between validators; it just cannot be the
         shipped one here.
         """
-        labelling = load_config(path).labelling
+        labelling = load_config(_filled_in(path, tmp_path)).labelling
         if not labelling.model.startswith("gpt-5"):
             return
         assert labelling.temperature != 0, (
@@ -78,7 +110,7 @@ class TestTheShippedConfigsLoad:
         )
 
     @pytest.mark.parametrize("path", _configs(), ids=lambda p: p.name)
-    def test_the_shipped_split_is_the_agreed_one(self, path: Path) -> None:
+    def test_the_shipped_split_is_the_agreed_one(self, path: Path, tmp_path: Path) -> None:
         """70% data to the top 10, then 25%, 4% and 1% of total to three models.
 
         These numbers are the subnet's economics, and they are *config*, not
@@ -88,7 +120,7 @@ class TestTheShippedConfigsLoad:
         shipped example at once. Together they cover 100%, so nothing burns
         unless a share goes unclaimed.
         """
-        scoring = load_config(path).scoring
+        scoring = load_config(_filled_in(path, tmp_path)).scoring
         assert scoring.dataset_share_bp == 7000, path.name
         assert scoring.dataset_top_n == 10, path.name
         assert scoring.model_rank_shares_bp == (2500, 400, 100), path.name
@@ -175,3 +207,35 @@ class TestTheDocumentationLinksResolve:
                 if not target.exists():
                     broken.append(f"{path.name} -> {match.group(1)}")
         assert not broken, f"broken links: {broken}"
+
+
+class TestAnOldConfigFailsLoudly:
+    """Operators copy an example once and keep it, so an old copy must not run.
+
+    A changed default in code never reaches a copied file. Without this, a v2
+    file would run v3 code on v2 numbers, or fail on whichever renamed field
+    the parser met first.
+    """
+
+    def _write(self, tmp_path: Path, text: str) -> Path:
+        path = tmp_path / "old.toml"
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def test_a_v2_config_is_refused_with_what_to_do(self, tmp_path: Path) -> None:
+        v2 = (
+            '[chain]\nnetwork = "finney"\nnetuid = 108\n'
+            '[wallet]\nname = "v"\nhotkey = "h"\n'
+            '[db]\nbase_url = "https://audit.bitfan.ai"\n'
+            "[scoring]\nminer_burn_share_bp = 0\ndataset_share_bp = 5000\n"
+        )
+        with pytest.raises(OutdatedConfigError, match="v2 rules"):
+            load_config(self._write(tmp_path, v2))
+
+    def test_a_config_for_other_rules_is_refused(self, tmp_path: Path) -> None:
+        text = (ROOT / "configs" / "finney.example.toml").read_text(encoding="utf-8")
+        older = text.replace(SCORING_VERSION, "prometheon-scoring/2.1").replace(
+            "\nnetuid = 0\n", "\nnetuid = 7\n"
+        )
+        with pytest.raises(OutdatedConfigError, match=r"prometheon-scoring/2\.1"):
+            load_config(self._write(tmp_path, older))
