@@ -185,45 +185,33 @@ class ScoringConfig(BaseModel):
 
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", frozen=True)
 
-    #: Share of miner emission that burns to the subnet owner (uid 0) before any
-    #: miner is paid. The remaining ``10000 - this`` is the pool the dataset and
-    #: model halves divide among miners by score.
+    #: The data contribution pool, as a share of **total** emission: 70%.
     #:
-    #: **0 by default: every unit of miner emission reaches a miner.** Set it
-    #: above zero only deliberately, the burn line on the dashboard is the
-    #: subnet stating that share explicitly rather than letting the chain
-    #: renormalise it away, so a non-zero value is a visible claim on emission
-    #: that miners competed for.
+    #: It starts high because inviting real people and getting them to write
+    #: test content costs far more today than training a text model. As user
+    #: numbers grow and model requirements get harder, the share moving to model
+    #: training is expected to reach 80 to 90%.
     #:
-    #: Every validator must agree on this number. It is not enforced by
-    #: consensus, so one running a different value computes a different vector
-    #: from identical inputs and loses vtrust for a configuration difference.
-    miner_burn_share_bp: int = Field(default=0, ge=0, le=10000)
-
-    #: Dataset contribution's share of the *miner pool* (what is left after the
-    #: burn share above); model performance takes the rest. At 5000 against a
-    #: full pool that is 50% of total emission for data and 50% for models.
-    #:
-    #: The two halves are independent, and a miner can earn the dataset half
-    #: with no deployed model at all: data is what every model is measured
-    #: against, and it accrues daily from real users.
-    dataset_share_bp: int = Field(default=5000, ge=0, le=10000)
+    #: Every validator must agree on this number, as on everything in this
+    #: section. It is not enforced by consensus, so one running a different
+    #: value computes a different vector from identical inputs and loses vtrust
+    #: for a configuration difference.
+    dataset_share_bp: int = Field(default=7000, ge=0, le=10000)
 
     #: Only the top contributors are paid, proportionally to score. With fewer
-    #: than this many eligible contributors the pool divides among those
-    #: present rather than burning the remainder.
+    #: than this many scoring above zero, the pool divides among those present.
     dataset_top_n: int = Field(default=10, ge=1)
 
-    #: Rank ratios within the model half of the miner pool: 30/15/5 is the top
-    #: three in 6:3:1, renormalised to fill that half across the models actually
-    #: present. With fewer valid models the shares renormalise across those
-    #: present rather than burning the difference.
+    #: The model pool: a fixed share of **total** emission per rank, 25%, 4% and
+    #: 1% for the first three models. Shares, not ratios. A rank with no model to
+    #: fill it is not handed to the ranks above it; it burns. So one weak model
+    #: alone collects 25% and the other 5% burns.
     #:
     #: Constrained here rather than at first use. An empty or negative-bearing
     #: tuple used to validate cleanly and only fail at ``allocate_model_pool``,
     #: which is the *last* step of a cycle. A typo in the TOML cost a full day
     #: of labelling and evaluation before anything complained.
-    model_rank_shares_bp: tuple[int, ...] = Field(default=(3000, 1500, 500), min_length=1)
+    model_rank_shares_bp: tuple[int, ...] = Field(default=(2500, 400, 100), min_length=1)
 
     #: The smallest number of scored items a model may hold a rank share on.
     #:
@@ -232,8 +220,7 @@ class ScoringConfig(BaseModel):
     #: emission. That is reachable rather than theoretical: a miner's own test
     #: content is excluded from its corpus, so a miner who supplies almost all
     #: of a day's test content is scored on almost nothing. Below this floor a
-    #: model is not scored at all, and the rank shares renormalise across the
-    #: models that were actually measured.
+    #: model is not ranked at all.
     model_min_scored_items: int = Field(default=100, ge=1)
 
     #: Efficiency weight. Capped low: accuracy is what is being scored, so
@@ -305,6 +292,21 @@ class ScoringConfig(BaseModel):
         if sum(shares) == 0:
             raise ValueError("model rank shares are all zero; no model could ever be paid")
         return shares
+
+    @model_validator(mode="after")
+    def _shares_fit_in_the_total(self) -> ScoringConfig:
+        """The shares are slices of one total, so together they cannot pass 100%.
+
+        Less than 100% is allowed and means a standing burn: whatever no share
+        names goes to the burn hotkey every cycle.
+        """
+        allocated = self.dataset_share_bp + sum(self.model_rank_shares_bp)
+        if allocated > 10000:
+            raise ValueError(
+                f"dataset_share_bp + model_rank_shares_bp = {allocated} basis points, "
+                "over 100% of emission. They are shares of the total, not ratios"
+            )
+        return self
 
 
 class ValidatorRuntimeConfig(BaseModel):

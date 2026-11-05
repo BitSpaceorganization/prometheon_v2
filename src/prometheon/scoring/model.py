@@ -33,7 +33,7 @@ from typing import Final
 
 from prometheon.config import ScoringConfig
 from prometheon.errors import ScoringError
-from prometheon.scoring.allocation import BASIS_POINTS, AllocationTarget, allocate
+from prometheon.scoring.allocation import BASIS_POINTS
 
 #: Where the token-cost scale is read off. The 90th percentile rather than the
 #: maximum: one pathological model must not compress everyone else's ``t`` to
@@ -111,7 +111,7 @@ def score_models(evaluations: Iterable[ModelEvaluation], *, scoring: ScoringConf
     # full discount, and it inflates the spread so the CV guard stops firing,
     # which switches lambda back on across a field the guard had correctly
     # classified as noise. That is enough to swap rank 1 and rank 2 on a token
-    # difference that means nothing: 1500bp of total subnet emission moved by a
+    # difference that means nothing: 2100bp of total subnet emission moved by a
     # miner who earns nothing and pays nothing. Register a hotkey, commit a
     # valid model, let the deployment return 500. That is the whole attack.
     readings = [mean for mean in means if mean is not None]
@@ -159,57 +159,49 @@ def rank_models(scores: Iterable[ModelScore]) -> tuple[ModelScore, ...]:
 
     Three keys because the first two really do tie: with the efficiency term off
     two models with identical accuracy score identically, and the difference
-    between rank 1 and rank 2 is 1500bp of subnet emission. That may not be
+    between rank 1 and rank 2 is 2100bp of subnet emission. That may not be
     decided by whatever order a dict happened to iterate in.
     """
     return tuple(sorted(scores, key=lambda entry: (-entry.score, -entry.accuracy, entry.hotkey)))
 
 
 def allocate_model_pool(
-    scores: Sequence[ModelScore], *, pool: int, rank_shares_bp: Sequence[int]
+    scores: Sequence[ModelScore], *, total_units: int, rank_shares_bp: Sequence[int]
 ) -> dict[str, int]:
-    """Split the model pool across the ranked models by rank share.
+    """Pay each of the top ranks its fixed share of **total** emission.
 
-    The shares are expressed against *total* miner emission (3000/1500/500bp of
-    it), and renormalise across the models actually present: with two models
-    they become 3000/4500 and 1500/4500 of this pool. A thin field pays its
-    models more rather than burning the difference.
+    The shares are absolute, not ratios of a model pool: rank 1 takes
+    ``rank_shares_bp[0]`` basis points of ``total_units`` whether or not ranks 2
+    and 3 are filled. An empty rank is not redistributed to the ranks above it.
+    It goes unclaimed, and :mod:`prometheon.scoring.combine` burns it. That is
+    the v3 rule: one weak model alone collects 25%, not the whole 30%.
 
-    **A zero score is never paid a rank share.** Without that filter, a model
-    that answered nothing all day still collects. A miner whose model returns
-    HTTP 500 to every batch scores exactly zero, and with no honest competitor
-    above it, took the entire model half; with two honest models present it
-    still took 500bp of total miner emission off them for doing nothing. Worse,
-    when the whole field scores zero (the validator's GPU failed every load,
-    or every deployment is broken), ranking falls through to the
-    hotkey-ascending tie-break, so half of miner emission would be distributed
-    in lexicographic hotkey order, identically on every validator, which means
-    chain consensus cannot correct it either.
+    **A zero score is never paid a rank share.** A model that answered nothing
+    all day scores exactly zero, and without this filter it would still
+    collect. When the whole field scores zero (the validator's GPU failed every
+    load, or every model is broken), ranking falls through to the
+    hotkey-ascending tie-break, so model emission would be paid out in
+    lexicographic hotkey order, identically on every validator, where consensus
+    could not correct it.
 
-    Returns an empty map when no model earned anything, leaving the burn to
-    :mod:`prometheon.scoring.combine`. That is what ``docs/scoring.md``
-    documents and what the dataset half already did.
+    Returns an empty map when no model earned anything.
     """
-    if pool < 0:
-        raise ScoringError(f"model pool must not be negative, got {pool}")
+    if total_units < 0:
+        raise ScoringError(f"weight pool must not be negative, got {total_units}")
     if not rank_shares_bp:
         raise ScoringError("model rank shares are empty; no model can be paid")
     if any(share < 0 for share in rank_shares_bp):
         raise ScoringError("model rank shares must not be negative")
 
     earned = [entry for entry in rank_models(scores) if entry.score > 0]
-    paid = earned[: len(rank_shares_bp)]
-    shares = list(rank_shares_bp[: len(paid)])
-    if not paid or pool == 0 or sum(shares) == 0:
-        return {}
-
-    return allocate(
-        pool,
-        [
-            AllocationTarget(key=entry.hotkey, weight=Fraction(share))
-            for entry, share in zip(paid, shares, strict=True)
-        ],
-    )
+    paid: dict[str, int] = {}
+    # Not strict: the field may hold more models than there are ranks, and the
+    # ones past the last rank are simply not paid.
+    for entry, share in zip(earned, rank_shares_bp, strict=False):
+        units = total_units * share // BASIS_POINTS
+        if units > 0:
+            paid[entry.hotkey] = units
+    return paid
 
 
 def _validated(
