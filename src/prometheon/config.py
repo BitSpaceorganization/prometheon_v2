@@ -11,15 +11,17 @@ scoring modules.
 
 from __future__ import annotations
 
+import re
 import sys
 from enum import Enum
 from pathlib import Path
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
-from prometheon.errors import ConfigError
+from prometheon.errors import ConfigError, OutdatedConfigError
 from prometheon.security.signatures import is_ed25519_public_key
+from prometheon.version import SCORING_VERSION
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -33,11 +35,20 @@ class ChainNetwork(str, Enum):
     FINNEY = "finney"
 
 
+#: A chain endpoint given as a URL rather than a network name.
+_ENDPOINT_RE: Final[re.Pattern[str]] = re.compile(r"^wss?://[A-Za-z0-9.\-]+(:[0-9]{1,5})?(/.*)?$")
+
+
 class ChainConfig(BaseModel):
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", frozen=True)
 
-    network: ChainNetwork
-    netuid: int = Field(ge=0)
+    #: ``finney``, ``test``, ``local``, or a ``ws://``/``wss://`` endpoint such as
+    #: a local development chain. Required: there is no default network.
+    network: str
+    #: Required, with no default. The subnet has not been registered yet, so
+    #: the shipped examples carry ``0``, which is refused here with a message
+    #: rather than silently pointing a validator at the root network.
+    netuid: int
     version_key: int = Field(default=0, ge=0)
     #: Submitting under a stale version key produces weights the chain ignores.
     #: Failing closed is right everywhere; it is configurable only so a
@@ -49,6 +60,27 @@ class ChainConfig(BaseModel):
     #: way. This defaults to failing closed and should stay that way anywhere
     #: real.
     allow_missing_mechid: bool = False
+
+    @field_validator("network")
+    @classmethod
+    def _known_network(cls, value: str) -> str:
+        names = {network.value for network in ChainNetwork}
+        if value in names or _ENDPOINT_RE.match(value):
+            return value
+        raise ValueError(
+            f"network must be one of {sorted(names)} or a ws:// or wss:// endpoint, got {value!r}"
+        )
+
+    @field_validator("netuid")
+    @classmethod
+    def _a_real_subnet(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError(
+                f"netuid is {value}. Set [chain] netuid to the Prometheon netuid announced with "
+                "the release; 0 is the root network, and the examples ship 0 so a copied file "
+                "cannot point anywhere until it is filled in"
+            )
+        return value
 
 
 class WalletConfig(BaseModel):
@@ -212,6 +244,11 @@ class ScoringConfig(BaseModel):
 
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", frozen=True)
 
+    #: The rules this file was written for. :func:`load_config` refuses a file
+    #: that does not state the version this build implements, so a config copied
+    #: under older rules fails loudly instead of running new code on old numbers.
+    scoring_version: str = SCORING_VERSION
+
     #: The data contribution pool, as a share of **total** emission: 70%.
     #:
     #: It starts high because inviting real people and getting them to write
@@ -320,6 +357,15 @@ class ScoringConfig(BaseModel):
             )
         return self
 
+    @field_validator("scoring_version")
+    @classmethod
+    def _this_builds_rules(cls, value: str) -> str:
+        if value != SCORING_VERSION:
+            raise ValueError(
+                f"scoring_version is {value!r}, but this build implements {SCORING_VERSION!r}"
+            )
+        return value
+
     @field_validator("model_rank_shares_bp")
     @classmethod
     def _shares_are_payable(cls, shares: tuple[int, ...]) -> tuple[int, ...]:
@@ -392,10 +438,36 @@ def load_config(path: Path | str) -> Config:
     except OSError as exc:
         raise ConfigError(f"config could not be read: {exc}") from exc
 
+    _require_current_rules(raw, path)
     try:
         return Config.model_validate(raw)
     except ValidationError as exc:
         raise ConfigError(f"invalid config {path}: {exc}") from exc
+
+
+def _require_current_rules(raw: dict[str, Any], path: Path) -> None:
+    """Refuse a file written for other scoring rules, before anything else.
+
+    Operators copy an example once and keep it. Every value in ``[scoring]``
+    decides emissions, and changing a default in code does not reach a copied
+    file, so a v2 file would otherwise run v3 code with v2 numbers, or fail on
+    whichever renamed field the parser met first. The file must say which rules
+    it was written for, and they must be this build's.
+    """
+    scoring = raw.get("scoring")
+    stated = scoring.get("scoring_version") if isinstance(scoring, dict) else None
+    if "db" in raw or stated is None:
+        raise OutdatedConfigError(
+            f"{path} was written for the v2 rules (it has "
+            f"{'a [db] section' if 'db' in raw else 'no [scoring] scoring_version'}). The rules "
+            f"changed to {SCORING_VERSION}: copy configs/finney.example.toml again, fill in "
+            "[wallet] and [chain] netuid, and read docs/scoring.md"
+        )
+    if stated != SCORING_VERSION:
+        raise OutdatedConfigError(
+            f"{path} states scoring_version = {stated!r}, but this build implements "
+            f"{SCORING_VERSION!r}. Copy the example config from this release and compare"
+        )
 
 
 __all__ = [

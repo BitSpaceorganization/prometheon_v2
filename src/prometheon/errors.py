@@ -30,6 +30,12 @@ class ConfigError(PrometheonError):
     code: str = "config.invalid"
 
 
+class OutdatedConfigError(ConfigError):
+    """The config was written for different scoring rules than this build runs."""
+
+    code: str = "config.outdated"
+
+
 # ---------------------------------------------------------------------------
 # Security primitives
 # ---------------------------------------------------------------------------
@@ -338,6 +344,7 @@ __all__ = [
     "ManifestViolationError",
     "ModelResponseError",
     "ModelTooLargeError",
+    "OutdatedConfigError",
     "PrometheonError",
     "RegistryError",
     "RegistryUnavailableError",

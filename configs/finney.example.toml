@@ -1,12 +1,21 @@
-# Prometheon V2, testnet (netuid 481).
+# Prometheon, on the Bittensor main network (finney).
 #
-# Copy this to a local file and edit [wallet]. Everything else is pre-pinned.
+# Copy this to a local file, then fill in [wallet], [chain] netuid and
+# [hub.epoch_keys]. The subnet's netuid is announced with the release that
+# launches it; until then this file carries 0, which the loader refuses, so a
+# copy cannot point anywhere by accident. Everything under [scoring] is the
+# published rule set and must not be edited alone: see docs/scoring.md.
 #
-#   cp configs/testnet.example.toml ~/prometheon-testnet.toml
+#   cp configs/finney.example.toml ~/prometheon.toml
+#
+# To try the whole cycle without touching a public network, use
+# configs/localnet.example.toml and docs/localnet.md instead.
 
 [chain]
-network = "test"
-netuid = 481
+# "finney", "test", "local", or a ws:// or wss:// endpoint.
+network = "finney"
+# REQUIRED: the Prometheon netuid, from the release notes.
+netuid = 0
 version_key = 0
 fail_on_weights_version_mismatch = true
 # Localnet only. On a live network, weights submitted without a mechid land on
@@ -14,7 +23,7 @@ fail_on_weights_version_mismatch = true
 allow_missing_mechid = false
 
 [wallet]
-# Your btcli wallet (coldkey directory) and the hotkey registered on 481.
+# Your btcli wallet (coldkey directory) and the hotkey registered on the subnet.
 name = "validator"
 hotkey = "default"
 
@@ -87,6 +96,9 @@ device = "auto"
 model_timeout_seconds = 3600.0
 
 [scoring]
+# The rules this file was written for. A file stating other rules is refused at
+# load, so an old copy fails loudly instead of running new code on old numbers.
+scoring_version = "prometheon-scoring/3.0"
 # These decide emissions. Every share is a slice of total emission, not a ratio
 # of a pool. A pool nobody qualifies for burns to the subnet owner hotkey. Every
 # validator must run the same values: they are not enforced by consensus, so a

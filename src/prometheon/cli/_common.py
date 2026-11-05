@@ -35,8 +35,9 @@ def load(path: str | Path) -> Config:
     resolved = Path(path).expanduser()
     if not resolved.is_file():
         raise ConfigError(
-            f"no config file at {resolved}. Copy configs/testnet.example.toml and "
-            "edit the [wallet] section"
+            f"no config file at {resolved}. Copy configs/finney.example.toml (or "
+            "configs/localnet.example.toml for a local chain) and fill in [wallet] and "
+            "[chain] netuid"
         )
     return load_config(resolved)
 
