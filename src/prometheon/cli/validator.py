@@ -247,7 +247,7 @@ def _refresh_mirrored(
     If that run happened before the provider published -- which is exactly what
     a provider retrying a failed cycle causes -- the mirror's run failed, wrote
     nothing, and it spent the next day re-posting the *previous* day's vector.
-    Observed on netuid 108 on 2026-09-11: a provider published three and a half
+    Observed on mainnet under v2 on 2026-09-11: a provider published three and a half
     hours late after a retry, and 22.5% of validating stake sat on the day
     before for the rest of the day.
 
@@ -396,8 +396,8 @@ def _wait_for_weights_window(
 ) -> None:
     """Block until this hotkey may set weights again.
 
-    Bounded: `weights_set_rate_limit` is 100 blocks (~20 min) on netuid 108, so
-    the window always clears. The cap exists so a chain that never reports the
+    Bounded: `weights_set_rate_limit` is a subnet hyperparameter, commonly 100
+    blocks (~20 min), so the window always clears. The cap exists so a chain that never reports the
     limit clearing fails loudly instead of hanging a scheduler forever.
     """
     for _ in range(attempts):

@@ -29,7 +29,10 @@ from prometheon.version import __version__
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="prometheon",
-        description="Prometheon V2, an open moderation-model competition on Bittensor.",
+        description=(
+            "Prometheon, a Bittensor subnet building an AI moderation agent, "
+            "starting with text moderation."
+        ),
     )
     parser.add_argument("--version", action="version", version=f"prometheon {__version__}")
     commands = parser.add_subparsers(dest="command", required=True)
@@ -52,8 +55,10 @@ def build_parser() -> argparse.ArgumentParser:
             "commit",
             help="write (hf_repo, hf_revision) on chain",
             description=(
-                "This is the submission. Note that re-committing re-dates your claim "
-                "on a revision, so do not re-commit an unchanged model without reason."
+                "This is the submission. The hub freezes commitments once a day, and "
+                "a model with new weights needs one submission credit (see "
+                "'prometheon credits'). Re-committing the same weights costs nothing "
+                "and keeps the block they were first committed at."
             ),
         )
     )
@@ -67,8 +72,8 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "write only if the chain does not already hold this repo and revision. "
-            "Use this for anything on a timer: an unconditional re-commit re-dates "
-            "your claim and moves you behind an earlier copy of the same revision"
+            "Use this for anything on a timer: an unchanged re-commit changes nothing "
+            "but still pays a transaction fee"
         ),
     )
     commit.set_defaults(handler=miner.cmd_commit)
