@@ -425,17 +425,19 @@ def test_a_whole_cycle_produces_the_exact_v3_vector(
         VALIDATOR.ss58_address: 10_000,
     }
 
-    receipt = submit_weights(
+    sent = submit_weights(
         result,
         config=config,
         subtensor=world["chain"],
         wallet=SimpleNamespace(hotkey=VALIDATOR),
         mechid=0,
     )
-    assert receipt == "Finalized."
-    sent = world["chain"].submitted[0]
-    assert sum(sent["weights"]) == 65_535
-    assert sent["uids"] == [0, 1, 2]
+    assert sent.receipt == "Finalized."
+    assert sent.gone == ()
+    assert dict(sent.units) == dict(result.split.weights)
+    on_chain = world["chain"].submitted[0]
+    assert sum(on_chain["weights"]) == 65_535
+    assert on_chain["uids"] == [0, 1, 2]
 
 
 def test_only_paid_models_of_eligible_miners_reach_the_registry(
