@@ -25,7 +25,7 @@ dependencies = [
     # writes a metadata commitment, so a miner running it could not submit at
     # all. Raising this ceiling means porting `prometheon.chain` and re-pinning
     # tests/contract/test_bittensor_sdk_shape.py against the new shapes.
-    "bittensor>=10.5.0,<11",
+    "bittensor>=10.5.0,<12",
     "bittensor-wallet>=4.0.0",
     "httpx>=0.28.0",
     "pydantic>=2.9.0",
@@ -37,7 +37,7 @@ dependencies = [
 # miner who only commits, and anyone reading a published record, can install
 # without a torch build.
 wrapper = [
-    "transformers>=4.44,<4.47",
+    "transformers>=4.44,<5.21",
     # Raised from `<2.6`, which could not run the hardware `docs/validator.md`
     # mandates. 2.5.1 builds kernels up to sm_90; an RTX 5090 is sm_120, and the
     # failure is silent in the worst way: `torch.cuda.is_available()` still
