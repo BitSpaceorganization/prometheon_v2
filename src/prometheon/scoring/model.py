@@ -168,21 +168,21 @@ def rank_models(scores: Iterable[ModelScore]) -> tuple[ModelScore, ...]:
 def allocate_model_pool(
     scores: Sequence[ModelScore], *, total_units: int, rank_shares_bp: Sequence[int]
 ) -> dict[str, int]:
-    """Pay each of the top ranks its fixed share of **total** emission.
+    """Pay the top ranks their shares of **total** emission.
 
-    The shares are absolute, not ratios of a model pool: rank 1 takes
-    ``rank_shares_bp[0]`` basis points of ``total_units`` whether or not ranks 2
-    and 3 are filled. An empty rank is not redistributed to the ranks above it.
-    It goes unclaimed, and :mod:`prometheon.scoring.combine` burns it. That is
-    the v3 rule: one weak model alone collects 25%, not the whole 30%.
+    The shares are slices of the total, not ratios of a model pool: rank 1 takes
+    ``rank_shares_bp[0]`` basis points of ``total_units``, rank 2 the next, and
+    so on. A place nobody fills goes to the lowest-ranked winner present, so the
+    whole model pool is paid whenever any model qualifies: with the shipped
+    25/4/1, two models take 25% and 5%, and one model takes all 30%. The pool
+    burns only when no model qualifies.
 
-    **A zero score is never paid a rank share.** A model that answered nothing
-    all day scores exactly zero, and without this filter it would still
-    collect. When the whole field scores zero (the validator's GPU failed every
-    load, or every model is broken), ranking falls through to the
-    hotkey-ascending tie-break, so model emission would be paid out in
-    lexicographic hotkey order, identically on every validator, where consensus
-    could not correct it.
+    **A zero score is never paid.** A model that answered nothing all day scores
+    exactly zero, and without this filter it would still collect. When the whole
+    field scores zero (the validator's GPU failed every load, or every model is
+    broken), ranking falls through to the hotkey-ascending tie-break, so model
+    emission would be paid out in lexicographic hotkey order, identically on
+    every validator, where consensus could not correct it.
 
     Returns an empty map when no model earned anything.
     """
@@ -193,11 +193,14 @@ def allocate_model_pool(
     if any(share < 0 for share in rank_shares_bp):
         raise ScoringError("model rank shares must not be negative")
 
-    earned = [entry for entry in rank_models(scores) if entry.score > 0]
+    winners = [entry for entry in rank_models(scores) if entry.score > 0][: len(rank_shares_bp)]
+    if not winners:
+        return {}
+    shares = list(rank_shares_bp[: len(winners)])
+    # Every place past the last winner rolls down to that winner.
+    shares[-1] += sum(rank_shares_bp[len(winners) :])
     paid: dict[str, int] = {}
-    # Not strict: the field may hold more models than there are ranks, and the
-    # ones past the last rank are simply not paid.
-    for entry, share in zip(earned, rank_shares_bp, strict=False):
+    for entry, share in zip(winners, shares, strict=True):
         units = total_units * share // BASIS_POINTS
         if units > 0:
             paid[entry.hotkey] = units

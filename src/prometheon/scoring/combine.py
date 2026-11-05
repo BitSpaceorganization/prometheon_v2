@@ -5,14 +5,14 @@ of the **total**, not a ratio of what happens to be claimed:
 
 - ``dataset_share_bp`` (7000) goes to the top data contributors, split by score;
 - ``model_rank_shares_bp`` (2500, 400, 100) go to the first, second and third
-  model, each its own fixed slice.
+  model. A place nobody fills goes to the lowest-ranked winner present, so two
+  models take 25% and 5%, and one model takes 30%.
 
-Whatever nobody claims goes to the burn hotkey: a data pool with no scorer
-above zero, a rank with no model to fill it, and anything a config leaves out of
-the shares. So one weak model alone collects 25% and the other 5% burns, rather
-than taking the whole model pool. The vector always sums to the same total, so
-the burn line states exactly what was withheld instead of leaving it to the
-chain's renormalisation.
+A pool burns, to the subnet owner hotkey, only when nobody qualifies for it: no
+data contributor scoring above zero, or no model scoring above zero. Anything a
+config leaves out of the shares burns too, every cycle. The vector always sums
+to the same total, so the burn line states exactly what was withheld instead of
+leaving it to the chain's renormalisation.
 
 A miner in both pools is one entry holding both amounts.
 """

@@ -252,8 +252,8 @@ def test_three_models_take_twenty_five_four_and_one_percent_of_total() -> None:
     assert units == {"hk-1": 250_000, "hk-2": 40_000, "hk-3": 10_000}
 
 
-def test_two_models_keep_their_own_shares_rather_than_splitting_the_pool() -> None:
-    """Shares, not ratios: the empty third rank is not handed upwards."""
+def test_two_models_take_twenty_five_and_five_percent() -> None:
+    """The empty third place rolls down to the lowest winner present."""
     ranking = score_models(
         [
             _evaluation("hk-1", 900, 1000, mean_tokens=10),
@@ -264,15 +264,15 @@ def test_two_models_keep_their_own_shares_rather_than_splitting_the_pool() -> No
 
     units = allocate_model_pool(ranking.scores, total_units=TOTAL, rank_shares_bp=V3_SHARES)
 
-    assert units == {"hk-1": 250_000, "hk-2": 40_000}
+    assert units == {"hk-1": 250_000, "hk-2": 50_000}
 
 
-def test_one_model_takes_only_the_first_share() -> None:
+def test_one_model_takes_the_whole_thirty_percent() -> None:
     ranking = score_models([_evaluation("hk-1", 1, 1000, mean_tokens=10)], scoring=DEFAULTS)
 
     units = allocate_model_pool(ranking.scores, total_units=TOTAL, rank_shares_bp=V3_SHARES)
 
-    assert units == {"hk-1": 250_000}
+    assert units == {"hk-1": 300_000}
 
 
 def test_a_fourth_place_model_is_not_paid() -> None:
@@ -303,7 +303,7 @@ def test_model_allocation_does_not_trust_the_order_it_was_handed() -> None:
         list(reversed(ranking.scores)), total_units=TOTAL, rank_shares_bp=V3_SHARES
     )
 
-    assert shuffled == {"hk-1": 250_000, "hk-2": 40_000}
+    assert shuffled == {"hk-1": 250_000, "hk-2": 50_000}
 
 
 def test_a_zero_share_rank_pays_nothing() -> None:
@@ -463,7 +463,7 @@ class TestAModelMustBeMeasuredBeforeItIsPaid:
             total_units=TOTAL,
             rank_shares_bp=V3_SHARES,
         )
-        assert allocation == {"hk-careful": 250_000}
+        assert allocation == {"hk-careful": 300_000}
 
     def test_the_floor_is_configurable(self) -> None:
         field = [ModelEvaluation("hk-small", 40, 50, 5_000, 50)]
@@ -481,3 +481,15 @@ class TestAModelMustBeMeasuredBeforeItIsPaid:
             [*honest, ModelEvaluation("hk-tiny", 1, 1, 999_999, 1)], scoring=NO_GUARD
         )
         assert alone.p90_mean_tokens == with_tiny.p90_mean_tokens
+
+
+def test_a_zero_scorer_does_not_hold_a_place_that_rolls_down() -> None:
+    """Only winners above zero hold places, so the roll-down skips the dead model."""
+    field = [
+        ModelEvaluation("hk-a", 900, 1000, 100_000, 1000),
+        ModelEvaluation("hk-dead", 0, 1000),
+    ]
+    allocation = allocate_model_pool(
+        score_models(field, scoring=DEFAULTS).scores, total_units=TOTAL, rank_shares_bp=V3_SHARES
+    )
+    assert allocation == {"hk-a": 300_000}
