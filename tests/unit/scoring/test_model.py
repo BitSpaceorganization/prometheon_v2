@@ -26,6 +26,10 @@ NO_GUARD = ScoringConfig(efficiency_min_cv_bp=0)
 #: Efficiency off entirely.
 NO_EFFICIENCY = ScoringConfig(efficiency_lambda_bp=0)
 
+#: The weight pool and the v3 rank shares, stated rather than inherited.
+TOTAL = 1_000_000
+V3_SHARES = (2500, 400, 100)
+
 
 def _evaluation(
     hotkey: str,
@@ -233,7 +237,7 @@ def test_a_repeated_hotkey_is_refused() -> None:
         score_models([_evaluation("hk-a", 1, 10), _evaluation("hk-a", 2, 10)], scoring=DEFAULTS)
 
 
-def test_three_models_take_the_designed_thirty_fifteen_five_split() -> None:
+def test_three_models_take_twenty_five_four_and_one_percent_of_total() -> None:
     ranking = score_models(
         [
             _evaluation("hk-1", 900, 1000, mean_tokens=10),
@@ -243,15 +247,13 @@ def test_three_models_take_the_designed_thirty_fifteen_five_split() -> None:
         scoring=DEFAULTS,
     )
 
-    units = allocate_model_pool(
-        ranking.scores, pool=500_000, rank_shares_bp=DEFAULTS.model_rank_shares_bp
-    )
+    units = allocate_model_pool(ranking.scores, total_units=TOTAL, rank_shares_bp=V3_SHARES)
 
-    assert units == {"hk-1": 300_000, "hk-2": 150_000, "hk-3": 50_000}
-    assert sum(units.values()) == 500_000
+    assert units == {"hk-1": 250_000, "hk-2": 40_000, "hk-3": 10_000}
 
 
-def test_two_models_renormalise_to_three_thousand_over_forty_five_hundred() -> None:
+def test_two_models_keep_their_own_shares_rather_than_splitting_the_pool() -> None:
+    """Shares, not ratios: the empty third rank is not handed upwards."""
     ranking = score_models(
         [
             _evaluation("hk-1", 900, 1000, mean_tokens=10),
@@ -260,22 +262,17 @@ def test_two_models_renormalise_to_three_thousand_over_forty_five_hundred() -> N
         scoring=DEFAULTS,
     )
 
-    units = allocate_model_pool(
-        ranking.scores, pool=450_000, rank_shares_bp=DEFAULTS.model_rank_shares_bp
-    )
+    units = allocate_model_pool(ranking.scores, total_units=TOTAL, rank_shares_bp=V3_SHARES)
 
-    assert units == {"hk-1": 300_000, "hk-2": 150_000}
-    assert sum(units.values()) == 450_000
+    assert units == {"hk-1": 250_000, "hk-2": 40_000}
 
 
-def test_one_model_takes_the_whole_model_pool() -> None:
+def test_one_model_takes_only_the_first_share() -> None:
     ranking = score_models([_evaluation("hk-1", 1, 1000, mean_tokens=10)], scoring=DEFAULTS)
 
-    units = allocate_model_pool(
-        ranking.scores, pool=500_000, rank_shares_bp=DEFAULTS.model_rank_shares_bp
-    )
+    units = allocate_model_pool(ranking.scores, total_units=TOTAL, rank_shares_bp=V3_SHARES)
 
-    assert units == {"hk-1": 500_000}
+    assert units == {"hk-1": 250_000}
 
 
 def test_a_fourth_place_model_is_not_paid() -> None:
@@ -284,16 +281,13 @@ def test_a_fourth_place_model_is_not_paid() -> None:
         scoring=DEFAULTS,
     )
 
-    units = allocate_model_pool(
-        ranking.scores, pool=500_000, rank_shares_bp=DEFAULTS.model_rank_shares_bp
-    )
+    units = allocate_model_pool(ranking.scores, total_units=TOTAL, rank_shares_bp=V3_SHARES)
 
     assert list(units) == ["hk-1", "hk-2", "hk-3"]
-    assert sum(units.values()) == 500_000
 
 
-def test_no_models_allocate_nothing_so_the_pool_can_burn() -> None:
-    assert allocate_model_pool([], pool=500_000, rank_shares_bp=(3000, 1500, 500)) == {}
+def test_no_models_allocate_nothing_so_the_shares_can_burn() -> None:
+    assert allocate_model_pool([], total_units=TOTAL, rank_shares_bp=V3_SHARES) == {}
 
 
 def test_model_allocation_does_not_trust_the_order_it_was_handed() -> None:
@@ -306,31 +300,37 @@ def test_model_allocation_does_not_trust_the_order_it_was_handed() -> None:
     )
 
     shuffled = allocate_model_pool(
-        list(reversed(ranking.scores)), pool=450_000, rank_shares_bp=(3000, 1500, 500)
+        list(reversed(ranking.scores)), total_units=TOTAL, rank_shares_bp=V3_SHARES
     )
 
-    assert shuffled == {"hk-1": 300_000, "hk-2": 150_000}
+    assert shuffled == {"hk-1": 250_000, "hk-2": 40_000}
 
 
-def test_rank_shares_that_pay_nobody_allocate_nothing() -> None:
-    ranking = score_models([_evaluation("hk-1", 1, 10, mean_tokens=10)], scoring=DEFAULTS)
+def test_a_zero_share_rank_pays_nothing() -> None:
+    """A measured model with a positive score in a rank whose share is zero.
 
-    assert allocate_model_pool(ranking.scores, pool=500_000, rank_shares_bp=(0, 0)) == {}
+    `scored=1000` clears the default floor of 100, so the model really is ranked
+    and only the zero share keeps it unpaid.
+    """
+    ranking = score_models([_evaluation("hk-1", 900, 1000, mean_tokens=10)], scoring=DEFAULTS)
+    assert ranking.scores
+
+    assert allocate_model_pool(ranking.scores, total_units=TOTAL, rank_shares_bp=(0, 0)) == {}
 
 
 def test_empty_rank_shares_are_refused() -> None:
     with pytest.raises(ScoringError, match="rank shares are empty"):
-        allocate_model_pool([], pool=500_000, rank_shares_bp=())
+        allocate_model_pool([], total_units=TOTAL, rank_shares_bp=())
 
 
 def test_negative_rank_shares_are_refused() -> None:
     with pytest.raises(ScoringError, match="must not be negative"):
-        allocate_model_pool([], pool=500_000, rank_shares_bp=(3000, -1))
+        allocate_model_pool([], total_units=TOTAL, rank_shares_bp=(3000, -1))
 
 
-def test_a_negative_model_pool_is_refused() -> None:
+def test_a_negative_weight_pool_is_refused() -> None:
     with pytest.raises(ScoringError, match="must not be negative"):
-        allocate_model_pool([], pool=-1, rank_shares_bp=(3000,))
+        allocate_model_pool([], total_units=-1, rank_shares_bp=(3000,))
 
 
 class TestAZeroScoreIsNeverPaid:
@@ -345,13 +345,13 @@ class TestAZeroScoreIsNeverPaid:
         dead = [ModelEvaluation(hotkey="hk-broken", correct_count=0, scored_count=1000)]
         allocation = allocate_model_pool(
             score_models(dead, scoring=DEFAULTS).scores,
-            pool=500_000,
-            rank_shares_bp=(3000, 1500, 500),
+            total_units=TOTAL,
+            rank_shares_bp=V3_SHARES,
         )
         assert allocation == {}
 
     def test_a_dead_model_does_not_take_emission_off_the_honest_field(self) -> None:
-        """It used to collect 500bp of total miner emission for doing nothing."""
+        """Third place would otherwise collect 100bp of total emission for doing nothing."""
         field = [
             ModelEvaluation("hk-a", 850, 1000, 100_000, 1000),
             ModelEvaluation("hk-b", 851, 1000, 102_000, 1000),
@@ -359,18 +359,17 @@ class TestAZeroScoreIsNeverPaid:
         ]
         allocation = allocate_model_pool(
             score_models(field, scoring=DEFAULTS).scores,
-            pool=500_000,
-            rank_shares_bp=(3000, 1500, 500),
+            total_units=TOTAL,
+            rank_shares_bp=V3_SHARES,
         )
         assert "hk-grief" not in allocation
-        assert sum(allocation.values()) == 500_000
         assert set(allocation) == {"hk-a", "hk-b"}
 
     def test_an_all_zero_field_burns_rather_than_paying_alphabetically(self) -> None:
         """The worst version of the bug.
 
         With every score zero, ranking falls through to the hotkey tie-break,
-        so half of miner emission would be handed out in lexicographic order,
+        so model emission would be handed out in lexicographic order,
         identically on every validator, so consensus cannot correct it.
         """
         field = [
@@ -379,8 +378,8 @@ class TestAZeroScoreIsNeverPaid:
         ]
         allocation = allocate_model_pool(
             score_models(field, scoring=DEFAULTS).scores,
-            pool=500_000,
-            rank_shares_bp=(3000, 1500, 500),
+            total_units=TOTAL,
+            rank_shares_bp=V3_SHARES,
         )
         assert allocation == {}
 
@@ -461,10 +460,10 @@ class TestAModelMustBeMeasuredBeforeItIsPaid:
         ]
         allocation = allocate_model_pool(
             score_models(field, scoring=DEFAULTS).scores,
-            pool=500_000,
-            rank_shares_bp=(3000, 1500, 500),
+            total_units=TOTAL,
+            rank_shares_bp=V3_SHARES,
         )
-        assert allocation == {"hk-careful": 500_000}
+        assert allocation == {"hk-careful": 250_000}
 
     def test_the_floor_is_configurable(self) -> None:
         field = [ModelEvaluation("hk-small", 40, 50, 5_000, 50)]

@@ -1,4 +1,7 @@
-"""Combining the halves: the vector always sums to the pool, burn included."""
+"""Combining the pools: fixed shares of the total, unclaimed shares burn.
+
+Expected values are worked by hand: 1,000,000 units, 70% data, 25/4/1% models.
+"""
 
 from __future__ import annotations
 
@@ -12,26 +15,22 @@ from prometheon.scoring.model import ModelEvaluation, ModelScore, score_models
 
 pytestmark = pytest.mark.unit
 
-# These exercise the allocation arithmetic, not the subnet's policy numbers, so
-# they state the split they rely on instead of inheriting it. The shipped split
-# is pinned separately, in `tests/contract/test_shipped_artifacts.py`; without
-# that separation every policy change rewrites unrelated expected values here.
-EVEN_SPLIT_BP = 5000
-#: A burn of 40%, stated rather than inherited. These tests exercise the burn
-#: overlay, so the field has to be named here: the shipped default is 0, and a
-#: fixture that inherited it would test the burn arithmetic with no burn.
-BURN_BP = 4000
-DEFAULTS = ScoringConfig(miner_burn_share_bp=BURN_BP, dataset_share_bp=EVEN_SPLIT_BP)
-NO_BURN = ScoringConfig(
-    miner_burn_share_bp=0, dataset_share_bp=EVEN_SPLIT_BP
-)  # isolate the allocation math
+# Stated rather than inherited, so these tests exercise the arithmetic of the
+# split they name. The shipped split is pinned in
+# `tests/contract/test_shipped_artifacts.py`.
+V3 = ScoringConfig(dataset_share_bp=7000, dataset_top_n=10, model_rank_shares_bp=(2500, 400, 100))
 OWNER = "hk-subnet-owner"
 
 
-def _dataset(*pairs: tuple[str, int, int]) -> tuple[DatasetScore, ...]:
+def _dataset(*rows: tuple[str, int, int, int]) -> tuple[DatasetScore, ...]:
     return score_dataset(
-        DatasetSubmission(hotkey=hotkey, submitted_count=submitted, valid_count=valid)
-        for hotkey, submitted, valid in pairs
+        DatasetSubmission(
+            hotkey=hotkey,
+            submitted_count=submitted,
+            violating_confirmed=v_pos,
+            compliant_confirmed=v_neg,
+        )
+        for hotkey, submitted, v_pos, v_neg in rows
     )
 
 
@@ -47,230 +46,191 @@ def _models(*pairs: tuple[str, int]) -> tuple[ModelScore, ...]:
             )
             for hotkey, correct in pairs
         ],
-        scoring=DEFAULTS,
+        scoring=V3,
     ).scores
 
 
-def test_a_full_field_allocates_the_whole_pool_with_nothing_burned() -> None:
+def test_a_full_field_pays_seventy_twenty_five_four_one_and_burns_nothing() -> None:
     split = combine_weights(
-        dataset_scores=_dataset(("hk-d1", 100, 50), ("hk-d2", 100, 50)),
+        dataset_scores=_dataset(("hk-d1", 20, 10, 10), ("hk-d2", 20, 10, 10)),
         model_scores=_models(("hk-m1", 900), ("hk-m2", 800), ("hk-m3", 700)),
-        scoring=NO_BURN,
+        scoring=V3,
         burn_hotkey=OWNER,
     )
 
-    assert split.total_units == DEFAULT_WEIGHT_POOL_UNITS
-    assert sum(split.weights.values()) == DEFAULT_WEIGHT_POOL_UNITS
+    assert dict(split.weights) == {
+        "hk-d1": 350_000,
+        "hk-d2": 350_000,
+        "hk-m1": 250_000,
+        "hk-m2": 40_000,
+        "hk-m3": 10_000,
+    }
     assert split.burn_units == 0
     assert OWNER not in split.weights
-    assert dict(split.weights) == {
-        "hk-d1": 250_000,
-        "hk-d2": 250_000,
-        "hk-m1": 300_000,
-        "hk-m2": 150_000,
-        "hk-m3": 50_000,
-    }
-
-
-def test_the_halves_are_kept_so_a_weight_can_be_explained() -> None:
-    split = combine_weights(
-        dataset_scores=_dataset(("hk-a", 100, 50)),
-        model_scores=_models(("hk-a", 900)),
-        scoring=NO_BURN,
-        burn_hotkey=OWNER,
-    )
-
-    assert dict(split.dataset_units) == {"hk-a": 500_000}
-    assert dict(split.model_units) == {"hk-a": 500_000}
-
-
-def test_a_miner_that_wins_both_halves_is_one_entry_holding_both() -> None:
-    split = combine_weights(
-        dataset_scores=_dataset(("hk-a", 100, 50), ("hk-b", 100, 50)),
-        model_scores=_models(("hk-a", 900), ("hk-c", 800)),
-        scoring=NO_BURN,
-        burn_hotkey=OWNER,
-    )
-
-    # Half the dataset pool, plus rank 1 of a two-model field: 3000/4500.
-    assert split.weights["hk-a"] == 250_000 + 333_333
-    assert split.weights["hk-c"] == 166_667
     assert sum(split.weights.values()) == DEFAULT_WEIGHT_POOL_UNITS
-    assert split.burn_units == 0
 
 
-def test_no_dataset_contributors_burns_the_dataset_half_only() -> None:
+def test_one_model_collects_twenty_five_percent_and_five_burns() -> None:
+    """The spec's own example: a single weak model cannot take the whole pool."""
     split = combine_weights(
-        dataset_scores=_dataset(("hk-a", 40, 0)),
+        dataset_scores=_dataset(("hk-d1", 20, 10, 10)),
+        model_scores=_models(("hk-m1", 600)),
+        scoring=V3,
+        burn_hotkey=OWNER,
+    )
+
+    assert dict(split.weights) == {"hk-d1": 700_000, "hk-m1": 250_000, OWNER: 50_000}
+    assert split.burn_units == 50_000
+
+
+def test_two_models_take_their_own_shares_and_the_third_burns() -> None:
+    split = combine_weights(
+        dataset_scores=_dataset(("hk-d1", 20, 10, 10)),
+        model_scores=_models(("hk-m1", 900), ("hk-m2", 800)),
+        scoring=V3,
+        burn_hotkey=OWNER,
+    )
+
+    assert split.weights["hk-m1"] == 250_000
+    assert split.weights["hk-m2"] == 40_000
+    assert split.burn_units == 10_000
+
+
+def test_a_fourth_model_is_not_paid() -> None:
+    split = combine_weights(
+        dataset_scores=(),
+        model_scores=_models(("hk-m1", 900), ("hk-m2", 800), ("hk-m3", 700), ("hk-m4", 600)),
+        scoring=V3,
+        burn_hotkey=OWNER,
+    )
+
+    assert "hk-m4" not in split.weights
+    assert dict(split.model_units) == {"hk-m1": 250_000, "hk-m2": 40_000, "hk-m3": 10_000}
+
+
+def test_no_data_contributor_burns_the_seventy_percent() -> None:
+    split = combine_weights(
+        dataset_scores=_dataset(("hk-flood", 500, 0, 500)),
         model_scores=_models(("hk-m1", 900), ("hk-m2", 800), ("hk-m3", 700)),
-        scoring=NO_BURN,
+        scoring=V3,
         burn_hotkey=OWNER,
     )
 
-    assert split.burn_units == 500_000
-    assert split.weights[OWNER] == 500_000
-    assert "hk-a" not in split.weights
-    assert sum(split.weights.values()) == DEFAULT_WEIGHT_POOL_UNITS
+    assert split.burn_units == 700_000
+    assert "hk-flood" not in split.weights
 
 
-def test_no_eligible_models_burns_the_model_half_only() -> None:
+def test_no_model_burns_the_thirty_percent() -> None:
     split = combine_weights(
-        dataset_scores=_dataset(("hk-d1", 100, 50), ("hk-d2", 100, 50)),
+        dataset_scores=_dataset(("hk-d1", 20, 10, 10)),
         model_scores=(),
-        scoring=NO_BURN,
+        scoring=V3,
         burn_hotkey=OWNER,
     )
 
-    assert split.burn_units == 500_000
-    assert dict(split.weights) == {"hk-d1": 250_000, "hk-d2": 250_000, OWNER: 500_000}
+    assert dict(split.weights) == {"hk-d1": 700_000, OWNER: 300_000}
 
 
 def test_an_empty_subnet_burns_everything() -> None:
+    split = combine_weights(dataset_scores=(), model_scores=(), scoring=V3, burn_hotkey=OWNER)
+
+    assert dict(split.weights) == {OWNER: DEFAULT_WEIGHT_POOL_UNITS}
+    assert split.burn_units == DEFAULT_WEIGHT_POOL_UNITS
+    assert not split.earned_units
+
+
+def test_a_miner_in_both_pools_is_one_entry_holding_both() -> None:
     split = combine_weights(
-        dataset_scores=(),
-        model_scores=(),
-        scoring=NO_BURN,
+        dataset_scores=_dataset(("hk-a", 20, 10, 10), ("hk-b", 20, 10, 10)),
+        model_scores=_models(("hk-a", 900)),
+        scoring=V3,
         burn_hotkey=OWNER,
     )
 
-    assert split.burn_units == DEFAULT_WEIGHT_POOL_UNITS
-    assert dict(split.weights) == {OWNER: DEFAULT_WEIGHT_POOL_UNITS}
+    assert split.weights["hk-a"] == 350_000 + 250_000
+    assert split.earned_units["hk-a"] == 600_000
+    assert split.burn_units == 50_000
 
 
-def test_the_burn_hotkey_may_also_earn_and_its_units_add() -> None:
+def test_the_burn_hotkey_may_also_earn_and_its_earnings_stay_separate_from_burn() -> None:
+    """B5: a published record must be able to tell the owner's earnings from burn."""
     split = combine_weights(
-        dataset_scores=_dataset((OWNER, 100, 50)),
+        dataset_scores=_dataset((OWNER, 20, 10, 10)),
         model_scores=(),
-        scoring=NO_BURN,
+        scoring=V3,
         burn_hotkey=OWNER,
     )
 
     assert split.weights[OWNER] == DEFAULT_WEIGHT_POOL_UNITS
-    assert split.burn_units == 500_000
-    assert dict(split.dataset_units) == {OWNER: 500_000}
+    assert split.earned_units == {OWNER: 700_000}
+    assert split.burn_units == 300_000
 
 
-def test_the_share_split_follows_config_and_the_halves_never_drift_apart() -> None:
-    scoring = ScoringConfig(dataset_share_bp=7777, miner_burn_share_bp=0)
+def test_shares_below_one_hundred_percent_leave_a_standing_burn() -> None:
+    scoring = ScoringConfig(dataset_share_bp=6000, model_rank_shares_bp=(2500, 400, 100))
     split = combine_weights(
-        dataset_scores=_dataset(("hk-d1", 100, 50)),
-        model_scores=_models(("hk-m1", 900)),
+        dataset_scores=_dataset(("hk-d1", 20, 10, 10)),
+        model_scores=_models(("hk-m1", 900), ("hk-m2", 800), ("hk-m3", 700)),
         scoring=scoring,
         burn_hotkey=OWNER,
-        total_units=1_000_001,
     )
 
-    # 1_000_001 * 7777 // 10000, floored. The model half takes the whole
-    # remainder rather than being computed from its own rounded share.
-    assert split.weights["hk-d1"] == 777_700
-    assert split.weights["hk-m1"] == 222_301
-    assert sum(split.weights.values()) == 1_000_001
+    assert split.weights["hk-d1"] == 600_000
+    assert split.burn_units == 100_000
 
 
-def test_the_vector_is_identical_whatever_order_the_snapshot_arrived_in() -> None:
-    dataset_pairs = (("hk-d3", 90, 30), ("hk-d1", 100, 50), ("hk-d2", 77, 41))
+def test_the_vector_is_identical_whatever_order_the_inputs_arrived_in() -> None:
+    dataset_rows = (("hk-d3", 90, 30, 20), ("hk-d1", 100, 50, 50), ("hk-d2", 77, 21, 20))
     model_pairs = (("hk-m2", 811), ("hk-m1", 900), ("hk-m3", 700))
 
     forward = combine_weights(
-        dataset_scores=_dataset(*dataset_pairs),
+        dataset_scores=_dataset(*dataset_rows),
         model_scores=_models(*model_pairs),
-        scoring=NO_BURN,
+        scoring=V3,
         burn_hotkey=OWNER,
     )
     backward = combine_weights(
-        dataset_scores=_dataset(*reversed(dataset_pairs)),
+        dataset_scores=_dataset(*reversed(dataset_rows)),
         model_scores=_models(*reversed(model_pairs)),
-        scoring=NO_BURN,
+        scoring=V3,
         burn_hotkey=OWNER,
     )
 
     assert dict(forward.weights) == dict(backward.weights)
-    assert list(forward.weights) == list(backward.weights)
 
 
-def test_awkward_totals_still_sum_exactly() -> None:
-    for total in (1, 7, 999, 65_535, 1_000_003):
-        split = combine_weights(
-            dataset_scores=_dataset(("hk-d1", 100, 50), ("hk-d2", 100, 37)),
-            model_scores=_models(("hk-m1", 900), ("hk-m2", 800), ("hk-m3", 700)),
-            scoring=NO_BURN,
-            burn_hotkey=OWNER,
-            total_units=total,
-        )
-        assert sum(split.weights.values()) == total, total
-        assert split.burn_units >= 0
+@pytest.mark.parametrize("total", [1, 7, 999, 65_535, 1_000_003])
+def test_awkward_totals_still_sum_exactly(total: int) -> None:
+    split = combine_weights(
+        dataset_scores=_dataset(("hk-d1", 100, 50, 50), ("hk-d2", 100, 37, 30)),
+        model_scores=_models(("hk-m1", 900), ("hk-m2", 800), ("hk-m3", 700)),
+        scoring=V3,
+        burn_hotkey=OWNER,
+        total_units=total,
+    )
+    assert sum(split.weights.values()) == total
+    assert split.burn_units >= 0
 
 
 def test_a_non_positive_pool_is_refused() -> None:
     with pytest.raises(ScoringError, match="must be positive"):
         combine_weights(
-            dataset_scores=(),
-            model_scores=(),
-            scoring=NO_BURN,
-            burn_hotkey=OWNER,
-            total_units=0,
+            dataset_scores=(), model_scores=(), scoring=V3, burn_hotkey=OWNER, total_units=0
         )
 
 
 def test_an_empty_burn_hotkey_is_refused_so_units_cannot_vanish() -> None:
     with pytest.raises(ScoringError, match="burn hotkey is required"):
-        combine_weights(
-            dataset_scores=(),
-            model_scores=(),
-            scoring=NO_BURN,
-            burn_hotkey="",
-        )
+        combine_weights(dataset_scores=(), model_scores=(), scoring=V3, burn_hotkey="")
 
 
-# --- The fixed burn overlay (miner_burn_share_bp) ---------------------------
+class TestTheSharesAreValidatedAtLoad:
+    def test_shares_over_one_hundred_percent_are_refused(self) -> None:
+        with pytest.raises(ValueError, match="over 100%"):
+            ScoringConfig(dataset_share_bp=8000, model_rank_shares_bp=(2500, 400, 100))
 
-
-def test_the_fixed_burn_share_comes_off_the_top_before_any_miner() -> None:
-    # DEFAULTS burns 40% to the owner; miners compete for the other 60%, and
-    # this fixture splits that pool evenly to keep the arithmetic readable.
-    split = combine_weights(
-        dataset_scores=_dataset(("hk-d1", 100, 50), ("hk-d2", 100, 50)),
-        model_scores=_models(("hk-m1", 900), ("hk-m2", 800), ("hk-m3", 700)),
-        scoring=DEFAULTS,
-        burn_hotkey=OWNER,
-    )
-
-    assert split.burn_units == 400_000
-    assert split.weights[OWNER] == 400_000
-    miners = {hk: w for hk, w in split.weights.items() if hk != OWNER}
-    assert sum(miners.values()) == 600_000
-    assert miners == {
-        "hk-d1": 150_000,
-        "hk-d2": 150_000,
-        "hk-m1": 180_000,
-        "hk-m2": 90_000,
-        "hk-m3": 30_000,
-    }
-    assert sum(split.weights.values()) == DEFAULT_WEIGHT_POOL_UNITS
-
-
-def test_an_empty_half_burns_on_top_of_the_fixed_share() -> None:
-    # No models: the model half of the 60% miner pool (30% of total) burns too,
-    # so 70% burns and the dataset contributors split the remaining 30%.
-    split = combine_weights(
-        dataset_scores=_dataset(("hk-d1", 100, 50), ("hk-d2", 100, 50)),
-        model_scores=(),
-        scoring=DEFAULTS,
-        burn_hotkey=OWNER,
-    )
-
-    assert split.burn_units == 700_000
-    assert dict(split.weights) == {"hk-d1": 150_000, "hk-d2": 150_000, OWNER: 700_000}
-
-
-def test_the_burn_share_is_configurable() -> None:
-    split = combine_weights(
-        dataset_scores=_dataset(("hk-d1", 100, 50), ("hk-d2", 100, 50)),
-        model_scores=_models(("hk-m1", 900), ("hk-m2", 800), ("hk-m3", 700)),
-        scoring=ScoringConfig(miner_burn_share_bp=8000),  # 80% burns, 20% to miners
-        burn_hotkey=OWNER,
-    )
-
-    assert split.burn_units == 800_000
-    assert split.weights[OWNER] == 800_000
-    assert sum(w for hk, w in split.weights.items() if hk != OWNER) == 200_000
+    def test_the_shipped_defaults_are_the_v3_rules(self) -> None:
+        scoring = ScoringConfig()
+        assert scoring.dataset_share_bp == 7000
+        assert scoring.dataset_top_n == 10
+        assert scoring.model_rank_shares_bp == (2500, 400, 100)

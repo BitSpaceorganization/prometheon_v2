@@ -318,9 +318,15 @@ class MinerResult(_Strict):
     #: The integer weight actually submitted for this miner.
     weight: int = Field(ge=0)
 
+    #: ``S``: the miner's test items left after near-duplicate removal.
     dataset_submitted_count: int = Field(ge=0)
+    #: ``V_pos + V_neg``: claims the labeller confirmed, either class.
     dataset_valid_count: int = Field(ge=0)
-    #: ``V^2/S`` scaled by 1e6 and floored.
+    #: ``V_pos``: claimed violating, confirmed violating.
+    dataset_violating_confirmed: int = Field(ge=0)
+    #: ``V_neg``: claimed compliant, confirmed compliant.
+    dataset_compliant_confirmed: int = Field(ge=0)
+    #: ``2 * min(V_pos, V_neg) * (V_pos + V_neg) / S``, scaled by 1e6 and floored.
     dataset_score_micro: int = Field(ge=0)
 
     model_status: ModelStatus
@@ -400,9 +406,11 @@ class EvaluationSubmission(_Strict):
 
 def _result_payload(result: MinerResult) -> dict[str, Any]:
     return {
+        "dataset_compliant_confirmed": result.dataset_compliant_confirmed,
         "dataset_score_micro": result.dataset_score_micro,
         "dataset_submitted_count": result.dataset_submitted_count,
         "dataset_valid_count": result.dataset_valid_count,
+        "dataset_violating_confirmed": result.dataset_violating_confirmed,
         "efficiency_penalty_bp": result.efficiency_penalty_bp,
         "hotkey": result.hotkey,
         "mean_total_tokens_milli": result.mean_total_tokens_milli,

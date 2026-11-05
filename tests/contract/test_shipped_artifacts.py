@@ -79,28 +79,20 @@ class TestTheShippedConfigsLoad:
 
     @pytest.mark.parametrize("path", _configs(), ids=lambda p: p.name)
     def test_the_shipped_split_is_the_agreed_one(self, path: Path) -> None:
-        """Nothing burns, 50% pays for data, 50% pays for models.
+        """70% data to the top 10, then 25%, 4% and 1% of total to three models.
 
-        These three numbers are the subnet's economics, and they are *config*,
-        not code: two validators running identical code but different values
+        These numbers are the subnet's economics, and they are *config*, not
+        code: two validators running identical code but different values
         compute different weight vectors and disagree on chain. Pinning them
         here means a change has to be deliberate and has to land in every
-        shipped example at once.
-
-        A zero burn is the one worth stating out loud: every unit of miner
-        emission reaches a miner, and a validator that raises it is making a
-        visible claim on emission the field competed for.
+        shipped example at once. Together they cover 100%, so nothing burns
+        unless a share goes unclaimed.
         """
         scoring = load_config(path).scoring
-        total = 1_000_000
-        pool = total * (10_000 - scoring.miner_burn_share_bp) // 10_000
-        dataset = pool * scoring.dataset_share_bp // 10_000
-        model = pool - dataset
-        burn = total - pool
-
-        assert burn / total == pytest.approx(0.00, abs=0.001), f"{path.name}: burn"
-        assert dataset / total == pytest.approx(0.50, abs=0.001), f"{path.name}: dataset"
-        assert model / total == pytest.approx(0.50, abs=0.001), f"{path.name}: model"
+        assert scoring.dataset_share_bp == 7000, path.name
+        assert scoring.dataset_top_n == 10, path.name
+        assert scoring.model_rank_shares_bp == (2500, 400, 100), path.name
+        assert scoring.dataset_share_bp + sum(scoring.model_rank_shares_bp) == 10_000
 
 
 class TestTheShippedPolicyIsUsable:

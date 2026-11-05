@@ -248,10 +248,10 @@ class _FakeEngine:
 
     def moderate(self, policy: str, items: Any) -> Any:
         verdicts = []
-        for index, (item_id, _content) in enumerate(items):
+        for index, (item_id, content) in enumerate(items):
             # Deterministic: the first `accuracy` fraction of each batch is right.
             correct = index < len(items) * self.accuracy
-            truthful = item_id.startswith("t")
+            truthful = "threatening" in content
             verdicts.append(
                 Verdict(item_id=item_id, violates=truthful if correct else not truthful)
             )
@@ -298,16 +298,16 @@ def config() -> Config:
         # The corpus here is small, so the production floor would exclude
         # everybody. Lowered rather than inflating the fixture, because the
         # composition is what is under test.
-        scoring=ScoringConfig(model_min_scored_items=1, miner_burn_share_bp=4000),
+        scoring=ScoringConfig(model_min_scored_items=1),
     )
 
 
-def test_dataset_valid_is_only_correctly_labelled_items() -> None:
-    """V rewards accurate labelling of both classes and cannot be gamed.
+def test_only_confirmed_claims_count_and_each_in_its_own_class() -> None:
+    """V_pos and V_neg count claims the labeller confirmed, by class.
 
-    A claim the labeller confirms is valid; a mislabelled claim (either
-    direction) and an unlabellable item are submitted but not valid. This is
-    what stops a miner inflating V by claiming everything violates.
+    A claim the labeller confirms counts towards its own class; a mislabelled
+    claim (either direction) and an unlabellable item count in S only. This is
+    what stops a miner inflating either V by claiming everything one way.
     """
     from prometheon.cli.cycle import _dataset_submissions
 
@@ -332,19 +332,25 @@ def test_dataset_valid_is_only_correctly_labelled_items() -> None:
 
     (submission,) = _dataset_submissions(snapshot, labelled)
     assert submission.submitted_count == 5
-    assert submission.valid_count == 2
+    assert submission.violating_confirmed == 1
+    assert submission.compliant_confirmed == 1
 
 
 @pytest.fixture
 def world(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setenv("PROMETHEON_TEST_KEY", "test-key")
 
+    # Each miner contributes ten items, five claimed violating and five claimed
+    # compliant, and every claim is true. The v3 data score pays for pairs, so a
+    # fixture with only one class would score zero and test nothing.
     test_items = [
         ContentItem(
             id=f"t{n:03d}",
-            content=f"a threatening message {n}",
+            content=(
+                f"a threatening message {n}" if (n // 2) % 2 == 0 else f"a friendly message {n}"
+            ),
             author_hotkey=(MINER_A if n % 2 == 0 else MINER_B).ss58_address,
-            claimed_violating=True,
+            claimed_violating=(n // 2) % 2 == 0,
             submitted_at=1,
         )
         for n in range(20)
@@ -386,8 +392,8 @@ def world(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         model_commitments=commitments,
     )
 
-    # Every test item genuinely violates; production items do not.
-    truth = {item.id: True for item in test_items}
+    # Every claim is true; production items do not violate.
+    truth = {item.id: item.claimed_violating for item in test_items}
     truth.update({item.id: False for item in production_items})
 
     return {
@@ -451,12 +457,15 @@ def test_a_whole_cycle_produces_a_submittable_weight_vector(
     # The burn hotkey is one entry in the vector, so the whole vector, miners
     # and burn together, always sums to the pool.
     assert sum(result.split.weights.values()) == 1_000_000
-    # The burn this fixture configures comes off the top before any miner is
-    # paid; a full field splits the rest. Stated in the fixture rather than
-    # inherited: the shipped default is 0, and this asserts the overlay works.
-    assert result.split.burn_units == 400_000
-    miner_units = sum(w for hk, w in result.split.weights.items() if hk != result.split.burn_hotkey)
-    assert miner_units == 600_000
+    # Both miners score 10 on data (5 + 5 confirmed of 10) and split 70%. A is
+    # the better model and takes 25%, B takes 4%, and the empty third rank's 1%
+    # burns.
+    assert dict(result.split.weights) == {
+        MINER_A.ss58_address: 350_000 + 250_000,
+        MINER_B.ss58_address: 350_000 + 40_000,
+        VALIDATOR.ss58_address: 10_000,
+    }
+    assert result.split.burn_units == 10_000
 
     receipt = submit_weights(
         result,
@@ -627,6 +636,8 @@ def test_the_published_record_describes_the_weights_that_were_sent(
         assert row.model_status.value == "evaluated"
         assert row.dataset_submitted_count == 10
         assert row.dataset_valid_count == 10
+        assert row.dataset_violating_confirmed == 5
+        assert row.dataset_compliant_confirmed == 5
 
 
 def test_the_corpus_hash_is_stable_across_two_identical_runs(

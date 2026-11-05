@@ -84,11 +84,7 @@ from prometheon.registry.validation import (
 from prometheon.scoring.combine import WeightSplit, combine_weights
 from prometheon.scoring.dataset import DatasetSubmission, score_dataset
 from prometheon.scoring.model import ModelEvaluation, ModelRanking, score_models
-
-#: Bumped when a change here would make two validators compute different
-#: weights from identical inputs. Published in every evaluation record so a
-#: divergence can be attributed to a version skew rather than to a disagreement.
-SCORING_VERSION = "prometheon-scoring/2.1"
+from prometheon.version import SCORING_VERSION
 
 _BASIS_POINTS = 10_000
 
@@ -384,6 +380,8 @@ def build_results(result: CycleResult) -> tuple[MinerResult, ...]:
                 weight=result.split.weights.get(hotkey, 0),
                 dataset_submitted_count=dataset.submitted_count if dataset else 0,
                 dataset_valid_count=dataset.valid_count if dataset else 0,
+                dataset_violating_confirmed=dataset.violating_confirmed if dataset else 0,
+                dataset_compliant_confirmed=dataset.compliant_confirmed if dataset else 0,
                 dataset_score_micro=_micro(dataset.score) if dataset else 0,
                 model_status=_model_status(validation, evaluation),
                 model_items_scored=evaluation.total if evaluation else 0,
@@ -594,11 +592,11 @@ def _label_items_for(snapshot: DaySnapshot) -> list[LabelItem]:
 def _labelled_test(snapshot: DaySnapshot, labelled: LabelledCorpus) -> list[LabelledItem]:
     """Test items with whichever verdict the labeller gave them.
 
-    Negatives included. An item a user submitted believing it broke the policy
-    and that the labeller judged otherwise is a real negative example, and the
-    hardest kind to get right. It still costs its author -- it counts in ``S``
-    and not in ``V`` -- but the model half is measured on it rather than it
-    being discarded after being paid for.
+    Both classes, whatever the claim. An item whose claim the labeller rejected
+    is still a real example with a real label, and often a hard one. It still
+    costs its author, because it counts in ``S`` and in neither ``V``, but the
+    models are measured on it rather than it being discarded after being paid
+    for.
     """
     return [
         LabelledItem(
@@ -633,37 +631,42 @@ def _labelled_production(snapshot: DaySnapshot, labelled: LabelledCorpus) -> lis
 def _dataset_submissions(
     snapshot: DaySnapshot, labelled: LabelledCorpus
 ) -> list[DatasetSubmission]:
-    """Per-miner submitted and valid counts, derived by the validator itself.
+    """Per-miner ``S``, ``V_pos`` and ``V_neg``, derived by the validator itself.
 
     Counted from attributed test content and the validator's own labels rather
-    than read from the DB layer, so the numerator and denominator of the dataset
-    reward never come from the service being audited.
+    than read from the service that delivers the content, so the numbers the
+    data reward is computed from never come from the service being audited.
 
-    Excluded items count as submitted but not valid: an item the labeller could
-    not read is not a contribution, and treating it as neither would make
-    unlabellable content free to submit.
+    A claim counts only when the labeller confirms it, and only towards its own
+    class: claimed violating and labelled violating is ``V_pos``, claimed
+    compliant and labelled compliant is ``V_neg``. An item the labeller
+    disagreed with, or could not label at all, counts in ``S`` and in neither
+    ``V``. Treating an unlabellable item as neither would make unlabellable
+    content free to submit.
     """
     submitted: dict[str, int] = {}
-    valid: dict[str, int] = {}
+    violating: dict[str, int] = {}
+    compliant: dict[str, int] = {}
     for miner in snapshot.eligible_miners:
         submitted.setdefault(miner.hotkey, 0)
-        valid.setdefault(miner.hotkey, 0)
 
     for item in snapshot.test_items:
         if item.author_hotkey not in submitted:
             continue
         submitted[item.author_hotkey] += 1
-        # Valid = correctly labelled: the labeller's independent verdict matches
-        # the submitter's claim. Rewards accurate labelling of BOTH classes and
-        # stays un-gameable, a member cannot inflate V by claiming everything
-        # violates, because the labeller catches the false claim. An unlabellable
-        # item (verdict None) matches neither claim and so counts submitted, not
-        # valid.
-        if labelled.labels.get(item.id) == item.claimed_violating:
-            valid[item.author_hotkey] += 1
+        verdict = labelled.labels.get(item.id)
+        if verdict is None or verdict != item.claimed_violating:
+            continue
+        tally = violating if item.claimed_violating else compliant
+        tally[item.author_hotkey] = tally.get(item.author_hotkey, 0) + 1
 
     return [
-        DatasetSubmission(hotkey=hotkey, submitted_count=count, valid_count=valid.get(hotkey, 0))
+        DatasetSubmission(
+            hotkey=hotkey,
+            submitted_count=count,
+            violating_confirmed=violating.get(hotkey, 0),
+            compliant_confirmed=compliant.get(hotkey, 0),
+        )
         for hotkey, count in submitted.items()
     ]
 

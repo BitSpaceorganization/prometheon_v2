@@ -34,6 +34,8 @@ def result(hotkey: str, uid: int, weight: int) -> MinerResult:
         weight=weight,
         dataset_submitted_count=0,
         dataset_valid_count=0,
+        dataset_violating_confirmed=0,
+        dataset_compliant_confirmed=0,
         dataset_score_micro=0,
         model_status=ModelStatus.UNREACHABLE,
         model_items_scored=0,

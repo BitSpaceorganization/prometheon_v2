@@ -415,6 +415,8 @@ def submission(validator_keypair: Keypair) -> EvaluationSubmission:
                 weight=1,
                 dataset_submitted_count=1,
                 dataset_valid_count=1,
+                dataset_violating_confirmed=1,
+                dataset_compliant_confirmed=0,
                 dataset_score_micro=1_000_000,
                 model_status=ModelStatus.NOT_COMMITTED,
                 model_items_scored=0,

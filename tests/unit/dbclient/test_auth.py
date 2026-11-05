@@ -425,6 +425,8 @@ def _submission(hotkey: str) -> EvaluationSubmission:
                 weight=100,
                 dataset_submitted_count=2,
                 dataset_valid_count=1,
+                dataset_violating_confirmed=1,
+                dataset_compliant_confirmed=0,
                 dataset_score_micro=500_000,
                 model_status=ModelStatus.EVALUATED,
                 model_items_scored=10,

@@ -348,6 +348,8 @@ def _submission(hotkey: str, *, netuid: int = NETUID, burned: int = 0) -> Evalua
                 weight=65_535,
                 dataset_submitted_count=4,
                 dataset_valid_count=3,
+                dataset_violating_confirmed=2,
+                dataset_compliant_confirmed=1,
                 dataset_score_micro=2_250_000,
                 model_status=ModelStatus.EVALUATED,
                 model_items_scored=11,

@@ -202,6 +202,8 @@ def _submission(**overrides: object) -> EvaluationSubmission:
                 weight=1234,
                 dataset_submitted_count=10,
                 dataset_valid_count=8,
+                dataset_violating_confirmed=4,
+                dataset_compliant_confirmed=4,
                 dataset_score_micro=6_400_000,
                 model_status=ModelStatus.EVALUATED,
                 model_items_scored=100,
