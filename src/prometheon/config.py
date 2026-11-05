@@ -229,10 +229,10 @@ class ScoringConfig(BaseModel):
     #: than this many scoring above zero, the pool divides among those present.
     dataset_top_n: int = Field(default=10, ge=1)
 
-    #: The model pool: a fixed share of **total** emission per rank, 25%, 4% and
-    #: 1% for the first three models. Shares, not ratios. A rank with no model to
-    #: fill it is not handed to the ranks above it; it burns. So one weak model
-    #: alone collects 25% and the other 5% burns.
+    #: The model pool: a share of **total** emission per rank, 25%, 4% and 1% for
+    #: the first three models. A place nobody fills goes to the lowest-ranked
+    #: winner present: two models take 25% and 5%, one model takes all 30%. The
+    #: pool burns only when no model qualifies.
     #:
     #: Constrained here rather than at first use. An empty or negative-bearing
     #: tuple used to validate cleanly and only fail at ``allocate_model_pool``,

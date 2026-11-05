@@ -1,4 +1,4 @@
-"""Combining the pools: fixed shares of the total, unclaimed shares burn.
+"""Combining the pools: shares of the total, a pool burns only when nobody qualifies.
 
 Expected values are worked by hand: 1,000,000 units, 70% data, 25/4/1% models.
 """
@@ -70,8 +70,8 @@ def test_a_full_field_pays_seventy_twenty_five_four_one_and_burns_nothing() -> N
     assert sum(split.weights.values()) == DEFAULT_WEIGHT_POOL_UNITS
 
 
-def test_one_model_collects_twenty_five_percent_and_five_burns() -> None:
-    """The spec's own example: a single weak model cannot take the whole pool."""
+def test_one_model_collects_the_whole_thirty_percent() -> None:
+    """An unfilled place goes to the lowest winner present, so nothing burns."""
     split = combine_weights(
         dataset_scores=_dataset(("hk-d1", 20, 10, 10)),
         model_scores=_models(("hk-m1", 600)),
@@ -79,11 +79,11 @@ def test_one_model_collects_twenty_five_percent_and_five_burns() -> None:
         burn_hotkey=OWNER,
     )
 
-    assert dict(split.weights) == {"hk-d1": 700_000, "hk-m1": 250_000, OWNER: 50_000}
-    assert split.burn_units == 50_000
+    assert dict(split.weights) == {"hk-d1": 700_000, "hk-m1": 300_000}
+    assert split.burn_units == 0
 
 
-def test_two_models_take_their_own_shares_and_the_third_burns() -> None:
+def test_two_models_take_twenty_five_and_five_percent() -> None:
     split = combine_weights(
         dataset_scores=_dataset(("hk-d1", 20, 10, 10)),
         model_scores=_models(("hk-m1", 900), ("hk-m2", 800)),
@@ -92,8 +92,8 @@ def test_two_models_take_their_own_shares_and_the_third_burns() -> None:
     )
 
     assert split.weights["hk-m1"] == 250_000
-    assert split.weights["hk-m2"] == 40_000
-    assert split.burn_units == 10_000
+    assert split.weights["hk-m2"] == 50_000
+    assert split.burn_units == 0
 
 
 def test_a_fourth_model_is_not_paid() -> None:
@@ -147,9 +147,10 @@ def test_a_miner_in_both_pools_is_one_entry_holding_both() -> None:
         burn_hotkey=OWNER,
     )
 
-    assert split.weights["hk-a"] == 350_000 + 250_000
-    assert split.earned_units["hk-a"] == 600_000
-    assert split.burn_units == 50_000
+    # A is the only model, so it holds the whole 30%.
+    assert split.weights["hk-a"] == 350_000 + 300_000
+    assert split.earned_units["hk-a"] == 650_000
+    assert split.burn_units == 0
 
 
 def test_the_burn_hotkey_may_also_earn_and_its_earnings_stay_separate_from_burn() -> None:

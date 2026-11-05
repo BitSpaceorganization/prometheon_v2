@@ -417,12 +417,11 @@ def test_a_whole_cycle_produces_the_exact_v3_vector(
 
     assert len(result.corpus.items) == 24 + 30
     # A and B each score 2 * min(5, 5) * 10/10 = 10 and split 70%. C is below
-    # the floor. A is the better model and takes 25%, B 4%, and the empty third
-    # rank's 1% burns to the owner.
+    # the floor. A is the better model and takes 25%; B is second and, with no
+    # third model, also takes the empty third place: 4% + 1%. Nothing burns.
     assert dict(result.split.weights) == {
         MINER_A.ss58_address: 350_000 + 250_000,
-        MINER_B.ss58_address: 350_000 + 40_000,
-        VALIDATOR.ss58_address: 10_000,
+        MINER_B.ss58_address: 350_000 + 50_000,
     }
 
     sent = submit_weights(
@@ -437,7 +436,7 @@ def test_a_whole_cycle_produces_the_exact_v3_vector(
     assert dict(sent.units) == dict(result.split.weights)
     on_chain = world["chain"].submitted[0]
     assert sum(on_chain["weights"]) == 65_535
-    assert on_chain["uids"] == [0, 1, 2]
+    assert on_chain["uids"] == [1, 2]
 
 
 def test_only_paid_models_of_eligible_miners_reach_the_registry(
@@ -617,7 +616,8 @@ def test_the_published_record_reproduces_the_vector(
         MINER_C.ss58_address,
     }
     rebuilt = {row.hotkey: row.weight for row in rows if row.weight}
-    rebuilt[result.burn_hotkey] = rebuilt.get(result.burn_hotkey, 0) + result.split.burn_units
+    if result.split.burn_units:
+        rebuilt[result.burn_hotkey] = rebuilt.get(result.burn_hotkey, 0) + result.split.burn_units
     assert rebuilt == dict(result.split.weights)
 
     by_hotkey = {row.hotkey: row for row in rows}
@@ -690,7 +690,7 @@ def test_a_model_that_cannot_be_run_costs_only_its_miner(
     assert by_hotkey[MINER_A.ss58_address].correct == by_hotkey[MINER_A.ss58_address].total
     rows = {row.hotkey: row for row in build_results(result)}
     assert rows[MINER_B.ss58_address].model_status is ModelStatus.UNREACHABLE
-    assert dict(result.split.model_units) == {MINER_A.ss58_address: 250_000}
+    assert dict(result.split.model_units) == {MINER_A.ss58_address: 300_000}
 
 
 def test_hugging_face_not_answering_stops_the_cycle_before_labelling(
@@ -715,7 +715,7 @@ def test_a_repository_the_miner_removed_costs_only_that_miner(
     result = _run(config, world, accuracy={}, monkeypatch=monkeypatch, registry=registry)
     rows = {row.hotkey: row for row in build_results(result)}
     assert rows[MINER_B.ss58_address].model_status is ModelStatus.INVALID
-    assert dict(result.split.model_units) == {MINER_A.ss58_address: 250_000}
+    assert dict(result.split.model_units) == {MINER_A.ss58_address: 300_000}
 
 
 class TestValidatorFaultsStopTheCycle:
