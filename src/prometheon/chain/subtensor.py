@@ -319,6 +319,53 @@ def blocks_until_weights_allowed(subtensor: Any, *, netuid: int, hotkey: str) ->
     return max(0, limit + 1 - elapsed)
 
 
+def read_stake_rao(subtensor: Any, *, coldkey: str, hotkey: str, netuid: int) -> int:
+    """Alpha one coldkey has staked on one hotkey on ``netuid``, in rao."""
+    try:
+        balance = subtensor.get_stake(coldkey_ss58=coldkey, hotkey_ss58=hotkey, netuid=netuid)
+    except Exception as exc:
+        raise SubtensorError(f"could not read the stake on netuid={netuid}: {exc}") from exc
+    rao = getattr(balance, "rao", balance)
+    try:
+        return int(rao)
+    except (TypeError, ValueError) as exc:
+        raise SubtensorError(
+            f"the SDK returned a stake this runtime cannot read: {balance!r}"
+        ) from exc
+
+
+def submit_transfer_stake(
+    subtensor: Any,
+    *,
+    wallet: Any,
+    destination_coldkey: str,
+    hotkey: str,
+    netuid: int,
+    amount_rao: int,
+) -> str | None:
+    """Move ``amount_rao`` of alpha stake on ``hotkey`` to another coldkey, same subnet.
+
+    This is how a miner pays the submission fee. The miner's own coldkey signs;
+    the destination only receives. Origin and destination netuid are the same,
+    which is the only kind of transfer the hub counts as a payment.
+    """
+    balance = _bittensor().utils.balance.Balance.from_rao(amount_rao, netuid=netuid)
+    try:
+        result = subtensor.transfer_stake(
+            wallet=wallet,
+            destination_coldkey_ss58=destination_coldkey,
+            hotkey_ss58=hotkey,
+            origin_netuid=netuid,
+            destination_netuid=netuid,
+            amount=balance,
+            wait_for_inclusion=True,
+            wait_for_finalization=True,
+        )
+    except Exception as exc:
+        raise SubtensorError(f"transfer_stake failed on netuid={netuid}: {exc}") from exc
+    return parse_extrinsic_response(result, operation="transfer_stake", error=SubtensorError)
+
+
 def submit_set_weights(
     subtensor: Any,
     *,
@@ -521,7 +568,9 @@ __all__ = [
     "detect_capabilities",
     "parse_extrinsic_response",
     "read_hyperparameters",
+    "read_stake_rao",
     "read_subnet_owner_hotkey",
     "submit_set_weights",
+    "submit_transfer_stake",
     "sync_metagraph_view",
 ]

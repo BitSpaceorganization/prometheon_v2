@@ -20,7 +20,7 @@ import os
 import sys
 from collections.abc import Sequence
 
-from prometheon.cli import miner, validator
+from prometheon.cli import credits, miner, validator
 from prometheon.cli._common import EXIT_FAILED, EXIT_USAGE, fail, note
 from prometheon.errors import PrometheonError
 from prometheon.version import __version__
@@ -86,6 +86,37 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--hf-repo")
     verify.add_argument("--hf-revision", help="check these values instead of the chain")
     verify.set_defaults(handler=miner.cmd_verify)
+
+    # -- credits ----------------------------------------------------------
+    credits_commands = commands.add_parser(
+        "credits", help="submission credits: read a balance, buy credits"
+    ).add_subparsers(dest="subcommand", required=True)
+    balance = with_config(
+        credits_commands.add_parser(
+            "balance",
+            help="show a coldkey's credits and ledger, from the hub's public route",
+        )
+    )
+    balance.add_argument("--address", help="coldkey or hotkey (default: your wallet's coldkey)")
+    balance.add_argument("--limit", type=int, default=10, help="ledger entries to show")
+    balance.set_defaults(handler=credits.cmd_balance)
+
+    buy = with_config(
+        credits_commands.add_parser(
+            "buy",
+            help="pay for credits: transfer_stake from your coldkey to the treasury",
+            description=(
+                "Moves alpha stake on the subnet from your coldkey to the treasury coldkey, "
+                "one credit per [credits] submission_fee_alpha. Prints the transfer first. "
+                "There are no refunds."
+            ),
+        )
+    )
+    buy.add_argument("--credits", type=int, default=1, help="credits to buy (default: 1)")
+    buy.add_argument("--hotkey", help="the hotkey your stake is on (default: your wallet's)")
+    buy.add_argument("--dry-run", action="store_true", help="print the transfer, send nothing")
+    buy.add_argument("--yes", action="store_true", help="send without asking to confirm")
+    buy.set_defaults(handler=credits.cmd_buy)
 
     # -- validator --------------------------------------------------------
     validator_commands = commands.add_parser(

@@ -144,6 +144,11 @@ def cmd_commit(args: argparse.Namespace) -> int:
     )
     note("")
     note(f"committed on netuid={config.chain.netuid}: {written}")
+    note(
+        "The model is evaluated from the next freeze at which its fee is covered: one "
+        "credit for a new model, nothing for re-committing the same weights. Check with "
+        "`prometheon credits balance`."
+    )
     return EXIT_OK
 
 

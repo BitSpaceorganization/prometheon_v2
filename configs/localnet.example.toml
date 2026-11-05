@@ -102,6 +102,14 @@ submit_weights = false
 dry_run = true
 submit_results = false
 
+[credits]
+# The treasury coldkey that submission fees are paid to. REQUIRED before
+# `prometheon credits buy` will send anything; published with the release that
+# launches the subnet. Can also come from PROMETHEON_TREASURY_COLDKEY.
+treasury_coldkey = ""
+# Alpha per credit. One credit covers one new model at one freeze.
+submission_fee_alpha = 50
+
 [miner]
 hf_repo = ""
 # The 40-character commit SHA, not a branch.

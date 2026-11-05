@@ -426,3 +426,23 @@ def test_a_rejected_commitment_raises_rather_than_reporting_success() -> None:
             netuid=42,
             commitment=ModelCommitment(hf_repo="acme/guard", hf_revision=REVISION),
         )
+
+
+def test_transfer_stake_takes_what_credits_buy_sends() -> None:
+    """`credits buy` passes these by name; a renamed parameter must fail here, not on chain."""
+    parameters = set(inspect.signature(bittensor.Subtensor.transfer_stake).parameters)
+    assert {
+        "wallet",
+        "destination_coldkey_ss58",
+        "hotkey_ss58",
+        "origin_netuid",
+        "destination_netuid",
+        "amount",
+        "wait_for_inclusion",
+        "wait_for_finalization",
+    } <= parameters
+
+
+def test_get_stake_takes_what_credits_buy_reads() -> None:
+    parameters = set(inspect.signature(bittensor.Subtensor.get_stake).parameters)
+    assert {"coldkey_ss58", "hotkey_ss58", "netuid"} <= parameters

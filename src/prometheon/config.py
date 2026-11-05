@@ -403,6 +403,20 @@ class ValidatorRuntimeConfig(BaseModel):
     submit_results: bool = True
 
 
+class CreditsConfig(BaseModel):
+    """Submission credits: what a model's evaluation costs, and who is paid."""
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", frozen=True)
+
+    #: The treasury coldkey that fees are paid to. There is no built-in
+    #: address: the team publishes it with the release that launches the
+    #: subnet, and ``credits buy`` refuses to send anything until it is set,
+    #: here or in ``PROMETHEON_TREASURY_COLDKEY``.
+    treasury_coldkey: str = ""
+    #: Alpha per credit. One credit covers one new model at one freeze.
+    submission_fee_alpha: int = Field(default=50, ge=1)
+
+
 class MinerRuntimeConfig(BaseModel):
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", frozen=True)
     hf_repo: str = Field(default="", max_length=256)
@@ -426,6 +440,7 @@ class Config(BaseModel):
     scoring: ScoringConfig = ScoringConfig()
     validator: ValidatorRuntimeConfig = ValidatorRuntimeConfig()
     miner: MinerRuntimeConfig = MinerRuntimeConfig()
+    credits: CreditsConfig = CreditsConfig()
 
 
 def load_config(path: Path | str) -> Config:
@@ -476,6 +491,7 @@ __all__ = [
     "ChainConfig",
     "ChainNetwork",
     "Config",
+    "CreditsConfig",
     "EvaluationConfig",
     "HubConfig",
     "LabellingConfig",
