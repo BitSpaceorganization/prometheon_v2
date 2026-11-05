@@ -505,3 +505,98 @@ class TestSdkCompatibilityGate:
 
         with pytest.raises(SubtensorError, match="set_weights"):
             adapter.assert_sdk_compatible(Decoy())
+
+
+class _Closable(CompatibleClient):
+    def __init__(self, *, refuse: bool = False) -> None:
+        self.closed = 0
+        self.refuse = refuse
+
+    def close(self) -> None:
+        self.closed += 1
+        if self.refuse:
+            raise RuntimeError("the socket is already gone")
+
+
+def _dial(monkeypatch: pytest.MonkeyPatch, clients: list[_Closable]) -> None:
+    pending = list(clients)
+
+    class Module:
+        @staticmethod
+        def Subtensor(*, network: str) -> Any:  # noqa: N802 - mirrors the SDK
+            return pending.pop(0)
+
+    monkeypatch.setattr(adapter, "_bittensor", lambda: Module)
+
+
+class TestConnectionsCloseBeforeTheProcessExits:
+    """A connection left to the garbage collector can hang the process at exit.
+
+    Seen on the local chain: `validator run` sent its weights, published its
+    record, then never exited, stuck closing a dead websocket during interpreter
+    shutdown. Every command that connects now closes what it opened.
+    """
+
+    def test_a_scope_closes_every_connection_opened_inside_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        clients = [_Closable(), _Closable()]
+        _dial(monkeypatch, clients)
+        with adapter.connection_scope():
+            adapter.connect("ws://127.0.0.1:9945")
+            adapter.connect("ws://127.0.0.1:9945")
+            assert [client.closed for client in clients] == [0, 0]
+        assert [client.closed for client in clients] == [1, 1]
+
+    def test_it_closes_them_when_the_command_fails(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client = _Closable()
+        _dial(monkeypatch, [client])
+        with pytest.raises(ValueError, match="boom"), adapter.connection_scope():
+            adapter.connect("ws://127.0.0.1:9945")
+            raise ValueError("boom")
+        assert client.closed == 1
+
+    def test_a_close_that_fails_does_not_mask_the_result(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        client = _Closable(refuse=True)
+        _dial(monkeypatch, [client])
+
+        @adapter.closes_connections
+        def command() -> int:
+            adapter.connect("ws://127.0.0.1:9945")
+            return 0
+
+        assert command() == 0
+        assert client.closed == 1
+
+    def test_a_client_without_close_is_left_alone(self) -> None:
+        adapter.disconnect(object())
+
+    def test_outside_a_scope_nothing_is_tracked(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client = _Closable()
+        _dial(monkeypatch, [client])
+        adapter.connect("ws://127.0.0.1:9945")
+        with adapter.connection_scope():
+            pass
+        assert client.closed == 0
+
+
+def test_every_command_that_connects_closes_its_connections() -> None:
+    """A new command that dials the chain must not forget the scope."""
+    import ast
+    import importlib
+    import inspect
+
+    for module_name in ("validator", "miner", "credits"):
+        module = importlib.import_module(f"prometheon.cli.{module_name}")
+        tree = ast.parse(inspect.getsource(module))
+        for node in tree.body:
+            if not isinstance(node, ast.FunctionDef):
+                continue
+            if "chain.connect(" not in ast.get_source_segment(inspect.getsource(module), node):
+                continue
+            decorators = {ast.unparse(decorator) for decorator in node.decorator_list}
+            assert "chain.closes_connections" in decorators, (
+                f"prometheon.cli.{module_name}.{node.name} connects without closing"
+            )

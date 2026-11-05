@@ -36,8 +36,12 @@ surface at startup, not as a wrong answer fourteen hours later.
 
 from __future__ import annotations
 
+import contextlib
+import functools
 import inspect
-from typing import Any, Final
+from collections.abc import Callable, Iterator
+from contextvars import ContextVar
+from typing import Any, Final, ParamSpec, TypeVar
 
 from prometheon.chain.metagraph import MetagraphView
 from prometheon.chain.weights import (
@@ -67,6 +71,14 @@ _REQUIRED_ACCESSORS: Final[tuple[str, ...]] = (
     "get_commitment",
     "set_weights",
 )
+
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+#: Connections opened inside the current :func:`connection_scope`, or ``None``
+#: outside one. A context variable, so a scheduler thread running a cycle keeps
+#: its own list.
+_OPENED: ContextVar[list[Any] | None] = ContextVar("prometheon_chain_connections", default=None)
 
 _PIN_ADVICE: Final[str] = (
     "this runtime drives the bittensor 10.x accessor API; pin 'bittensor>=10.5,<11'"
@@ -148,7 +160,54 @@ def connect(network: ChainNetwork | str) -> Any:
         raise SubtensorError(f"could not connect to subtensor on network={name!r}: {exc}") from exc
 
     assert_sdk_compatible(subtensor)
+    opened = _OPENED.get()
+    if opened is not None:
+        opened.append(subtensor)
     return subtensor
+
+
+def disconnect(subtensor: Any) -> None:
+    """Close a chain connection now, while the interpreter can still run threads.
+
+    Left to the garbage collector, the SDK's websocket is closed during
+    interpreter shutdown. If the socket died during the command -- a long,
+    CPU-bound evaluation starves its keepalive -- that close waits for a reader
+    thread that can no longer run, and the process never exits. That was seen
+    on the local chain: `validator run` had sent its weights and published its
+    record, then hung at exit. A process that never exits blocks the next
+    systemd run and piles up under cron.
+
+    Never raises: by the time this runs, the command's work is done or has
+    already failed for a reason worth reporting instead.
+    """
+    close = getattr(subtensor, "close", None)
+    if callable(close):
+        with contextlib.suppress(Exception):
+            close()
+
+
+@contextlib.contextmanager
+def connection_scope() -> Iterator[None]:
+    """Close every connection :func:`connect` opens inside this block, on the way out."""
+    opened: list[Any] = []
+    token = _OPENED.set(opened)
+    try:
+        yield
+    finally:
+        _OPENED.reset(token)
+        for subtensor in reversed(opened):
+            disconnect(subtensor)
+
+
+def closes_connections(handler: Callable[_P, _R]) -> Callable[_P, _R]:
+    """Run a command inside a :func:`connection_scope`."""
+
+    @functools.wraps(handler)
+    def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        with connection_scope():
+            return handler(*args, **kwargs)
+
+    return wrapper
 
 
 def detect_capabilities(subtensor: Any | None = None) -> ChainCapabilities:
@@ -564,8 +623,11 @@ def _summarise_failure(result: Any) -> str:
 
 __all__ = [
     "assert_sdk_compatible",
+    "closes_connections",
     "connect",
+    "connection_scope",
     "detect_capabilities",
+    "disconnect",
     "parse_extrinsic_response",
     "read_hyperparameters",
     "read_stake_rao",
