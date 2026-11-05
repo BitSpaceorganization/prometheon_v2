@@ -30,5 +30,4 @@ __all__ = [
     "eligible_miners",
     "file_allowed",
     "file_manifest",
-    "require_hot",
 ]

@@ -95,6 +95,33 @@ ITEM_PROMPT: Final[str] = """\
 Answer:"""
 
 
+def encode_item(tokenizer: Any, content: str) -> list[int]:
+    """The prompt tokens for one item, with the answer cue always last.
+
+    An item longer than ``MAX_CONTENT_TOKENS`` is cut inside its content, never
+    at the end of the prompt. v2 cut the encoded prompt's tail, which removed
+    ``=== END CONTENT ===`` and ``Answer:`` from long items, so the model was
+    asked for YES or NO in the middle of the content, without the cue (B12).
+    Items under the limit are encoded as one string, exactly as before.
+    """
+    item_ids: list[int] = tokenizer.encode(
+        ITEM_PROMPT.format(content=content), add_special_tokens=False
+    )
+    if len(item_ids) <= MAX_CONTENT_TOKENS + _FRAME_TOKEN_ALLOWANCE:
+        return item_ids
+    head, tail = ITEM_PROMPT.split("{content}")
+    content_ids: list[int] = tokenizer.encode(content, add_special_tokens=False)
+    return [
+        *tokenizer.encode(head, add_special_tokens=False),
+        *content_ids[:MAX_CONTENT_TOKENS],
+        *tokenizer.encode(tail, add_special_tokens=False),
+    ]
+
+
+#: Tokens the item frame itself may take, on top of the content.
+_FRAME_TOKEN_ALLOWANCE: Final[int] = 128
+
+
 class EngineError(EvaluationError):
     """The engine could not run this model at all."""
 
@@ -189,12 +216,18 @@ class ModerationEngine:
         # is visible both to a reader and to static analysis. `None` is the
         # library default and is correct for the usual case, where model_path is
         # a local snapshot already resolved at the committed commit.
-        self._tokenizer = AutoTokenizer.from_pretrained(self._model_path, revision=self._revision)
+        # `trust_remote_code=False` stated rather than left to the default: a
+        # miner's `config.json` can name custom code in `auto_map`, and nothing
+        # a miner ships may run on a validator.
+        self._tokenizer = AutoTokenizer.from_pretrained(
+            self._model_path, revision=self._revision, trust_remote_code=False
+        )
         self._model = AutoModelForCausalLM.from_pretrained(
             self._model_path,
             torch_dtype=dtype,
             device_map=device if device != "cpu" else None,
             revision=self._revision,
+            trust_remote_code=False,
         )
         if device == "cpu":
             self._model = self._model.to("cpu")
@@ -275,14 +308,7 @@ class ModerationEngine:
         encoded: list[tuple[str, list[int]]] = []
         content_tokens = 0
         for item_id, content in items:
-            item_ids = self._tokenizer.encode(
-                ITEM_PROMPT.format(content=content), add_special_tokens=False
-            )
-            # Defensive only: content is truncated at ingest so every model and
-            # the labeller see byte-identical text. Reaching this means the
-            # snapshot violated its own contract.
-            if len(item_ids) > MAX_CONTENT_TOKENS + 128:
-                item_ids = item_ids[: MAX_CONTENT_TOKENS + 128]
+            item_ids = encode_item(self._tokenizer, content)
             content_tokens += len(item_ids)
             encoded.append((item_id, item_ids))
 

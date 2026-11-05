@@ -16,6 +16,7 @@ this package missed a case, so it is a defect here.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from collections.abc import Sequence
 
@@ -181,6 +182,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         return EXIT_FAILED
     except BrokenPipeError:  # pragma: no cover - `| head` closing the pipe
         return EXIT_OK_ON_PIPE
+    except Exception as exc:
+        # A case this package missed. One greppable line rather than a
+        # traceback, with the way to get the traceback when it is needed (B24).
+        if os.environ.get("PROMETHEON_DEBUG"):
+            raise
+        note(
+            f"error [internal] {type(exc).__name__}: {exc}. This is a bug in prometheon; "
+            "rerun with PROMETHEON_DEBUG=1 for the traceback and report it"
+        )
+        return EXIT_FAILED
 
 
 #: Closing a pipe early is what `| head` does; it is not a failure.

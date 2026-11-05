@@ -313,7 +313,10 @@ def blocks_until_weights_allowed(subtensor: Any, *, netuid: int, hotkey: str) ->
         elapsed = int(subtensor.blocks_since_last_update(netuid, uid))
     except Exception:  # pragma: no cover - as above
         return 0
-    return max(0, limit - elapsed)
+    # The chain allows a new set only once *more* than `limit` blocks have
+    # passed. v2 returned 0 at exactly `limit`, so the send that followed was
+    # refused with no useful detail (B16).
+    return max(0, limit + 1 - elapsed)
 
 
 def submit_set_weights(
