@@ -102,6 +102,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument("--date", help="YYYY-MM-DD (default: yesterday)")
     run.add_argument("--policy", help="path to content_policy.md")
+    run.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "compute the day again even if this validator already computed it; by default "
+            "a run resumes from the last step it completed"
+        ),
+    )
     run.set_defaults(handler=validator.cmd_run)
 
     resubmit = with_config(

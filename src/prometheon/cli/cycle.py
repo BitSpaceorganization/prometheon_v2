@@ -328,9 +328,20 @@ def run_cycle(
     )
 
 
+@dataclass(frozen=True)
+class SubmittedAllocation:
+    """What actually went on chain, which the published record has to describe."""
+
+    receipt: str | None
+    #: Units as sent, after deregistered hotkeys' units moved to burn.
+    units: Mapping[str, int]
+    #: Hotkeys that had deregistered by the time of sending.
+    gone: tuple[str, ...]
+
+
 def submit_weights(
     result: CycleResult, *, config: Config, subtensor: Any, wallet: Any, mechid: int | None
-) -> str | None:
+) -> SubmittedAllocation:
     """Send the cycle's vector to the chain, against a fresh metagraph."""
     return submit_allocation(
         weights=result.split.weights,
@@ -350,7 +361,7 @@ def submit_allocation(
     subtensor: Any,
     wallet: Any,
     mechid: int | None,
-) -> str | None:
+) -> SubmittedAllocation:
     """Resolve one hotkey->units allocation against the chain and send it.
 
     Resolved against a **fresh** metagraph, not the one the cycle started with.
@@ -373,15 +384,19 @@ def submit_allocation(
     )
 
     fresh = chain.sync_metagraph_view(subtensor, netuid=config.chain.netuid)
-    _require_burn_target(fresh, burn_hotkey, netuid=config.chain.netuid)
     registered, gone = fresh.partition_by_registration(list(weights))
 
     units = {hotkey: weights[hotkey] for hotkey in registered}
     if gone:
         units[burn_hotkey] = units.get(burn_hotkey, 0) + sum(weights[hotkey] for hotkey in gone)
+    if units.get(burn_hotkey):
+        # Only when something actually burns. v2 refused every re-post while
+        # the owner was unregistered, even of a vector that burned nothing
+        # (B19).
+        _require_burn_target(fresh, burn_hotkey, netuid=config.chain.netuid)
 
     vector = to_u16_chain_vector(resolve_allocations(units, metagraph=fresh))
-    return chain.submit_set_weights(
+    receipt = chain.submit_set_weights(
         subtensor,
         wallet=wallet,
         netuid=config.chain.netuid,
@@ -389,6 +404,7 @@ def submit_allocation(
         version_key=config.chain.version_key,
         mechid=mechid,
     )
+    return SubmittedAllocation(receipt=receipt, units=dict(units), gone=tuple(gone))
 
 
 def build_results(result: CycleResult) -> tuple[MinerResult, ...]:
@@ -766,6 +782,7 @@ __all__ = [
     "SCORING_VERSION",
     "CycleResult",
     "Policy",
+    "SubmittedAllocation",
     "build_results",
     "run_cycle",
     "submit_allocation",

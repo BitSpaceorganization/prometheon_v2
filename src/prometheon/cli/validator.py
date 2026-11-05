@@ -30,15 +30,15 @@ from prometheon.cli._common import (
 )
 from prometheon.cli.cycle import (
     SCORING_VERSION,
-    CycleResult,
     Policy,
     build_results,
     run_cycle,
     submit_allocation,
-    submit_weights,
 )
+from prometheon.cli.record import draft_record, finish_record
+from prometheon.cli.state import CycleState, load_state, save_state, state_path
 from prometheon.config import Config, ScoreSource
-from prometheon.errors import ConfigError
+from prometheon.errors import ConfigError, HubError, PrometheonError
 from prometheon.hub import auth
 from prometheon.hub.client import HubClient
 from prometheon.hub.models import EvaluationSubmission
@@ -119,57 +119,66 @@ def _hub_client(config: Config, *, keypair: Any = None) -> HubClient:
     )
 
 
-#: Where a completed cycle leaves the vector it submitted, so it can be posted
-#: again between cycles.
-_LAST_WEIGHTS_FILE: Final[str] = "last-weights.json"
+#: A re-post of a vector this many days old says so loudly: the cycles that
+#: should have replaced it are failing, and miners are being paid on old work.
+_STALE_REPOST_DAYS: Final[int] = 2
 
 
-def _state_path(config: Config) -> Path:
-    return config.validator.state_directory / _LAST_WEIGHTS_FILE
-
-
-def _write_allocation(
-    config: Config, *, day: dt.date, weights: Mapping[str, int], burn_hotkey: str
-) -> Path:
-    """Write the state file `validator resubmit` reads.
-
-    One writer for both modes: a mirrored vector has to be re-posted between
-    cycles exactly like a computed one, and a second copy of this would be a
-    second place for the format to drift.
-    """
-    path = _state_path(config)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(
-            {
-                "day": day.isoformat(),
-                "netuid": config.chain.netuid,
-                "burn_hotkey": burn_hotkey,
-                "scoring_version": SCORING_VERSION,
-                "submitted_at": int(time.time()),
-                "weights": dict(weights),
-            },
-            indent=2,
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
+def _send(config: Config, state: CycleState, *, wallet: Any, subtensor: Any) -> CycleState:
+    """Send the state's vector and record what was actually sent."""
+    capabilities = chain.detect_capabilities(subtensor)
+    sent = submit_allocation(
+        weights=state.weights,
+        burn_hotkey=state.burn_hotkey,
+        config=config,
+        subtensor=subtensor,
+        wallet=wallet,
+        mechid=0 if capabilities.supports_mechid else None,
     )
-    return path
+    state.sent_at = int(time.time())
+    state.sent_weights = dict(sent.units)
+    state.gone = list(sent.gone)
+    state.receipt = sent.receipt
+    save_state(config, state)
+    if sent.gone:
+        note(f"{len(sent.gone)} hotkey(s) had deregistered; their units went to burn")
+    note(f"weights submitted for {state.day.isoformat()}: {sent.receipt or 'no receipt returned'}")
+    return state
 
 
-def save_submitted_allocation(config: Config, *, day: dt.date, result: CycleResult) -> Path:
-    """Record the allocation a cycle submitted.
+def _publish(config: Config, state: CycleState, *, wallet: Any, hub: HubClient) -> None:
+    """Sign the day's record once, save it, then post those exact bytes.
 
-    A cycle runs once a day, but weights stop counting toward consensus once
-    ``activity_cutoff`` passes -- 720 blocks, under three hours, on a subnet
-    whose tempo is 72 minutes. Between cycles the validator has to re-post the
-    same vector or its miners earn nothing for the rest of the day, so the
-    vector has to outlive the process that computed it.
+    Raises :class:`HubError` when the hub cannot be reached; the signed record
+    stays saved, and the next ``validator run`` or ``validator resubmit`` posts
+    the same bytes again, which the hub accepts as a duplicate if the first
+    attempt had in fact landed.
     """
-    return _write_allocation(
-        config, day=day, weights=result.split.weights, burn_hotkey=result.burn_hotkey
-    )
+    if state.record is None or state.published_at is not None:
+        return
+    if not state.signed:
+        draft = EvaluationSubmission.model_validate(state.record)
+        # After the send, so rows for hotkeys that deregistered in between are
+        # zeroed and their units counted as burn, as they were sent (B5).
+        signed = auth.sign_evaluation(wallet.hotkey, finish_record(draft, gone=state.gone))
+        state.record = json.loads(signed.model_dump_json())
+        state.signed = True
+        save_state(config, state)
+    record = EvaluationSubmission.model_validate(state.record)
+    try:
+        accepted = hub.submit_result(record)
+    except HubError as exc:
+        if exc.status_code == 409:
+            # A different record for this day is already stored, from a run
+            # whose state was lost. The hub keeps the first; so does this.
+            state.published_at = int(time.time())
+            save_state(config, state)
+            note(f"the hub already holds another record for {state.day.isoformat()}; kept that one")
+            return
+        raise
+    state.published_at = int(time.time())
+    save_state(config, state)
+    note(f"results published{' (already stored)' if accepted.duplicate else ''}")
 
 
 #: How many days back a mirror will look for a record newer than the one it
@@ -283,39 +292,46 @@ def _refresh_mirrored(
 
 
 def cmd_resubmit(args: argparse.Namespace) -> int:
-    """Re-post the last cycle's vector without recomputing it.
+    """Re-post the last cycle's vector, and post its record if still pending.
 
     Deliberately cheap: no labelling, no evaluation, no GPU time, no spend.
     It reads what the last cycle decided and sends it again, resolved against a
-    *fresh* metagraph by the same code path the cycle itself uses -- so a miner
-    that deregistered since is dropped here too, rather than being paid because
-    a re-post was allowed to skip the rule.
+    *fresh* metagraph by the same code path the cycle itself uses, so a miner
+    that deregistered since goes to burn here too.
     """
     config = load(args.config)
-    path = _state_path(config)
-    if not path.is_file():
+    state = load_state(config)
+    if state is None:
         raise ConfigError(
-            f"no submitted allocation at {path}; run `prometheon validator run` first, "
+            f"no saved vector at {state_path(config)}; run `prometheon validator run` first, "
             "and note that a dry run does not leave one"
         )
-
-    state = json.loads(path.read_text(encoding="utf-8"))
-    if int(state.get("netuid", -1)) != config.chain.netuid:
+    if state.netuid != config.chain.netuid:
         raise ConfigError(
-            f"{path} was written for netuid={state.get('netuid')}, "
+            f"{state_path(config)} was written for netuid={state.netuid}, "
             f"but this config targets netuid={config.chain.netuid}"
         )
-    weights = {str(key): int(value) for key, value in dict(state["weights"]).items()}
-    if not weights:
-        raise ConfigError(f"{path} carries no weights to submit")
+    if not state.weights:
+        raise ConfigError(f"{state_path(config)} carries no weights to submit")
 
     if config.validator.dry_run:
-        note(f"dry run: would re-submit {len(weights)} hotkeys from {state['day']}")
+        note(f"dry run: would re-submit {len(state.weights)} hotkeys from {state.day.isoformat()}")
         return EXIT_OK
+    if not config.validator.submit_weights:
+        # v2 kept re-posting with this off, so an operator who switched it off
+        # to investigate still sent the old vector every hour (B15).
+        note("submit_weights is off: nothing re-posted")
+        return EXIT_OK
+
+    age = (dt.datetime.now(dt.timezone.utc).date() - state.day).days
+    if age > _STALE_REPOST_DAYS:
+        note(
+            f"warning: re-posting the vector for {state.day.isoformat()}, {age} days old. The "
+            "daily cycle has not replaced it; check its log"
+        )
 
     wallet = open_wallet(config)
     subtensor = chain.connect(config.chain.network)
-    capabilities = chain.detect_capabilities(subtensor)
 
     # A cycle and a re-post landing inside the rate limit is routine -- both run
     # on timers, and the cycle's own submission is the one that matters. Exiting
@@ -325,41 +341,41 @@ def cmd_resubmit(args: argparse.Namespace) -> int:
     )
     if waiting:
         note(f"rate limit not clear for another {waiting} blocks; nothing sent")
-        return EXIT_OK
-
-    burn_hotkey = str(state["burn_hotkey"])
-    # In endpoint mode every re-post is a fresh read of the provider's record,
-    # not a replay of the one fetched at the last daily run. A mirror that only
-    # replays cannot receive a correction until its next cycle.
-    if config.scoring.score_source is ScoreSource.ENDPOINT:
-        stored_day = dt.date.fromisoformat(str(state["day"]))
-        found = _refresh_mirrored(
-            config,
-            stored_day=stored_day,
-            wallet=wallet,
-            subtensor=subtensor,
-            burn_hotkey=burn_hotkey,
-            today=dt.datetime.now(dt.timezone.utc).date(),
-        )
-        if found is not None:
-            day, refreshed = found
-            note(
-                f"{config.scoring.score_provider} has published {day.isoformat()}, newer than "
-                f"the {stored_day.isoformat()} vector held; submitting {len(refreshed)} hotkeys"
+    else:
+        # In endpoint mode every re-post looks for a newer provider record
+        # than the one held. A mirror that only replays cannot catch up.
+        if config.scoring.score_source is ScoreSource.ENDPOINT:
+            found = _refresh_mirrored(
+                config,
+                stored_day=state.day,
+                wallet=wallet,
+                subtensor=subtensor,
+                burn_hotkey=state.burn_hotkey,
+                today=dt.datetime.now(dt.timezone.utc).date(),
             )
-            weights = dict(refreshed)
-            state = {**state, "day": day.isoformat()}
-            _write_allocation(config, day=day, weights=weights, burn_hotkey=burn_hotkey)
+            if found is not None:
+                day, refreshed = found
+                note(
+                    f"{config.scoring.score_provider} has published {day.isoformat()}, newer "
+                    f"than the {state.day.isoformat()} vector held"
+                )
+                state = CycleState(
+                    day=day,
+                    netuid=config.chain.netuid,
+                    burn_hotkey=state.burn_hotkey,
+                    scoring_version=SCORING_VERSION,
+                    weights=dict(refreshed),
+                    computed_at=int(time.time()),
+                )
+                save_state(config, state)
+        _send(config, state, wallet=wallet, subtensor=subtensor)
 
-    receipt = submit_allocation(
-        weights=weights,
-        burn_hotkey=burn_hotkey,
-        config=config,
-        subtensor=subtensor,
-        wallet=wallet,
-        mechid=0 if capabilities.supports_mechid else None,
-    )
-    note(f"re-submitted {state['day']} ({len(weights)} hotkeys): {receipt or 'no receipt'}")
+    if config.validator.submit_results and state.record is not None and state.published_at is None:
+        try:
+            with _hub_client(config, keypair=wallet.hotkey) as hub:
+                _publish(config, state, wallet=wallet, hub=hub)
+        except PrometheonError as exc:
+            note(f"the record for {state.day.isoformat()} is still waiting to be published: {exc}")
     return EXIT_OK
 
 
@@ -450,8 +466,6 @@ def cmd_mirror(args: argparse.Namespace) -> int:
         note("submit_weights is off: the record verified but nothing was sent")
         return EXIT_OK
 
-    capabilities = chain.detect_capabilities(subtensor)
-
     # Wait the rate limit out rather than raising into it. A mirror cycle and a
     # re-post both run on timers and land inside the 100-block (~20 min) window
     # routinely; `cmd_resubmit` skips because it retries in thirty minutes, but
@@ -461,24 +475,27 @@ def cmd_mirror(args: argparse.Namespace) -> int:
     # a restart loop: the process exits non-zero, comes back, re-runs the whole
     # cycle, and hits the same limit. Observed three times over before one
     # submission landed.
-    _wait_for_weights_window(subtensor, config=config, wallet=wallet)
-
-    receipt = submit_allocation(
-        weights=weights,
+    state = CycleState(
+        day=day,
+        netuid=config.chain.netuid,
         burn_hotkey=burn_hotkey,
-        config=config,
-        subtensor=subtensor,
-        wallet=wallet,
-        mechid=0 if capabilities.supports_mechid else None,
+        scoring_version=SCORING_VERSION,
+        weights=dict(weights),
+        computed_at=int(time.time()),
     )
-    note(f"weights submitted: {receipt or 'no receipt returned'}")
-    saved = _write_allocation(config, day=day, weights=weights, burn_hotkey=burn_hotkey)
-    note(f"allocation saved for re-submission: {saved}")
+    save_state(config, state)
+    _wait_for_weights_window(subtensor, config=config, wallet=wallet)
+    _send(config, state, wallet=wallet, subtensor=subtensor)
     return EXIT_OK
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    """Run one cycle: label, evaluate, score, submit."""
+    """Run one cycle: label, evaluate, score, then send and publish.
+
+    Each step is saved before the next one starts, so a run interrupted after
+    the cycle computed resumes from the step it reached instead of labelling
+    and evaluating the day again. ``--force`` computes it again regardless.
+    """
     config = load(args.config)
     if config.scoring.score_source is ScoreSource.ENDPOINT:
         # `validator run` stays the one command an operator schedules, whichever
@@ -492,110 +509,122 @@ def cmd_run(args: argparse.Namespace) -> int:
             "verified. Copy the key from the release notes of the version you run"
         )
 
-    # Read here purely to fail fast with a message that says what the key is
-    # for. The labelling client reads it again from the same variable when it is
-    # built; checking twice is cheaper than discovering it four hours in.
-    require_env(config.labelling.api_key_env, purpose="label the day's corpus as ground truth")
+    state = load_state(config)
+    resuming = (
+        state is not None
+        and state.day == day
+        and state.netuid == config.chain.netuid
+        and state.scoring_version == SCORING_VERSION
+        and not getattr(args, "force", False)
+    )
+    if resuming and state is not None and state.is_complete(config):
+        note(f"{day.isoformat()} is already scored, sent and published; nothing to do")
+        return EXIT_OK
 
     wallet = open_wallet(config)
     hotkey = wallet.hotkey.ss58_address
-    note(f"validator {hotkey} scoring {day.isoformat()} on netuid={config.chain.netuid}")
-
     subtensor = chain.connect(config.chain.network)
-    started = int(time.time())
 
-    with (
-        _hub_client(config, keypair=wallet.hotkey) as hub,
-        HuggingFaceClient() as huggingface,
-        OpenAICompatibleClient(config.labelling) as labeller,
-    ):
-        result = run_cycle(
-            config=config,
-            day=day,
-            hub=hub,
-            subtensor=subtensor,
-            registry=ModelRegistry(
-                huggingface=huggingface,
-                max_weight_bytes=config.evaluation.max_weight_bytes,
-                max_non_weight_bytes=config.evaluation.max_non_weight_bytes,
-            ),
-            labeller=labeller,
-            policy=policy,
-            now=started,
-            progress=note,
-        )
+    with _hub_client(config, keypair=wallet.hotkey) as hub:
+        if resuming and state is not None:
+            note(
+                f"{day.isoformat()} was computed already; resuming without labelling or "
+                "evaluating it again (pass --force to recompute)"
+            )
+        else:
+            # Read here purely to fail fast with a message that says what the
+            # key is for, before an hour of work rather than after it.
+            require_env(
+                config.labelling.api_key_env, purpose="label the day's corpus as ground truth"
+            )
+            note(f"validator {hotkey} scoring {day.isoformat()} on netuid={config.chain.netuid}")
+            started = int(time.time())
+            with (
+                HuggingFaceClient() as huggingface,
+                OpenAICompatibleClient(config.labelling) as labeller,
+            ):
+                result = run_cycle(
+                    config=config,
+                    day=day,
+                    hub=hub,
+                    subtensor=subtensor,
+                    registry=ModelRegistry(
+                        huggingface=huggingface,
+                        max_weight_bytes=config.evaluation.max_weight_bytes,
+                        max_non_weight_bytes=config.evaluation.max_non_weight_bytes,
+                    ),
+                    labeller=labeller,
+                    policy=policy,
+                    now=started,
+                    progress=note,
+                )
+            completed = int(time.time())
+            out(_summary(result, build_results(result)))
+            for message in result.notes:
+                note(f"note: {message}")
 
-        rows = build_results(result)
-        completed = int(time.time())
+            if config.validator.dry_run:
+                note("")
+                note("dry run: no weights submitted, no results published")
+                return EXIT_OK
 
-        out(_summary(result, rows))
-        for message in result.notes:
-            note(f"note: {message}")
+            draft = draft_record(
+                result,
+                netuid=config.chain.netuid,
+                validator_hotkey=hotkey,
+                policy_version=policy.version,
+                started_at=started,
+                completed_at=completed,
+            )
+            state = CycleState(
+                day=day,
+                netuid=config.chain.netuid,
+                burn_hotkey=result.burn_hotkey,
+                scoring_version=SCORING_VERSION,
+                weights=dict(result.split.weights),
+                computed_at=completed,
+                record=json.loads(draft.model_dump_json()),
+            )
+            # Saved before anything is sent. v2 saved only after a successful
+            # send, so a send refused inside the rate limit lost the day (B3).
+            note(f"vector saved before sending: {save_state(config, state)}")
 
+        assert state is not None
         if config.validator.dry_run:
-            note("")
-            note("dry run: no weights submitted, no results published")
+            note("dry run: nothing sent or published")
             return EXIT_OK
 
-        if config.validator.submit_weights:
-            capabilities = chain.detect_capabilities(subtensor)
-            receipt = submit_weights(
-                result,
-                config=config,
-                subtensor=subtensor,
-                wallet=wallet,
-                mechid=0 if capabilities.supports_mechid else None,
-            )
-            note(f"weights submitted: {receipt or 'no receipt returned'}")
-            saved = save_submitted_allocation(config, day=day, result=result)
-            note(f"allocation saved for re-submission: {saved}")
-        else:
+        if not config.validator.submit_weights:
             note("submit_weights is off: weights were computed but not sent")
+        elif state.sent_at is None:
+            # Wait the rate limit out rather than failing into it: a re-post
+            # that landed minutes earlier is routine, not an error (B3).
+            _wait_for_weights_window(subtensor, config=config, wallet=wallet)
+            state = _send(config, state, wallet=wallet, subtensor=subtensor)
 
-        if config.validator.submit_results:
-            submission = auth.sign_evaluation(
-                wallet.hotkey,
-                EvaluationSubmission(
-                    date=day,
-                    netuid=config.chain.netuid,
-                    validator_hotkey=hotkey,
-                    scoring_version=SCORING_VERSION,
-                    policy_version=policy.version,
-                    epoch_content_hash=result.epoch_content_hash,
-                    corpus_content_hash=result.corpus_hash,
-                    labelled_test_count=sum(
-                        1 for item in result.corpus.items if item.source.value == "test"
-                    ),
-                    labelled_production_count=sum(
-                        1 for item in result.corpus.items if item.source.value == "production"
-                    ),
-                    results=rows,
-                    burned_weight=result.split.burn_units,
-                    started_at=started,
-                    completed_at=completed,
-                ),
-            )
-            accepted = hub.submit_result(submission)
-            note(f"results published: {accepted.model_dump_json()}")
-        else:
+        if not config.validator.submit_results:
             note("submit_results is off: this cycle is not auditable by anyone else")
+        else:
+            _publish(config, state, wallet=wallet, hub=hub)
 
     return EXIT_OK
 
 
 def _last_completed_cycle_day(config: Config) -> dt.date | None:
-    """The day the last cycle submitted, from the allocation state file.
+    """The day the last cycle finished: sent and published as configured.
 
-    ``None`` when there is no state, it cannot be read, or its day is not a
-    date -- all of which mean "no cycle is known to have run", which is the
-    safe answer: the cost of re-running one is a cycle, and the cost of
-    wrongly skipping one is a day nobody is paid for.
+    ``None`` when there is no state, it cannot be read, or the day it holds is
+    not finished, all of which mean the scheduler should run (or resume) a
+    cycle. The cost of resuming one is small now; the cost of wrongly skipping
+    one is a day nobody is paid for.
     """
     try:
-        state = json.loads(_state_path(config).read_text(encoding="utf-8"))
-        return dt.date.fromisoformat(str(state["day"]))
-    except (OSError, KeyError, ValueError, json.JSONDecodeError):
+        state = load_state(config)
+    except ConfigError:
         return None
+    if state is None or not state.is_complete(config):
+        return None
+    return state.day
 
 
 def cmd_schedule(args: argparse.Namespace) -> int:
