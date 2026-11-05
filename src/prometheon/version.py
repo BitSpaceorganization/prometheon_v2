@@ -2,7 +2,7 @@
 
 from typing import Final
 
-__version__: Final[str] = "2.0.0"
+__version__: Final[str] = "3.0.0"
 
 #: Names the reward rules a weight vector was computed under. It goes into every
 #: signed evaluation record, into the epoch the hub signs, and into every
