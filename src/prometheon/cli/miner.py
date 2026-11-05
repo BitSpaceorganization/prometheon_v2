@@ -69,18 +69,13 @@ def cmd_commit(args: argparse.Namespace) -> int:
     ``--if-changed`` makes this a reconciler: it reads what the chain already
     holds and writes only when that differs from what is being asked for.
 
-    That is not merely a saved extrinsic. **A commitment's priority in a
-    duplicate contest is the block of the *current* write, and the chain resets
-    it on every re-commit** (see
-    :func:`~prometheon.registry.validation._duplicate_losers`). Re-committing an
-    unchanged model therefore re-dates your claim to it and moves you behind
-    anyone who mirrored your revision earlier -- and because a Hugging Face repo
-    is a git repo, mirroring preserves the revision SHA byte for byte, so the
-    copycat's claim looks identical to yours apart from being older.
-
-    An unconditional re-commit on a timer is the worst version of this: it hands
-    a copycat a fresh advantage every time it fires. Anything running on a loop
-    should pass this flag.
+    What a validator scores is the hub's frozen copy of this commitment, not the
+    live value. The hub dates a model by the **first** block at which this
+    hotkey committed its weights fingerprint, and duplicates are decided by
+    fingerprint, earliest first. So re-committing the same weights neither
+    re-dates the claim nor spends a credit; with ``--if-changed`` it also saves
+    the transaction fee. New weights are a new fingerprint: a new date, and one
+    submission credit at the next freeze.
     """
     config = load(args.config)
     commitment = _commitment_from(args)

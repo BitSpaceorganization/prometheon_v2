@@ -290,7 +290,7 @@ def blocks_until_weights_allowed(subtensor: Any, *, netuid: int, hotkey: str) ->
     other way would silently skip a submission that was due.
 
     Exists so a re-post between cycles can skip quietly instead of failing. The
-    rate limit is short (100 blocks on netuid 108) and a re-post runs on a
+    rate limit is short (commonly 100 blocks) and a re-post runs on a
     timer, so a cycle and a re-post landing minutes apart is routine, not an
     error worth waking anybody for.
     """

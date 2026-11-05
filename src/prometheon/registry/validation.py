@@ -109,14 +109,14 @@ class MinerEntry:
     Prometheon V2 commitment. Different failure, different fix, so the two are
     not collapsed.
 
-    ``commit_block`` is the block the commitment was written in, read from the
-    chain. It settles duplicates and nothing else.
+    ``commit_block`` comes from the signed epoch: the first block at which this
+    hotkey committed these weights, as the hub froze it. It settles duplicates
+    and nothing else.
 
     **It has no benign default.** It used to default to ``0``, and nothing in
     the production path ever set it, only the tests did, so every real
-    duplicate contest was decided by ascending uid. That is the outcome
-    :func:`_duplicate_losers` documents as the *strictly worse* attack: sit on a
-    low uid and mirror anything good. The default is now
+    duplicate contest was decided by ascending uid, which rewards sitting on a
+    low uid and mirroring anything good. The default is now
     :data:`UNKNOWN_COMMIT_BLOCK`, which sorts last, so the failure mode of
     forgetting to populate it is "this miner loses every tie" rather than "this
     miner wins every tie".
