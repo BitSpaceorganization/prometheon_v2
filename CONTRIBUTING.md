@@ -54,8 +54,13 @@ So:
   adapter rather than around it.
 - **Make fakes strict.** A fake that accepts a field the real thing does not have
   is worse than no fake.
-- **Prefer the shipped fake.** `FakeDbLayer` is a complete implementation of the
-  `/v2` contract; use it rather than stubbing the client.
+- **Prefer the shipped fake.** `prometheon.hub.fake.FakeHub` serves the whole
+  hub contract with a real Ed25519 key, real gzip files and expiring URLs; use
+  it rather than stubbing the client. `serve()` puts it on a real socket.
+- **Work numbers out by hand.** A test about payouts states the expected units
+  as literals and derives them in a comment from `docs/scoring.md`, as
+  `tests/integration/test_validator_run.py` does. Recomputing the expectation
+  with the code under test proves nothing.
 
 ### What a test should be named after
 

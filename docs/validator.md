@@ -1,51 +1,25 @@
 # Validating
 
-A validator runs **one cycle per day**, scoring the previous day at 04:00 UTC.
+A validator scores **yesterday, once a day**, at 04:00 UTC by default, and **re-posts the same weights every 30 minutes** until the next cycle.
 
-You pay for two things: ground-truth labelling (an OpenAI-compatible key) and
-**the GPU that runs every miner's model**. Miners publish weights and pay for
-nothing at evaluation time.
+You pay for two things: ground-truth labelling (an OpenAI-compatible key) and **the GPUs that run every eligible model**. Miners publish weights and pay nothing at evaluation time.
+
+The owner team runs a validator too, with this same CLI.
+
+> **Before the subnet is registered** there's nothing to validate on a public network. To see a whole cycle work, with real extrinsics, run it on a local chain: [`localnet.md`](./localnet.md).
 
 ## Hardware
 
-**This section applies to `score_source = "local"`, the default, a validator
-that measures the field itself.** The other mode, `score_source = "endpoint"`,
-submits a record another validator published and needs **no GPU at all**: it is
-a CPU-only job. Skip to [Two ways to run a
-validator](#two-ways-to-run-a-validator) if that is what you are building, and
-read the cost to consensus stated there before choosing it.
+**This applies to `score_source = "local"`, the default, where the validator measures the field itself.** `score_source = "endpoint"` submits a record another validator published and needs no GPU at all. See [Two ways to run a validator](#two-ways-to-run-a-validator), and read what mirroring costs consensus before choosing it.
 
-**Validating locally requires GPUs, and the floor is 8 × RTX 5090 (32 GB each,
-256 GB total) or better.** This is not a recommendation. Validators download every
-eligible model and run it over the whole corpus, every day, and a machine that
-cannot finish scores the field on whatever it completed; which pays miners for
-the validator's hardware rather than for their models.
+**Validating locally needs GPUs. The floor is 8 × RTX 5090 (32 GB each, 256 GB in total) or better.** Every eligible paid model is downloaded and run over the whole corpus every day. A machine that can't finish scores the field on whatever it completed, which pays miners for your hardware, not for their models.
 
-Where the numbers come from:
+- **32 GB per card** is what one model needs. Weights are capped at 24 GiB, and the rest is KV cache and activations.
+- **Eight cards** is what a field needs. One card evaluates one model; it doesn't get through a day.
 
-- **32 GB per card** is what a submitted model needs. Weights are capped at
-  24 GiB, and the remainder is KV cache and activations. One model fits one
-  card, which is what makes the cap meaningful.
-- **Eight cards** is what a *field* needs. The corpus is thousands of items and
-  every eligible model is run over all of it. One card is enough to evaluate one
-  model, not to get through a day.
+**A known limit:** the runtime evaluates models one at a time on one device. `device` picks it (`auto`, `cuda:0`, `cpu`, `mps`). It doesn't shard a model across cards or run several at once yet, so the eight cards are headroom for a growing field, not something this version already exploits.
 
-Fewer cards does not fail loudly. It runs, takes longer, and starts hitting
-`model_timeout_seconds`, at which point models are scored on the fraction they
-completed and the rest counts against them. A validator that is quietly too slow
-still submits weights, and those weights are wrong.
-
-**A known limit, stated plainly: the runtime evaluates models one at a time on
-one device.** `device` selects where (`auto`, `cuda:0`, `cpu`); it does not yet
-shard one model across cards or run several models in parallel. Eight cards is
-therefore headroom for a growing field and for the throughput the day requires,
-not something this version already exploits. Using it properly is future work,
-and the requirement is set for where the subnet is going rather than where the
-code is today.
-
-**CPU is not a fallback for a real cycle.** `device = "auto"` resolves to CPU
-when no CUDA device is present, which keeps a dry run possible on a laptop and
-is unusably slow for anything else.
+`device = "auto"` falls back to CPU when there's no CUDA device. That's enough for a dry run on a laptop, or a two-model local chain, and far too slow for a real day.
 
 ---
 
@@ -54,36 +28,39 @@ is unusably slow for anything else.
 ```bash
 git clone https://github.com/BitSpaceorganization/prometheon_v2
 cd prometheon_v2
-uv sync
+uv sync --extra wrapper          # torch and transformers: needed to run models
 
-cp configs/mainnet.example.toml ~/prometheon-mainnet.toml
-$EDITOR ~/prometheon-mainnet.toml        # set [wallet] name and hotkey
-
-export OPENAI_API_KEY="…"     # your own key, you pay for ground-truth labelling
+cp configs/finney.example.toml ~/prometheon.toml
+$EDITOR ~/prometheon.toml
+export OPENAI_API_KEY="..."      # your own key; you pay for labelling
 ```
 
-**There is no inference credential any more.** Nothing is called over the
-network to evaluate a model: the checkpoint is fetched from Hugging Face at the
-committed SHA and run here. Miners share nothing with you, and there is no key
-to be authorised for.
+**`--extra wrapper` isn't optional in local mode.** Without it there's nothing to run models with. The cycle checks before it labels anything (whenever there's a model to run) and stops with `validator.fault`. Earlier versions scored every model zero instead and submitted that.
 
-Your hotkey must be registered on the netuid and hold a validator permit. There
-are no API keys for the subnet DB layer: every request is signed with your
-hotkey and checked against the metagraph, so a deregistered validator loses
-access the moment the chain says so.
+Fill in the config:
 
-### Run one cycle without touching anything
+| Setting | What |
+|---|---|
+| `[chain] netuid` | **Required, no default.** The team announces it when the subnet is registered |
+| `[chain] network` | `finney`, or your own node's `ws://` / `wss://` endpoint |
+| `[wallet]` | your validator's wallet name and hotkey |
+| `[hub] base_url` and `[hub.epoch_keys]` | the hub's address, and its Ed25519 public key under its key id. Both are published with the launch. Every epoch's signature is checked against this key |
+| `[labelling]` | your labelling endpoint and model. The comments in the example explain the temperature rule |
+| `[scoring]` | **leave as shipped.** These decide payouts, and every validator must run the same values |
+
+Your hotkey must be registered and hold a validator permit. There are no API keys for the hub. Each request is signed with your hotkey and checked against the chain, so access follows registration.
+
+### First run: change nothing on chain
 
 ```toml
 [validator]
 dry_run = true
 ```
 
-Everything runs: labelling, evaluation, scoring. Nothing is submitted or
-published. This is the right first run.
+Everything runs, including labelling, evaluation and scoring. Nothing is submitted or published.
 
 ```bash
-uv run prometheon validator run --config ~/prometheon-mainnet.toml
+uv run prometheon validator run --config ~/prometheon.toml
 ```
 
 ---
@@ -91,435 +68,177 @@ uv run prometheon validator run --config ~/prometheon-mainnet.toml
 ## What a cycle does
 
 ```text
-1. check the chain gates          ← before spending a penny
-2. fetch the day's snapshot       ← from the DB layer, hash-verified
-3. read commitments from chain    ← not from the DB layer
-4. verify each model              ← Hugging Face: manifest, architecture, size
-5. label the corpus               ← ground truth, fixed before any model sees it
-6. evaluate every eligible model  ← each on its own view of the corpus
-7. score and combine              ← one weight vector
-8. submit weights, publish record
+1. check the chain gates            commit-reveal, weights version, mechid, owner hotkey
+2. fetch the signed epoch           verify the hub's signature against your pinned key
+3. download the day's two files     check sha256 and line count; reject malformed lines
+4. decide who is eligible           ≥10 verified active members and ≥30 members
+5. verify the paid models           Hugging Face: manifest, architecture, size, fingerprint
+6. check you can run a model        a tiny canary on your device and dtype
+7. remove near-duplicates           across the whole day's test content
+8. label the corpus                 ground truth, fixed before any model sees it
+9. run every eligible model         each on its own view of the corpus
+10. score, split and save           the vector is written to disk before anything is sent
+11. wait for the rate limit, send   then sign the record once and post it to the hub
 ```
 
-The order matters.
+- **Gates first.** Anything that would make the result unsubmittable is checked before anything is paid for.
+- **The epoch is the source.** You score the commitments the hub froze, as the signed epoch lists them, and never the live chain values. Every validator scores the same models.
+- **The hub is trusted for what it signs, and nothing else.** The epoch's member counts and payment status come from the hub. Labels, model verdicts and weights are yours.
+- **Weights resolve against a fresh metagraph.** A cycle takes hours, and a uid can change hands. A hotkey that left before the send loses its units to the burn. They're never shared out among the others.
 
-**Gates first.** Commit-reveal, the weights version key, and `mechid` support are
-checked before a single API call is paid for. A cycle that could not have
-submitted its result must not discover that after fourteen hours and a labelling
-bill.
+## What stops a cycle
 
-**The chain is the authority on commitments.** The DB layer says who is
-*eligible*; the chain says what they *committed*. A DB layer that invented a
-commitment could not get a model scored, because the commitment is read from
-chain and then verified against Hugging Face independently. The two are
-compared, and a disagreement is recorded in the published result. The chain
-value is the one used.
+These fail loudly rather than produce a plausible-looking result:
 
-**Ground truth is fixed before evaluation.** No model can influence what it is
-measured against.
-
-**Weights are resolved against a fresh metagraph.** A cycle takes hours, and a
-UID is reassigned the moment its holder deregisters. Submitting against the
-snapshot the cycle *scored* would pay whoever inherited the slot. Hotkeys that
-vanished mid-cycle are dropped and their share goes to the burn hotkey rather
-than being redistributed. Redistributing would let one deregistration quietly
-raise everyone else's payout.
-
----
-
-## What stops a cycle, and why
-
-These fail loudly rather than producing a plausible-looking result. Each one
-exists because the quiet version of it is worse:
-
-| Condition | Why it is fatal |
+| Condition | Why |
 |---|---|
-| Commit-reveal enabled on the subnet | The SDK reroutes `set_weights` rather than refusing it, so weights land on a schedule this runtime does not model, and the submission still reads as a success |
-| Weights version key mismatch | Weights under a stale key are accepted and then ignored |
-| SDK does not accept `mechid` | Weights land on whatever mechanism the chain defaults to, and nothing reports it |
-| Metagraph came back empty | A live subnet always has its owner registered, so this is a failed read. Treating it as real would mark every miner deregistered and burn the day |
-| Labelling failed 3 batches in a row | An endpoint fault, not a corpus fault. Continuing produces an empty ground truth that scores every miner against nothing |
-| Labelling excluded >20% of the corpus | What is left is not a benchmark |
-| A low-base-rate batch came back unanimously violating, across two or more independent sources | Evidence the labeller stopped labelling; publishing it would poison the day. The two-source condition is what separates that from one submitter mislabelling their own content, for test content the low-base-rate prior is the submitter's own claim, so without it any single participant could halt every validator at will |
-| Snapshot version or content hash mismatch | You were served something other than what the manifest describes |
+| Commit-reveal is on, the weights version key mismatches, or the SDK can't name `mechid` | the weights would land somewhere the runtime doesn't model, and still read as a success |
+| The metagraph came back empty | a live subnet always has its owner registered, so this is a failed read |
+| The epoch's signature doesn't verify, or it's for another day, netuid or scoring version | you were served something other than the day you asked for |
+| A miner row has no member count, or more verified members than members | the counts decide eligibility. Reading a missing one as zero would burn the day |
+| A file's sha256 or line count differs from the epoch | the content isn't what the hub signed |
+| Every test line in a non-empty file is rejected | a feed format problem, not a day with no data. Burning would hide it |
+| Your `content_policy.md` hashes differently from the epoch's | you'd be labelling against different rules from everyone else |
+| Hugging Face can't be reached to verify a model | marking the model invalid on this validator alone would split its vector from everyone else's |
+| The canary can't run a model on your device | `validator.fault`. Fix your install or drivers; nothing is submitted |
+| Labelling failed 3 batches in a row, or excluded more than 20% of the corpus | what's left isn't a benchmark |
+| A low-base-rate batch came back unanimously violating, across two or more independent sources | evidence the labeller stopped labelling |
 
-What does **not** stop a cycle: any single miner. A model that will not
-download, will not load, runs out of memory, or exceeds its time budget is
-scored incorrect for those items and the cycle continues. That is a promise the code keeps. Every validator evaluates the same
-miners at the same time, so an exception escaping one miner's evaluation would
-take down the whole subnet's submission simultaneously.
-
----
+**What doesn't stop a cycle: any single miner.** A model that won't download, won't load, runs out of memory or times out is scored on what it completed, and one that never produced a verdict is published as `unreachable`. A repository that was deleted or made private is `invalid` for the day. The rest of the field is scored as normal.
 
 ## Reading the summary
 
 ```text
-day                2026-08-05
-snapshot           4f2a…  ← the DB layer's manifest hash
-corpus             9c81…  ← hash over what you actually labelled
-corpus items       9840
-labelled           9840 ok, 12 excluded
-labelling calls    104
-models eligible    7/11
-models evaluated   7
-efficiency lambda  0bp    ← the spread guard fired; efficiency was off
+day                2026-11-05
+epoch              8ca6ef49…   ← sha256 of the signed epoch bytes
+frozen block       123456
+corpus             9c81…       ← hash over what you labelled
+near-duplicates    14 removed
+eligible miners    9/31
+corpus items       10240
+labelling calls    103
+models verified    6/7
+models evaluated   6
+efficiency lambda  0bp         ← the spread guard fired; usual under forced choice
 token spread       4.10%
-weighted hotkeys   9
+weighted hotkeys   10
 burn               0 units to 5Owner…
+published rows     11
 ```
 
-Two hashes, answering two different questions. **snapshot** says *we were given
-the same data*; **corpus** says *we made the same labelling calls out of it*. If
-two validators' snapshot hashes match but their corpus hashes differ, they
-disagreed about labels. That is expected on borderline items and is what
-consensus arbitrates. If the snapshot hashes differ, the DB layer served two
-different corpora. Report that one.
+The two hashes answer two questions:
 
-`efficiency lambda 0bp` is normal. Under forced-choice decoding every model
-emits one completion token, so the only variation is tokenizer efficiency, a
-narrow spread. When the coefficient of variation falls below 10%, the term is
-switched off rather than allowed to randomise close rankings.
+- The **epoch** hash says you were given the same day as everyone else.
+- The **corpus** hash says you labelled the same items in the same order.
+
+If two validators' epoch hashes differ, one of them was served a different day. Report that.
 
 ---
 
-## Upgrading an existing validator
+## The state file, and running a day again
 
-**`git pull` does not touch your config.** You copied
-`configs/mainnet.example.toml` once; that copy keeps whatever values it had, so
-a pull brings new code and new docs but leaves your `[scoring]` and
-`[labelling]` behind. After pulling, diff your config against the example:
+The computed vector is saved to `<state_directory>/last-weights.json` **before** it's sent. The file is written atomically. Then:
 
-```bash
-git pull
-diff <(grep -vE '^\s*(#|$)' configs/mainnet.example.toml) \
-     <(grep -vE '^\s*(#|$)' ~/prometheon-mainnet.toml)
-```
+- If the send is refused, for example inside the rate limit, the day isn't lost. The next `validator run` for that day sends the saved vector instead of computing it again.
+- A day that was computed **and** sent is finished. Running it again does nothing. Use `--force` to compute it again from scratch.
+- The record is signed once and kept. If posting it fails, `validator resubmit` re-posts the same bytes. The hub treats an identical resend as a duplicate and refuses a different record for the same day, so the first record stands.
+- The record always describes the vector actually sent, including units that went to the burn because a hotkey left.
 
-Two of those differences change what you submit:
+## Running it daily, and re-posting every 30 minutes
 
-| Setting | If yours is stale | Consequence |
-|---|---|---|
-| `miner_burn_share_bp`, `dataset_share_bp` | `6000` / `5000` | you compute a **different weight vector** from every updated validator, and disagree on chain |
-| `temperature` under `[labelling]` | absent | the cycle dies at labelling with HTTP 400 |
-
-The runtime now refuses a model/temperature pair the endpoint would reject, so
-the second one fails immediately at startup rather than hours into a cycle. The
-first cannot be caught that way, a stale split is valid config, just a
-different policy, so it is on you to diff.
-
-You also need the 30-minute re-post entry below; a pull does not add it to
-your crontab.
-
----
-
-## Running it daily, **and re-posting every 30 minutes**
-
-Two entries, not one. The cycle runs once a day; the re-post runs every 30
-minutes.
+Two jobs, not one:
 
 ```cron
 # The cycle: label, evaluate, score, submit. Once a day.
-0 4 * * * cd /opt/prometheon_v2 && /usr/local/bin/uv run prometheon validator run \
-    --config /etc/prometheon/mainnet.toml >> /var/log/prometheon.log 2>&1
+0 4 * * * cd /opt/prometheon_v2 && /usr/local/bin/uv run --extra wrapper prometheon validator run \
+    --config /etc/prometheon/prometheon.toml >> /var/log/prometheon.log 2>&1
 
 # The re-post: send the same vector again so it keeps counting. Every 30 minutes.
 */30 * * * * cd /opt/prometheon_v2 && /usr/local/bin/uv run prometheon validator resubmit \
-    --config /etc/prometheon/mainnet.toml >> /var/log/prometheon.log 2>&1
+    --config /etc/prometheon/prometheon.toml >> /var/log/prometheon.log 2>&1
 ```
 
-### If the host has no cron
-
-Containers frequently have neither cron nor systemd, so the CLI can keep its own
-clock:
+Or use systemd: [`deploy/systemd/`](../deploy/systemd/README.md). Or, where there's neither cron nor systemd, let the CLI keep the clock:
 
 ```bash
-uv run prometheon validator schedule --config /etc/prometheon/mainnet.toml
+uv run --extra wrapper prometheon validator schedule --config /etc/prometheon/prometheon.toml
 ```
 
-One process runs both jobs: the cycle at 04:00 UTC (`--cycle-hour` to move it)
-and the re-post on every :00 and :30. Because they share a process, a cycle that
-runs long delays the next re-post rather than submitting weights underneath
-itself, the shell version below needs a lock file to get that right.
+One process runs both jobs: the cycle at 04:00 UTC (`--cycle-hour` moves it) and the re-post at :00 and :30.
 
-**Wake-ups are aligned to the wall clock, not to when the process started.** A
-loop that sleeps 1800 seconds from launch keeps whatever offset it happened to
-start with, so a field of validators ends up smeared across the half hour.
-Sleeping to the next boundary instead puts every validator running this on the
-same instants, whatever time each was started and however long its last cycle
-took. That is a coordination convenience rather than a consensus requirement,
-Yuma compares whatever is on chain within a tempo and nothing breaks if you are
-late, but it makes two validators' logs line up by timestamp, which is worth
-having the first time you debug a divergence.
+- **It runs yesterday's cycle whenever that day isn't finished.** After a restart past 04:00 it picks up an interrupted or missed cycle straight away instead of waiting a day. Older days aren't backfilled.
+- **A failed cycle is retried, at most 3 times.** An epoch the hub hasn't built yet doesn't count as a failure.
+- **Re-posts keep running while a cycle is busy.** A day-long cycle doesn't leave your weights to expire.
 
-Run it under a supervisor rather than `nohup`: a loop that dies stops re-posting
-silently, and the first symptom is the miners you weighted sitting at zero
-incentive.
+Run it under a supervisor: a loop that dies stops re-posting silently.
 
-#### Or a shell loop
+**Why re-post at all.** Your weights stop counting toward consensus once the subnet's `activity_cutoff` passes. The cycle runs once every 24 hours. Without re-posts, the miners you weighted earn nothing for most of the day. A re-post never labels and never evaluates. It re-reads the chain, so a hotkey that left since is dropped exactly as it would be at first submission. A re-post inside the weights rate limit is skipped, not failed.
 
-If you would rather not have the CLI hold the schedule:
+**Pick the interval from the hyperparameters** (`btcli subnet hyperparameters --netuid <netuid>`). It must be shorter than `activity_cutoff`, with room for a missed post, and longer than `weights_set_rate_limit`. Thirty minutes suits a rate limit of 100 blocks (about 20 minutes) and a cutoff of a few hours. Check both once the subnet is registered.
 
-```bash
-#!/bin/bash
-# resubmit-loop.sh -- re-post the stored vector every 30 minutes, forever.
-set -u
-while true; do
-    cd /opt/prometheon_v2 && /usr/local/bin/uv run prometheon validator resubmit \
-        --config /etc/prometheon/mainnet.toml
-    sleep 1800
-done
-```
+`submit_weights = false` stops re-posts too. `validator resubmit` also says so when the saved vector is more than a day old.
 
-Two things that are easy to get wrong here, both learned the hard way:
-
-**Escalate rather than log-and-continue.** A loop that catches every failure and
-carries on shows `RUNNING` to the supervisor while having submitted nothing for
-hours. Count consecutive failures and `exit 1` after a few, so the supervisor
-reports the process as failed and something actually alerts.
-
-**Source the environment inside the loop, or restart after changing it.** A
-script that reads an env file once at startup will not see a key you add
-afterwards. That is a cycle lost to a config change that looked applied.
-
-**Without the second entry the miners you weighted earn nothing for most of the
-day.**
-Weights stop counting toward consensus once `activity_cutoff` passes, 720
-blocks on netuid 108, about 2.4 hours, while a cycle runs every 24. For the
-remaining ~21 hours the validator's row is masked out of consensus, and the
-miners it weighted sit at zero incentive and zero emission however carefully
-the cycle scored them.
-
-`validator resubmit` never labels and never evaluates, so it costs nothing
-beyond the extrinsic: it re-sends the allocation the last cycle computed. It
-does re-read the chain, so the submission gates and the metagraph are resolved
-fresh and a miner that deregistered since is dropped exactly as it would be at
-first submission. Re-posting inside the 100-block (~20 min) weights rate limit
-; which happens when a re-post lands just after the daily cycle, is
-reported and skipped, not failed.
-
-Thirty minutes is deliberate, and it is bounded on both sides:
-
-| | netuid 108 | |
-|---|---|---|
-| `activity_cutoff` | 720 blocks ≈ **2.4 h** | re-post *more often* than this, or the vector stops counting |
-| `weights_set_rate_limit` | 100 blocks ≈ **20 min** | re-post *less often* than this, or submissions are refused |
-
-Thirty minutes sits between the two with margin at each end: about five
-re-posts inside every cutoff window, so losing one to a rate-limit collision or
-a transient chain error costs nothing, and comfortably clear of the 20-minute
-floor. Hourly also works but leaves only two posts per window, so a single
-missed one puts you within an hour of being masked out of consensus.
-
-A re-post that lands inside the rate limit; which happens when the daily cycle
-has just submitted, is reported and skipped, not failed. Do not treat that log
-line as an error.
-
-Results go to stdout, progress to stderr, so a log keeps both and a pipe keeps
-only the result.
-
-Keep `submit_results = true`. Publishing your signed record is what lets anyone
-else recompute your cycle from the same snapshot and check your arithmetic.
-Turning it off makes your validator unauditable.
+Keep `submit_results = true`. Your signed record is what lets anyone recompute your cycle from the same epoch.
 
 ---
 
 ## Two ways to run a validator
 
-There are two modes, and the choice is `score_source` under `[scoring]`.
+The choice is `score_source` under `[scoring]`.
 
 | | `local` (default) | `endpoint` |
 |---|---|---|
 | Labelling bill | yours | none |
 | GPU | 8 × RTX 5090 or better | none |
 | Cycle time | hours | seconds |
-| What you submit | what you measured | what somebody else measured |
+| What you submit | what you measured | what another validator measured |
 | Contribution to consensus | an independent opinion | a copy of one |
 
 ### What mirroring costs the subnet
 
-Be clear about this before choosing it, because nothing downstream can tell a
-mirrored vector from an earned one.
+Consensus works by validators disagreeing when one of them is wrong. A field where most weight mirrors one provider **can't detect that provider being wrong**. The agreement is manufactured, and vtrust reads a captured subnet as a healthy one. The provider's signature proves which hotkey computed a vector. It never proves the vector is right.
 
-Consensus works by validators disagreeing when one of them is wrong. A field
-where most weight mirrors one provider **cannot detect that provider being
-wrong**; the agreement is manufactured rather than earned, and vtrust, which
-measures agreement, reads a captured subnet as a healthy one. The provider's
-signature proves *which hotkey* computed a vector. It never proves the vector is
-right.
-
-If you mirror, you are delegating your judgement to the provider you pin. That
-can be a reasonable thing to do; it is how you validate without a GPU budget,
-but it is a delegation, not a shortcut to the same outcome.
-
-### Running in `endpoint` mode
+### Running in endpoint mode
 
 ```toml
 [scoring]
 score_source = "endpoint"
-score_provider = "5…"          # the validator hotkey whose record you mirror
+score_provider = "5..."          # the validator hotkey whose record you mirror
 ```
-
-`score_provider` is required in this mode and the config refuses to load without
-it, rather than running a cycle that has nothing to send at the end.
-
-You still need a registered hotkey with a validator permit, and you still need
-to re-post between cycles.
-
-**A re-post catches a mirror up if it fell behind.** `validator resubmit` in
-this mode checks whether the provider has published a day *newer* than the one
-it holds, and if so verifies and submits that instead.
-
-This exists for one failure, which is not hypothetical. A mirror's daily run
-fetches the provider's record for the day. If it runs before the provider has
-published, the run fails, nothing is written, and the mirror re-posts the
-*previous* day's vector until its next daily run, a day later. A provider that
-retries a failed cycle publishes hours late and strands every mirror whose run
-fell in the gap. On netuid 108 on 2026-09-11 that was 22.5% of validating
-stake, sitting a day behind for a full day.
-
-Re-reading the day already held would not help, and this deliberately does not
-do it: a published record is immutable. The DB layer accepts an identical
-resend and refuses a revision with `409 db.duplicate_evaluation`, so the audit
-trail cannot be rewritten. A record you already hold can never have changed.
-
-**A mirror that is current sends no request.** Nothing newer than yesterday can
-exist, because a cycle scores the day before it runs, so an up-to-date mirror
-does a date comparison and stops. Only one that is behind spends a request, and
-never more than three.
-
-A day the provider has not yet published is the ordinary state of the world
-between midnight and its publish, so it is not an error and not logged. Neither
-is a record that fails verification, or a DB layer that cannot be reached: all
-three fall back to re-posting the vector on disk. Weights stop counting once
-`activity_cutoff` passes, so a mirror that declined to submit over a transient
-fetch failure would cost its miners far more than a stale vector does.
-
-This does not make mirroring safer, and it is worth being plain about that. It
-stops a mirror lagging a day behind its provider. It gives it no opinion about
-whether the provider was right. You do **not** need `OPENAI_API_KEY`, the `wrapper`
-extra, or a GPU:
 
 ```bash
-uv sync                      # no --extra wrapper
-uv run prometheon validator run --config ~/prometheon-mainnet.toml
+uv sync                          # no --extra wrapper: nothing is run locally
+uv run prometheon validator run --config ~/prometheon.toml
 ```
 
-`validator run` is still the one command you schedule. It notices the mode and
-fetches instead of computing. Set `dry_run = true` for the first run: it
-verifies the record and prints what it would submit without sending anything.
-
-```text
-day                2026-08-24
-provider           5Provider…
-scoring version    prometheon-scoring/2.1
-snapshot           f9fdd5edc6ab
-corpus             591dcacfaa2d
-weighted hotkeys   9
-burn               599980
-```
-
-### Finding a provider
-
-You need one validator hotkey: whoever's record you want to mirror. Ask the
-data layer who has published:
-
-```bash
-curl -s https://audit.bitfan.ai/v2/evaluations/2026-01-31 \
-  | jq -r '.[] | "\(.validator_hotkey)  \(.results|length) miners  burn \(.burned_weight)"'
-```
-
-Without `jq`, worth having, because a validator host often has neither `jq`
-nor anything else beyond Python:
-
-```bash
-curl -s https://audit.bitfan.ai/v2/evaluations/2026-01-31 | python3 -c '
-import json, sys
-for r in json.load(sys.stdin):
-    print(r["validator_hotkey"], len(r["results"]), "miners", "burn", r["burned_weight"])'
-```
-
-Every record for that date, each naming the hotkey that signed it. Pick one and
-put it in `score_provider`. Nothing is filled in for you, and that is the point:
-mirroring submits whatever that hotkey published, so choosing it is a trust
-decision. If the config picked a default, the subnet would converge on one
-provider by inertia; which is exactly the failure the next section describes.
-
-Worth a look before you commit to one: fetch a few days and check the provider
-publishes consistently, and that its vector is not wildly different from the
-others listed. A validator that publishes intermittently leaves you with a stale
-vector on the days it skips.
-
-### What it requires
-
-No GPU, and no labelling key. What is left is an ordinary small server:
-
-| | |
-|---|---|
-| GPU | **none** |
-| CPU | any modern x86-64 or arm64; 2 cores is ample |
-| RAM | ~2 GB; it fetches a JSON record and verifies a signature |
-| Disk | ~1 GB for the checkout and its virtualenv |
-| Network | outbound HTTPS to the data layer, and a chain endpoint |
-| Keys | a registered hotkey **with a validator permit** |
-| Labelling key | **not needed**, you label nothing |
-
-Install without the `wrapper` extra, which is what pulls torch and the
-evaluation runtime:
-
-```bash
-uv sync                      # no --extra wrapper
-```
-
-A cycle in this mode is a fetch, five provenance checks and one extrinsic,
-seconds, not hours. Nothing downloads a model, so `model_timeout_seconds`,
-`device` and the whole `[evaluation]` section are inert.
-
-The permit still matters: mirroring changes where your numbers come from, not
-whether the chain accepts them. A hotkey without a validator permit cannot set
-weights whatever it submits.
-
-Then the same two crontab entries as `local` mode, the daily fetch and the
-30-minute re-post. A mirrored vector expires against `activity_cutoff` exactly like
-a computed one, so `validator resubmit` is not optional:
-
-```cron
-0  4 * * * cd /opt/prometheon_v2 && /usr/local/bin/uv run prometheon validator run \
-    --config /etc/prometheon/mainnet.toml >> /var/log/prometheon.log 2>&1
-*/30 * * * * cd /opt/prometheon_v2 && /usr/local/bin/uv run prometheon validator resubmit \
-    --config /etc/prometheon/mainnet.toml >> /var/log/prometheon.log 2>&1
-```
-
-### What is checked before a fetched vector is submitted
-
-A mirrored record is refused, not submitted, if any of these fail. The point is
-provenance, the only property that can be checked mechanically:
+`validator run` notices the mode. It fetches `GET /api/v1/results/{day}/{score_provider}` from the hub, and refuses to submit unless all of these hold:
 
 | Check | Why |
 |---|---|
-| Published by the pinned `score_provider` | Otherwise the DB layer chooses whom you trust |
-| Signature verifies against that hotkey | The layer cannot mint a record for a key it does not hold |
-| Provider is registered and holds a permit | A deregistered validator's scores are not worth submitting |
-| Record's date and netuid match the cycle | Catches a stale or misrouted record |
-| Record's snapshot hash matches the one you fetched | Catches being served a different corpus for the same day |
+| Published by the pinned `score_provider` | otherwise the hub chooses whom you trust |
+| Signature verifies against that hotkey | the hub can't mint a record for a key it doesn't hold |
+| Same day, netuid and scoring version | catches a stale, misrouted or old-rules record |
+| Provider is registered and holds a permit | a deregistered validator's scores aren't worth submitting |
+| The record's epoch hash matches the signed epoch for the day | catches a record computed from a different day |
 
-Each failure names which check it was. None of them tells you the numbers are
-*good*, only that they came from the validator you decided to follow.
+The burn in the record is submitted as part of the vector. Dropping it would scale every miner up. `validator resubmit` in this mode also checks for a newer day from the provider and catches up, so a provider that published late doesn't leave you a day behind.
+
+You still need a registered hotkey with a validator permit, and you still need the re-post. Choosing a provider is a trust decision, so no default is filled in. The hub's public pages list who has published.
 
 ---
 
 ## Costs
 
-Labelling is the bill you control. It scales with corpus size, and the policy
-prefix is sent with every batch, roughly 2,100 tokens against a 4,096 ceiling.
-Batching at 100 items amortises it; the default is already 100.
+Labelling is the bill you control. It scales with the corpus, and the policy goes with every batch, so batches of 100 items (the maximum and the default) keep the overhead down.
 
-Evaluation costs GPU time rather than API calls, and it is now **your** GPU
-time: each eligible model is downloaded once, cached by revision, loaded, run
-over the corpus, then freed before the next.
+Evaluation is your GPU time. Each eligible paid model is downloaded once per revision, loaded, run over the corpus and freed before the next. Only paid models of eligible miners are run, and the submission fee keeps the field to models someone paid to enter.
 
-That is the trade this design makes, and it is worth being explicit about who
-pays what. Miners pay nothing to be evaluated, no serving, no endpoint, no GPU
-bill between cycles. Validating carries the whole inference cost instead, which
-is why the hardware floor above is a requirement rather than advice. Bandwidth
-is the smaller half: models are capped at 24 GiB and cached by revision, so a
-field that does not re-commit costs one download each.
+## Upgrading
+
+`git pull` doesn't touch your config. If a release changes the rules, it changes `scoring_version`, and a config written for the old rules refuses to load until you update it. After pulling, compare your config with the example:
+
+```bash
+git pull
+diff <(grep -vE '^\s*(#|$)' configs/finney.example.toml) \
+     <(grep -vE '^\s*(#|$)' ~/prometheon.toml)
+```

@@ -1,13 +1,13 @@
 [Unit]
 Description=Re-post Prometheon weights so they keep counting between cycles
-# Weights stop counting once activity_cutoff passes: 720 blocks (~2.4 h) on
-# netuid 108, against a cycle that runs every 24 h. Hourly sits well inside
-# that, and well above the 100-block (~20 min) weights rate limit. A re-post
-# that lands inside the rate limit is skipped, not failed.
+# Weights stop counting once the subnet's activity_cutoff passes, against a
+# cycle that runs every 24 h. Every 30 minutes, on :00 and :30 like
+# `validator schedule`, has to be shorter than activity_cutoff and longer than
+# weights_set_rate_limit; check both with `btcli subnet hyperparameters`. A
+# re-post that lands inside the rate limit is skipped, not failed.
 
 [Timer]
-OnBootSec=10min
-OnUnitActiveSec=60min
+OnCalendar=*-*-* *:00,30:00 UTC
 AccuracySec=1min
 Persistent=true
 Unit=prometheon-resubmit.service
