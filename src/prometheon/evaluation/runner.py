@@ -130,38 +130,90 @@ def discard_checkpoint(path: str) -> int:
     Pruning trades bandwidth for space and makes the requirement the size of the
     largest single model instead of the sum of all of them.
 
-    Deletes the revision snapshot and its blobs, not the whole repo directory:
-    another revision of the same repo may be a different miner's commitment.
+    Deletes the revision snapshot and the blobs only it uses. Not the whole repo
+    directory, because another revision of the same repo may be a different
+    miner's commitment, and **not a blob another revision still links to**:
+    revisions share a blob whenever a file is unchanged between them, and v2
+    deleted it anyway, leaving the other snapshot pointing at nothing (S9).
+    Nothing outside the repo's own ``blobs`` directory is ever deleted, whatever
+    a link points at.
+
     Never raises. Failing to reclaim space is not a reason to stop scoring, and
     the caller has already got what it needed from the path.
     """
+    try:
+        return _discard_snapshot(Path(path))
+    except OSError:
+        return 0
+
+
+def _discard_snapshot(snapshot: Path) -> int:
     import shutil
 
-    target = Path(path).resolve()
+    target = snapshot.resolve()
     if not target.is_dir():
         return 0
-    # `snapshot_download` returns .../snapshots/<sha>, whose files are symlinks
-    # into .../blobs. Removing the snapshot alone reclaims nothing.
+    # `snapshot_download` returns <repo>/snapshots/<sha>, whose files are
+    # symlinks into <repo>/blobs. Removing the snapshot alone reclaims nothing.
+    repo = target.parent.parent
+    blobs_dir = (repo / "blobs").resolve()
     freed = 0
-    blobs: set[Path] = set()
+    linked: set[Path] = set()
     for entry in target.rglob("*"):
-        if entry.is_symlink():
-            resolved = entry.resolve()
-            if resolved.is_file():
-                blobs.add(resolved)
-        elif entry.is_file():
-            freed += entry.stat().st_size
-    for blob in blobs:
+        # One unreadable entry must not stop the rest being reclaimed.
         try:
-            freed += blob.stat().st_size
+            if entry.is_symlink():
+                resolved = entry.resolve()
+                if resolved.parent == blobs_dir and resolved.is_file():
+                    linked.add(resolved)
+            elif entry.is_file():
+                freed += _size(entry)
+        except OSError:
+            continue
+
+    still_used = _blobs_linked_from_other_snapshots(repo, target)
+    # If the other revisions could not be read, keep every blob: an extra blob
+    # costs disk, while deleting a shared one leaves another miner's snapshot
+    # pointing at nothing.
+    removable = linked - still_used if still_used is not None else set()
+    for blob in sorted(removable):
+        size = _size(blob)
+        try:
             blob.unlink()
         except OSError:
-            freed -= 0
-    try:
-        shutil.rmtree(target, ignore_errors=True)
-    except OSError:
-        pass
+            continue
+        freed += size
+    shutil.rmtree(target, ignore_errors=True)
     return freed
+
+
+def _blobs_linked_from_other_snapshots(repo: Path, discarded: Path) -> set[Path] | None:
+    """Every blob a sibling revision's snapshot still points at.
+
+    ``None`` when a sibling could not be read completely, which the caller
+    treats as "every blob may be in use".
+    """
+    kept: set[Path] = set()
+    snapshots = repo / "snapshots"
+    try:
+        if not snapshots.is_dir():
+            return kept
+        for sibling in snapshots.iterdir():
+            if sibling.resolve() == discarded:
+                continue
+            for entry in sibling.rglob("*"):
+                if entry.is_symlink():
+                    kept.add(entry.resolve())
+    except OSError:
+        return None
+    return kept
+
+
+def _size(path: Path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
 
 
 def evaluate_miner(
