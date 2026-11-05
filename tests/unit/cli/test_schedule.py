@@ -8,16 +8,24 @@ just smeared across the half hour.
 
 from __future__ import annotations
 
+import argparse
 import datetime as dt
+import threading
+from dataclasses import dataclass
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
 from prometheon.cli.schedule import (
+    MAX_CYCLE_ATTEMPTS,
     RESUBMIT_MINUTES,
     is_cycle_due,
     run_forever,
     seconds_until_next_boundary,
+    start_thread,
 )
+from prometheon.errors import EpochNotReadyError
 
 pytestmark = pytest.mark.unit
 
@@ -64,163 +72,235 @@ class TestBoundaryAlignment:
 
 
 class TestWhenTheCycleIsDue:
+    """Due means: at or after the hour, and yesterday is not finished yet."""
+
     def test_not_before_the_configured_hour(self) -> None:
-        assert not is_cycle_due(_at(3, 59), cycle_hour=4, last_cycle_day=None)
+        assert not is_cycle_due(_at(3, 59), cycle_hour=4, last_finished_day=None)
 
-    def test_due_at_the_hour_when_it_has_not_run_today(self) -> None:
-        assert is_cycle_due(_at(4, 0), cycle_hour=4, last_cycle_day=None)
+    def test_due_at_the_hour_when_nothing_has_finished(self) -> None:
+        assert is_cycle_due(_at(4, 0), cycle_hour=4, last_finished_day=None)
 
-    def test_not_due_twice_in_one_day(self) -> None:
-        assert not is_cycle_due(_at(9, 30), cycle_hour=4, last_cycle_day=_at(4, 0).date())
+    def test_not_due_once_yesterday_is_finished(self) -> None:
+        """B2: the state file holds the day *scored*, which is yesterday.
 
-    def test_a_restart_after_the_hour_still_runs_the_day_it_missed(self) -> None:
-        """The skipped day is the one miners are waiting to be paid for."""
-        assert is_cycle_due(_at(11, 0), cycle_hour=4, last_cycle_day=dt.date(2026, 8, 26))
+        v2 compared that with today, so every restart re-ran a finished cycle.
+        """
+        yesterday = _at(0, 0).date() - dt.timedelta(days=1)
+        assert not is_cycle_due(_at(9, 30), cycle_hour=4, last_finished_day=yesterday)
+
+    def test_due_when_the_last_finished_day_is_older(self) -> None:
+        two_days_ago = _at(0, 0).date() - dt.timedelta(days=2)
+        assert is_cycle_due(_at(11, 0), cycle_hour=4, last_finished_day=two_days_ago)
+
+
+def _clock(start: dt.datetime) -> tuple[Any, Any]:
+    state = {"now": start}
+    return (
+        (lambda: state["now"]),
+        (lambda seconds: state.__setitem__("now", state["now"] + dt.timedelta(seconds=seconds))),
+    )
+
+
+@dataclass
+class _Done:
+    """A cycle that ran inline: finished at once, with or without an error."""
+
+    day: dt.date
+    _error: BaseException | None = None
+
+    def finished(self) -> bool:
+        return True
+
+    def error(self) -> BaseException | None:
+        return self._error
+
+
+def _inline(cycle: Any, day: dt.date) -> _Done:
+    try:
+        cycle(day)
+    except Exception as exc:
+        return _Done(day, exc)
+    return _Done(day)
+
+
+YESTERDAY = _at(0, 0).date() - dt.timedelta(days=1)
 
 
 class TestTheLoop:
-    def _clock(self, start: dt.datetime):
-        state = {"now": start}
-        return (
-            (lambda: state["now"]),
-            (lambda s: state.__setitem__("now", state["now"] + dt.timedelta(seconds=s))),
-        )
-
-    def test_it_reposts_on_boundaries_and_cycles_once_a_day(self) -> None:
-        now, sleep = self._clock(_at(3, 0))
+    def test_it_scores_yesterday_once_and_reposts_on_every_boundary(self) -> None:
+        now, sleep = _clock(_at(3, 0))
         cycles: list[dt.date] = []
         reposts: list[dt.datetime] = []
         run_forever(
-            cycle=lambda: cycles.append(now().date()),
+            cycle=cycles.append,
             resubmit=lambda: reposts.append(now()),
             cycle_hour=4,
             now=now,
             sleep=sleep,
+            spawn=_inline,
             max_iterations=8,
         )
-        assert cycles == [dt.date(2026, 8, 27)], "exactly one cycle for the day"
-        # Everything else is a re-post, and every one lands on a boundary.
-        assert reposts, "the loop must keep re-posting between cycles"
-        assert all(r.minute in RESUBMIT_MINUTES and r.second == 0 for r in reposts)
+        assert cycles == [YESTERDAY], "exactly one cycle, for yesterday"
+        assert len(reposts) == 8, "every wake-up re-posts, including the one that starts a cycle"
+        assert all(r.minute in RESUBMIT_MINUTES and r.second == 0 for r in reposts[1:])
 
-    def test_a_failing_cycle_does_not_stop_the_reposts(self) -> None:
-        """Yesterday's vector still needs to keep counting while today is broken."""
-        now, sleep = self._clock(_at(3, 59))
-        reposts = []
+    def test_a_failed_cycle_is_retried_a_bounded_number_of_times(self) -> None:
+        """B20: one transient failure no longer costs the day, but a real fault
+        is not retried forever either."""
+        now, sleep = _clock(_at(4, 0))
+        attempts: list[dt.date] = []
 
-        def boom() -> None:
+        def boom(day: dt.date) -> None:
+            attempts.append(day)
             raise RuntimeError("labelling endpoint down")
 
         run_forever(
             cycle=boom,
+            resubmit=lambda: None,
+            cycle_hour=4,
+            now=now,
+            sleep=sleep,
+            spawn=_inline,
+            max_iterations=12,
+        )
+        assert attempts == [YESTERDAY] * MAX_CYCLE_ATTEMPTS
+
+    def test_an_epoch_not_built_yet_is_retried_without_counting(self) -> None:
+        """B20: a validator that starts before the hub has built the day waits."""
+        now, sleep = _clock(_at(4, 0))
+        attempts: list[dt.date] = []
+
+        def not_yet(day: dt.date) -> None:
+            attempts.append(day)
+            if len(attempts) < 6:
+                raise EpochNotReadyError("409")
+
+        run_forever(
+            cycle=not_yet,
+            resubmit=lambda: None,
+            cycle_hour=4,
+            now=now,
+            sleep=sleep,
+            spawn=_inline,
+            max_iterations=12,
+        )
+        assert len(attempts) == 6, "five not-ready answers did not use up the attempts"
+
+    def test_a_failing_cycle_does_not_stop_the_reposts(self) -> None:
+        now, sleep = _clock(_at(3, 59))
+        reposts: list[dt.datetime] = []
+
+        def boom(_day: dt.date) -> None:
+            raise RuntimeError("down")
+
+        run_forever(
+            cycle=boom,
             resubmit=lambda: reposts.append(now()),
             cycle_hour=4,
             now=now,
             sleep=sleep,
+            spawn=_inline,
             max_iterations=5,
         )
-        assert len(reposts) >= 3
+        assert len(reposts) == 5
 
-    def test_a_failing_cycle_is_not_retried_every_boundary(self) -> None:
-        """Retrying would re-label the same corpus every 30 minutes, and
-        labelling is the only real bill."""
-        now, sleep = self._clock(_at(4, 0))
-        attempts = []
 
-        def boom() -> None:
-            attempts.append(now())
-            raise RuntimeError("nope")
+class TestRepostsContinueWhileACycleRuns:
+    def test_a_long_cycle_on_its_thread_does_not_silence_the_reposts(self) -> None:
+        """B27: v2 ran both jobs in one loop, so a cycle of many hours masked the
+        validator out of consensus while it computed. Uses a real thread."""
+        now, sleep_clock = _clock(_at(4, 0))
+        release = threading.Event()
+        started = threading.Event()
+        reposts: list[dt.datetime] = []
+
+        def long_cycle(_day: dt.date) -> None:
+            started.set()
+            assert release.wait(timeout=10)
+
+        def sleep(seconds: float) -> None:
+            sleep_clock(seconds)
+
+        def repost() -> None:
+            reposts.append(now())
+            if len(reposts) == 4:
+                release.set()
 
         run_forever(
-            cycle=boom,
-            resubmit=lambda: None,
+            cycle=long_cycle,
+            resubmit=repost,
             cycle_hour=4,
             now=now,
             sleep=sleep,
-            max_iterations=10,
+            spawn=start_thread,
+            max_iterations=4,
         )
-        assert len(attempts) == 1
-
-    def test_the_two_jobs_never_overlap(self) -> None:
-        """One loop, not two timers: a long cycle delays the next re-post
-        rather than submitting weights underneath itself."""
-        now, sleep = self._clock(_at(4, 0))
-        running = {"cycle": False}
-        overlaps = []
-
-        def slow_cycle() -> None:
-            running["cycle"] = True
-            sleep(3 * 3600)  # a cycle that runs three hours
-            running["cycle"] = False
-
-        run_forever(
-            cycle=slow_cycle,
-            resubmit=lambda: overlaps.append(running["cycle"]),
-            cycle_hour=4,
-            now=now,
-            sleep=sleep,
-            max_iterations=6,
-        )
-        assert not any(overlaps), "a re-post ran while the cycle was in flight"
+        assert started.is_set()
+        assert len(reposts) == 4, "re-posts kept their schedule while the cycle ran"
 
 
 class TestSurvivingARestart:
-    """The once-a-day guard has to outlive the process.
-
-    A supervisor restarting a crashing validator re-ran the whole cycle on
-    every start, because the guard lived only in memory. Observed as three
-    `scheduler started` lines and three cycles before one submission landed --
-    cheap while mirroring, but in `local` mode that is the labelling bill again
-    each time, and labelling is the only real bill.
-    """
-
-    def _clock(self, start: dt.datetime):
-        state = {"now": start}
-        return (
-            (lambda: state["now"]),
-            (lambda s: state.__setitem__("now", state["now"] + dt.timedelta(seconds=s))),
-        )
-
-    def test_a_restart_does_not_rerun_a_cycle_already_recorded(self) -> None:
-        now, sleep = self._clock(_at(9, 0))
-        cycles = []
+    def test_a_restart_does_not_rerun_a_finished_day(self) -> None:
+        now, sleep = _clock(_at(9, 0))
+        cycles: list[dt.date] = []
         run_forever(
-            cycle=lambda: cycles.append(now().date()),
+            cycle=cycles.append,
             resubmit=lambda: None,
             cycle_hour=4,
             now=now,
             sleep=sleep,
-            last_cycle_day=dt.date(2026, 8, 27),  # what the state file says
+            spawn=_inline,
+            last_finished_day=lambda: YESTERDAY,  # what the state file says
             max_iterations=6,
         )
-        assert cycles == [], "the day was already submitted before the restart"
+        assert cycles == []
 
-    def test_a_restart_still_runs_a_day_that_was_never_submitted(self) -> None:
-        """Yesterday's state must not suppress today's cycle."""
-        now, sleep = self._clock(_at(9, 0))
-        cycles = []
+    def test_a_restart_runs_a_day_that_was_never_finished(self) -> None:
+        now, sleep = _clock(_at(9, 0))
+        cycles: list[dt.date] = []
         run_forever(
-            cycle=lambda: cycles.append(now().date()),
+            cycle=cycles.append,
             resubmit=lambda: None,
             cycle_hour=4,
             now=now,
             sleep=sleep,
-            last_cycle_day=dt.date(2026, 8, 26),  # a day behind
+            spawn=_inline,
+            last_finished_day=lambda: YESTERDAY - dt.timedelta(days=1),
             max_iterations=4,
         )
-        assert cycles == [dt.date(2026, 8, 27)]
+        assert cycles == [YESTERDAY]
 
-    def test_no_state_at_all_runs_the_cycle(self) -> None:
-        """A fresh validator has no state file; that must not mean 'skip'."""
-        now, sleep = self._clock(_at(9, 0))
-        cycles = []
-        run_forever(
-            cycle=lambda: cycles.append(now().date()),
-            resubmit=lambda: None,
-            cycle_hour=4,
-            now=now,
-            sleep=sleep,
-            last_cycle_day=None,
-            max_iterations=4,
+
+class TestTheScheduleCommand:
+    def test_a_scheduled_local_cycle_is_given_its_day_and_policy(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+    ) -> None:
+        """B1: v2 built the cycle's arguments without `policy`, so every scheduled
+        local cycle died on an AttributeError and nothing was ever scored."""
+        from prometheon.cli import validator as cli
+
+        config = SimpleNamespace(
+            scoring=SimpleNamespace(score_source=SimpleNamespace(value="local")),
+            validator=SimpleNamespace(
+                state_directory=tmp_path, submit_weights=True, submit_results=True
+            ),
         )
-        assert cycles == [dt.date(2026, 8, 27)]
+        seen: list[argparse.Namespace] = []
+        monkeypatch.setattr(cli, "load", lambda _path: config)
+        monkeypatch.setattr(cli, "cmd_run", lambda args: seen.append(args) or 0)
+        monkeypatch.setattr(
+            "prometheon.cli.schedule.start_thread", lambda cycle, day: _inline(cycle, day)
+        )
+
+        def fake_run_forever(**kwargs: Any) -> None:
+            kwargs["cycle"](YESTERDAY)
+
+        monkeypatch.setattr("prometheon.cli.schedule.run_forever", fake_run_forever)
+        cli.cmd_schedule(
+            argparse.Namespace(
+                config="cfg.toml", cycle_hour=4, max_iterations=1, policy="policy.md"
+            )
+        )
+        (args,) = seen
+        assert args.policy == "policy.md"
+        assert args.date == YESTERDAY.isoformat()

@@ -13,6 +13,7 @@ import datetime as dt
 import hashlib
 import json
 import re
+import threading
 import time
 from collections.abc import Mapping
 from pathlib import Path
@@ -124,17 +125,23 @@ def _hub_client(config: Config, *, keypair: Any = None) -> HubClient:
 _STALE_REPOST_DAYS: Final[int] = 2
 
 
+#: One send at a time from this process. Under `validator schedule` the cycle
+#: runs on its own thread while re-posts continue on the main one.
+_SEND_LOCK = threading.Lock()
+
+
 def _send(config: Config, state: CycleState, *, wallet: Any, subtensor: Any) -> CycleState:
     """Send the state's vector and record what was actually sent."""
     capabilities = chain.detect_capabilities(subtensor)
-    sent = submit_allocation(
-        weights=state.weights,
-        burn_hotkey=state.burn_hotkey,
-        config=config,
-        subtensor=subtensor,
-        wallet=wallet,
-        mechid=0 if capabilities.supports_mechid else None,
-    )
+    with _SEND_LOCK:
+        sent = submit_allocation(
+            weights=state.weights,
+            burn_hotkey=state.burn_hotkey,
+            config=config,
+            subtensor=subtensor,
+            wallet=wallet,
+            mechid=0 if capabilities.supports_mechid else None,
+        )
     state.sent_at = int(time.time())
     state.sent_weights = dict(sent.units)
     state.gone = list(sent.gone)
@@ -628,14 +635,12 @@ def _last_completed_cycle_day(config: Config) -> dt.date | None:
 
 
 def cmd_schedule(args: argparse.Namespace) -> int:
-    """Run the cycle daily and the re-post every half hour, in this process.
+    """Run the cycle daily and re-post every half hour, in this process.
 
-    The alternative to two crontab entries, for a host that has no cron -- and
-    the two jobs share a process, so a cycle that runs long cannot have a
-    re-post submit weights underneath it. No lock file needed.
-
+    The alternative to cron or systemd. The cycle runs on its own thread, so
+    re-posts keep the last vector counting while a local cycle works for hours.
     Wake-ups are aligned to the wall clock, so every validator running this
-    re-posts on the same :00/:30 instants however long its own cycle took.
+    re-posts on the same :00/:30 instants.
     """
     from prometheon.cli.schedule import run_forever
 
@@ -646,29 +651,39 @@ def cmd_schedule(args: argparse.Namespace) -> int:
         f"re-post on :00 and :30"
     )
 
-    def cycle() -> None:
-        # Fresh Namespace per run: `--date` must stay unset so each cycle
-        # targets its own yesterday rather than the day the process started.
-        cmd_run(argparse.Namespace(config=args.config, date=None))
+    def cycle(day: dt.date) -> None:
+        # v2 built this Namespace without `policy`, so in local mode every
+        # scheduled cycle died on an AttributeError and nothing was scored (B1).
+        cmd_run(
+            argparse.Namespace(
+                config=args.config,
+                date=day.isoformat(),
+                policy=getattr(args, "policy", None),
+                force=False,
+            )
+        )
 
     def resubmit() -> None:
+        try:
+            state = load_state(config)
+        except ConfigError as exc:
+            note(f"re-post skipped: {exc}")
+            return
+        if state is None:
+            note("nothing to re-post yet: no cycle has computed a vector")
+            return
         cmd_resubmit(argparse.Namespace(config=args.config, date=None))
 
-    # Seed the once-a-day guard from the state file the last cycle wrote, so a
-    # restart does not re-run a cycle that already submitted. In memory alone
-    # this resets on every start, and a supervisor restarting a crashing
-    # validator would re-run the cycle each time -- in `local` mode that means
-    # re-labelling a corpus that is already paid for.
     already = _last_completed_cycle_day(config)
     if already is not None:
-        note(f"last cycle on record: {already.isoformat()}")
+        note(f"last finished cycle on record: {already.isoformat()}")
 
     run_forever(
         cycle=cycle,
         resubmit=resubmit,
         cycle_hour=args.cycle_hour,
         say=note,
-        last_cycle_day=already,
+        last_finished_day=lambda: _last_completed_cycle_day(config),
         max_iterations=args.max_iterations,
     )
     return EXIT_OK
