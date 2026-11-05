@@ -216,6 +216,67 @@ class NotAuthorizedError(DbLayerError):
 
 
 # ---------------------------------------------------------------------------
+# The hub: the signed daily epoch and the results it stores
+# ---------------------------------------------------------------------------
+
+
+class HubError(PrometheonError):
+    """A call to the hub failed, or what it served could not be accepted.
+
+    Carries the HTTP status and the hub's own error code when the failure came
+    from a response, so a caller can tell "not built yet" from "you are not a
+    validator" without parsing prose.
+    """
+
+    code: str = "hub.error"
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        error_code: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.error_code = error_code
+
+
+class EpochNotReadyError(HubError):
+    """The hub has not built this day's epoch yet. Wait and retry."""
+
+    code: str = "hub.epoch_not_ready"
+
+
+class EpochMissingError(HubError):
+    """The hub says this day will never have an epoch."""
+
+    code: str = "hub.epoch_missing"
+
+
+class EpochVerificationError(HubError):
+    """The epoch's signature, schema, or contents could not be accepted.
+
+    Never retried: an epoch that fails verification is a pinned-key mismatch, a
+    version skew, or tampering, and each of those needs a person.
+    """
+
+    code: str = "hub.epoch_invalid"
+
+
+class FeedFileError(HubError):
+    """A content file did not match what the signed epoch says it holds."""
+
+    code: str = "hub.feed_invalid"
+
+
+class HubAuthError(HubError):
+    """The hub refused the request's signature, or this hotkey's permit."""
+
+    code: str = "hub.not_authorized"
+
+
+# ---------------------------------------------------------------------------
 # Labelling
 # ---------------------------------------------------------------------------
 
@@ -273,7 +334,13 @@ __all__ = [
     "DbLayerError",
     "DuplicateModelError",
     "EmbargoedError",
+    "EpochMissingError",
+    "EpochNotReadyError",
+    "EpochVerificationError",
     "EvaluationError",
+    "FeedFileError",
+    "HubAuthError",
+    "HubError",
     "LabelResponseError",
     "LabellingError",
     "ManifestViolationError",
