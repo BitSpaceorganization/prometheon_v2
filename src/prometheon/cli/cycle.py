@@ -31,7 +31,7 @@ it, or diff two validators' runs against each other.
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from fractions import Fraction
 from typing import Any
@@ -48,7 +48,6 @@ from prometheon.config import Config
 from prometheon.errors import (
     CommitmentError,
     ConfigError,
-    EvaluationError,
     SubtensorError,
     ValidatorFaultError,
 )
@@ -60,8 +59,10 @@ from prometheon.evaluation.corpus import (
     corpus_content_hash,
     corpus_order_key,
 )
+from prometheon.evaluation.preflight import check_evaluation_runtime
 from prometheon.evaluation.result import MinerEvaluation
 from prometheon.evaluation.runner import (
+    CheckpointUnavailableError,
     MinerTarget,
     build_engine,
     discard_checkpoint,
@@ -152,10 +153,23 @@ def run_cycle(
     policy: Policy,
     now: int,
     progress: Any = None,
+    check_runtime: Callable[[], None] | None = None,
 ) -> CycleResult:
-    """Run one day's cycle and return what it computed, without submitting."""
+    """Run one day's cycle and return what it computed, without submitting.
+
+    ``check_runtime`` raises :class:`ValidatorFaultError` when this validator
+    cannot run a model at all. It defaults to a real canary on the configured
+    device and dtype, and is checked before labelling and again after any model
+    that failed every batch.
+    """
     say = progress if progress is not None else (lambda _message: None)
     notes: list[str] = []
+    if check_runtime is None:
+
+        def check_runtime() -> None:
+            check_evaluation_runtime(
+                device=config.evaluation.device, dtype=config.evaluation.torch_dtype
+            )
 
     # --- 1. can this cycle submit at all? --------------------------------
     say("checking chain submission gates")
@@ -192,6 +206,11 @@ def run_cycle(
     _stop_on_upstream_outage(validations)
     valid = [result for result in validations if result.valid]
     say(f"{len(valid)} of {len(validations)} models can be evaluated")
+    if valid:
+        # Before anything is paid for: a validator that cannot run a model
+        # would label the day and then score every miner zero (B10).
+        say("checking that this validator can run a model")
+        check_runtime()
 
     # --- 3. near-duplicates out, then ground truth -------------------------
     dedupe = drop_near_duplicates(
@@ -230,26 +249,36 @@ def run_cycle(
         view = corpus.for_miner(result.hotkey, coldkeys[result.hotkey])
         try:
             model_path = download_checkpoint(target)
-        except EvaluationError as exc:
+        except CheckpointUnavailableError as exc:
+            # The repository's fault, so every validator sees it: score it.
+            # Any other download failure is raised as ValidatorFaultError and
+            # stops the cycle instead.
             evaluations.append(_unevaluable(target, view, reason=str(exc), config=config))
+            notes.append(f"{result.hotkey}: {exc}")
             continue
 
-        evaluations.append(
-            evaluate_miner(
-                engine=build_engine(
-                    model_path,
-                    dtype=config.evaluation.torch_dtype,
-                    device=config.evaluation.device,
-                    revision=result.hf_revision,
-                ),
-                target=target,
-                items=view,
-                policy=policy.text,
-                policy_version=policy.version,
-                batch_size=config.evaluation.batch_size,
-                deadline_seconds=config.evaluation.model_timeout_seconds,
-            )
+        evaluation = evaluate_miner(
+            engine=build_engine(
+                model_path,
+                dtype=config.evaluation.torch_dtype,
+                device=config.evaluation.device,
+                revision=result.hf_revision,
+            ),
+            target=target,
+            items=view,
+            policy=policy.text,
+            policy_version=policy.version,
+            batch_size=config.evaluation.batch_size,
+            deadline_seconds=config.evaluation.model_timeout_seconds,
         )
+        if evaluation.total and not evaluation.has_token_reading:
+            # Every batch failed. Either the model is broken, which is the
+            # miner's, or this validator stopped being able to run anything,
+            # which must not be scored. The canary tells them apart.
+            check_runtime()
+            reasons = sorted(set(evaluation.failure_reasons))
+            notes.append(f"{result.hotkey}: every batch failed ({'; '.join(reasons)[:300]})")
+        evaluations.append(evaluation)
         if config.evaluation.discard_checkpoints:
             freed = discard_checkpoint(model_path)
             if freed:
