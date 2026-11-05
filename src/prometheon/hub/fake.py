@@ -13,10 +13,10 @@ the wire.
 
 Use it as an ``httpx.MockTransport``::
 
-    hub = FakeHub(netuid=481)
+    hub = FakeHub(netuid=1)
     hub.register(validator_hotkey, CallerRole.VALIDATOR)
     hub.publish_day(day, miners=[...], models=[...], test_lines=[...], ...)
-    client = HubClient(base_url="https://hub.invalid", netuid=481,
+    client = HubClient(base_url="https://hub.invalid", netuid=1,
                        epoch_keys=hub.epoch_keys, keypair=validator,
                        transport=hub.transport)
 """
@@ -30,9 +30,11 @@ import hashlib
 import json
 import re
 import secrets
+import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Final
 
 import httpx
@@ -120,6 +122,9 @@ class FakeHub:
     credits: dict[str, dict[str, Any]] = field(default_factory=dict)
     #: ``(method, target)`` for every request, signed or not.
     request_log: list[tuple[str, str]] = field(default_factory=list)
+    #: Where presigned URLs point. The default never resolves, which suits a
+    #: MockTransport; :func:`serve` points it at the server itself.
+    storage_base: str = f"https://{_STORAGE_HOST}"
 
     def __post_init__(self) -> None:
         self.directory = StaticHotkeyDirectory({}, netuid=self.netuid)
@@ -205,7 +210,7 @@ class FakeHub:
         target = request.url.raw_path.decode("ascii")
         self.request_log.append((request.method, target))
         try:
-            if request.url.host == _STORAGE_HOST:
+            if request.url.host == _STORAGE_HOST or request.url.path.startswith("/storage/"):
                 return self._download(request)
             return self._serve(request, target)
         except _ReplyError as reply:
@@ -393,7 +398,9 @@ class FakeHub:
     def _presign(self, day: dt.date, name: str, expires: int) -> str:
         token = secrets.token_hex(16)
         self._urls[token] = (day, name, expires)
-        return f"https://{_STORAGE_HOST}/{day.isoformat()}/{name}/{token}"
+        base = self.storage_base.rstrip("/")
+        prefix = "" if base.endswith("/storage") or base.endswith(_STORAGE_HOST) else "/storage"
+        return f"{base}{prefix}/{day.isoformat()}/{name}/{token}"
 
 
 def _day(raw: object) -> dt.date:
@@ -418,4 +425,56 @@ def _cursor_offset(cursor: str | None) -> int:
         raise _ReplyError("bad cursor", status=400, code=HubErrorCode.BAD_CURSOR) from exc
 
 
-__all__ = ["CORPUS_PAGE_SIZE", "EMBARGO_DAYS", "TEST_SIGNING_SEED", "FakeHub", "gzip_lines"]
+def serve(hub: FakeHub, *, host: str = "127.0.0.1", port: int = 8600) -> ThreadingHTTPServer:
+    """Serve ``hub`` over plain HTTP on a background thread, for local runs.
+
+    For a development chain on one machine, and for tests that want a real
+    socket: no TLS, no limits. ``port=0`` takes any free port; read it back
+    from ``server_address``. Presigned URLs point back at this server. Call
+    ``shutdown()`` on the result to stop it.
+    """
+
+    class Handler(BaseHTTPRequestHandler):
+        def _relay(self) -> None:
+            length = int(self.headers.get("content-length") or 0)
+            body = self.rfile.read(length) if length else b""
+            request = httpx.Request(
+                self.command,
+                f"{origin}{self.path}",
+                headers=dict(self.headers.items()),
+                content=body,
+            )
+            response = hub.handler(request)
+            payload = response.content
+            self.send_response(response.status_code)
+            self.send_header(
+                "content-type", response.headers.get("content-type", "application/json")
+            )
+            self.send_header("content-length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def do_GET(self) -> None:
+            self._relay()
+
+        def do_POST(self) -> None:
+            self._relay()
+
+        def log_message(self, format: str, *args: Any) -> None:
+            return None
+
+    server = ThreadingHTTPServer((host, port), Handler)
+    origin = f"http://{host}:{server.server_address[1]}"
+    hub.storage_base = f"{origin}/storage"
+    threading.Thread(target=server.serve_forever, name="fake-hub", daemon=True).start()
+    return server
+
+
+__all__ = [
+    "CORPUS_PAGE_SIZE",
+    "EMBARGO_DAYS",
+    "TEST_SIGNING_SEED",
+    "FakeHub",
+    "gzip_lines",
+    "serve",
+]
