@@ -63,6 +63,7 @@ def _commitment_from(args: argparse.Namespace) -> ModelCommitment:
     return ModelCommitment(hf_repo=hf_repo, hf_revision=hf_revision)
 
 
+@chain.closes_connections
 def cmd_commit(args: argparse.Namespace) -> int:
     """Write ``(hf_repo, hf_revision)`` on chain. This is the submission.
 
@@ -147,6 +148,7 @@ def cmd_commit(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+@chain.closes_connections
 def cmd_verify(args: argparse.Namespace) -> int:
     """Run the validator's own eligibility pipeline against your deployment.
 

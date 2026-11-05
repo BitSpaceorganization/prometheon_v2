@@ -298,6 +298,7 @@ def _refresh_mirrored(
     return None
 
 
+@chain.closes_connections
 def cmd_resubmit(args: argparse.Namespace) -> int:
     """Re-post the last cycle's vector, and post its record if still pending.
 
@@ -414,6 +415,7 @@ def _wait_for_weights_window(
     )
 
 
+@chain.closes_connections
 def cmd_mirror(args: argparse.Namespace) -> int:
     """Submit another validator's published scores instead of computing any.
 
@@ -496,6 +498,7 @@ def cmd_mirror(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+@chain.closes_connections
 def cmd_run(args: argparse.Namespace) -> int:
     """Run one cycle: label, evaluate, score, then send and publish.
 

@@ -106,6 +106,7 @@ def cmd_balance(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
+@chain.closes_connections
 def cmd_buy(args: argparse.Namespace) -> int:
     """Buy credits: move alpha stake on the subnet to the treasury coldkey."""
     config = load(args.config)
