@@ -1,0 +1,9 @@
+# Who checks which area. GitHub doesn't request a review from the author, so
+# paths with two owners reach whichever one didn't open the pull request.
+*                 @dongTigerLU
+/tests/           @AisA-wdym
+/.github/         @AisA-wdym
+/docs/            @yuukiakito @AisA-wdym
+/configs/         @yuukiakito @AisA-wdym
+/pyproject.toml   @yuukiakito @AisA-wdym
+/uv.lock          @yuukiakito @AisA-wdym
