@@ -156,7 +156,7 @@ score    = accuracy × (1 − λ·t)       λ = 15%, switched off when token usa
 
 ## 4. Released test content
 
-A day's test posts become readable two days later on the hub's public viewer, 50 a page, without authors, and rate limited. There's no download route and no bulk export. Only validators receive the files. (`prometheon dataset pull` from v2 is gone.)
+A day's test posts become readable two days later on the hub's public viewer, 50 a page, without authors, and rate limited. There's no download route and no bulk export. Only validators receive the files. The v2 command for downloading test content, `dataset pull`, is gone.
 
 ## What won't work
 
