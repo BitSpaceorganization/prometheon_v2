@@ -280,10 +280,14 @@ class ScoringConfig(BaseModel):
     model_rank_shares_bp: tuple[int, ...] = Field(default=(2500, 400, 100), min_length=1)
 
     #: The entry gate, for both pools: a miner counts only with at least this
-    #: many identity-verified active members in its group. The hub publishes the
-    #: count and its own flag, and both must clear; see
-    #: :func:`prometheon.hub.epoch.is_eligible`.
+    #: many identity-verified active members in its group ...
     min_verified_active_members: int = Field(default=10, ge=0)
+
+    #: ... and at least this many members in total. Every member is
+    #: phone-verified, and the total includes the verified active ones. Both
+    #: counts come from the signed epoch; see
+    #: :func:`prometheon.hub.epoch.is_eligible`.
+    min_members: int = Field(default=30, ge=0)
 
     #: Two items whose normalised text has 64-bit SimHashes within this many bits
     #: are one item, and only the earliest counts. Bounded, because each bit
