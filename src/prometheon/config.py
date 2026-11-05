@@ -14,7 +14,7 @@ from __future__ import annotations
 import sys
 from enum import Enum
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
@@ -163,12 +163,12 @@ class EvaluationConfig(BaseModel):
     #: near-ties can flip between validators that only differ in a default.
     #: Residual disagreement from differing GPU kernels is left to consensus,
     #: which is what consensus is for; a silent dtype difference is not.
-    torch_dtype: str = Field(default="float16", min_length=1)
+    torch_dtype: Literal["float16", "bfloat16", "float32"] = "float16"
 
     #: Where to run. ``auto`` picks CUDA when present and falls back to CPU,
     #: which is unusably slow for a real cycle but keeps a dry run possible on
     #: a machine without a GPU.
-    device: str = Field(default="auto", min_length=1)
+    device: str = Field(default="auto", pattern=r"^(auto|cpu|mps|cuda(:[0-9]+)?)$")
 
     #: Seconds a single model's evaluation may take before it is abandoned and
     #: scored on whatever it completed. A model that cannot finish the corpus

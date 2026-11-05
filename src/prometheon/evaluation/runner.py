@@ -30,12 +30,32 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from prometheon.errors import EvaluationError
+from prometheon.errors import EvaluationError, ValidatorFaultError
 from prometheon.evaluation.corpus import LabelledItem, iter_batches
 from prometheon.evaluation.engine import ModerationEngine
 from prometheon.evaluation.result import MinerEvaluation, MinerEvaluationBuilder
 
 DEFAULT_BATCH_SIZE = 100
+
+#: ``huggingface_hub`` errors that mean the repository itself is gone, private,
+#: gated or missing a file: the miner's fault, on every validator alike. Matched
+#: by name because the package is an optional extra. Anything else, a full
+#: disk, a refused connection, a rate limit, is this validator's problem.
+_MINER_SIDE_DOWNLOAD_ERRORS = frozenset(
+    {
+        "RepositoryNotFoundError",
+        "RevisionNotFoundError",
+        "EntryNotFoundError",
+        "GatedRepoError",
+        "DisabledRepoError",
+    }
+)
+
+
+class CheckpointUnavailableError(EvaluationError):
+    """The committed checkpoint cannot be fetched, through the miner's doing."""
+
+    code = "evaluation.checkpoint_unavailable"
 
 
 @dataclass(frozen=True)
@@ -69,9 +89,12 @@ def download_checkpoint(target: MinerTarget, *, allow_patterns: Sequence[str] | 
     """
     try:
         from huggingface_hub import snapshot_download
-    except ImportError as exc:  # pragma: no cover - depends on the wrapper extra
-        raise EvaluationError(
-            "huggingface_hub is required to evaluate models locally; install the 'wrapper' extra"
+    except ImportError as exc:
+        # v2 scored this as the miner's failure, so a validator installed as the
+        # docs said scored every model zero and still submitted (B10).
+        raise ValidatorFaultError(
+            "huggingface_hub is not installed, so no model can be downloaded; install the "
+            "evaluation runtime with `uv sync --extra wrapper`"
         ) from exc
 
     try:
@@ -83,8 +106,12 @@ def download_checkpoint(target: MinerTarget, *, allow_patterns: Sequence[str] | 
             )
         )
     except Exception as exc:
-        raise EvaluationError(
-            f"could not download {target.hf_repo}@{target.hf_revision}: {type(exc).__name__}: {exc}"
+        detail = f"{target.hf_repo}@{target.hf_revision}: {type(exc).__name__}: {exc}"
+        if type(exc).__name__ in _MINER_SIDE_DOWNLOAD_ERRORS:
+            raise CheckpointUnavailableError(f"could not download {detail}") from exc
+        raise ValidatorFaultError(
+            f"downloading {detail} failed on this validator, not because of the repository; "
+            "stopping rather than scoring the model zero"
         ) from exc
 
 
@@ -170,15 +197,28 @@ def evaluate_miner(
 
     try:
         engine.load()
+    except ImportError as exc:
+        # Missing torch, transformers or accelerate is this validator's
+        # problem, and every model would fail the same way (B10).
+        raise ValidatorFaultError(
+            f"the evaluation runtime is incomplete ({exc}); install it with "
+            "`uv sync --extra wrapper`"
+        ) from exc
     except Exception as exc:
         # A checkpoint that will not load scores zero rather than aborting the
         # cycle. Loading reaches arbitrary model code paths inside transformers,
-        # so the catch is deliberately wide: `EngineError` covers the cases the
-        # engine recognises, and everything else still has to be one miner's
-        # failure rather than the subnet's.
+        # so the catch is deliberately wide. Whether the validator itself is
+        # healthy is checked separately by the caller, with a canary model,
+        # whenever a model fails every batch.
         reason = f"{type(exc).__name__}: {exc}"
         for batch in iter_batches(items, batch_size):
             builder.record_failed_batch(batch, reason=f"model failed to load: {reason}")
+        # A load can fail after the weights reached the GPU. Release them, or
+        # the next miner's model is the one that runs out of memory.
+        try:
+            engine.unload()
+        except Exception:  # noqa: S110 - best effort; the failure is already recorded
+            pass
         return builder.build()
 
     try:

@@ -370,6 +370,7 @@ def _run(
     registry: ModelRegistry | None = None,
     policy: Policy = POLICY,
     broken: frozenset[str] = frozenset(),
+    check_runtime: Any = None,
 ) -> Any:
     _install_engines(monkeypatch, accuracy, broken)
     with (
@@ -392,6 +393,10 @@ def _run(
             labeller=labeller,
             policy=policy,
             now=NOW,
+            # The real check builds a model on the configured device, which
+            # needs the evaluation extra CI does not install. The tests that
+            # are about it pass their own.
+            check_runtime=check_runtime or (lambda: None),
         )
 
 
@@ -709,3 +714,61 @@ def test_a_repository_the_miner_removed_costs_only_that_miner(
     rows = {row.hotkey: row for row in build_results(result)}
     assert rows[MINER_B.ss58_address].model_status is ModelStatus.INVALID
     assert dict(result.split.model_units) == {MINER_A.ss58_address: 250_000}
+
+
+class TestValidatorFaultsStopTheCycle:
+    """B10: a fault on this validator must not score the field zero and submit."""
+
+    def test_a_validator_that_cannot_run_a_model_stops_before_labelling(
+        self, config: Config, world: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        labelled: list[str] = []
+        monkeypatch.setattr(
+            "prometheon.cli.cycle.label_items", lambda *a, **k: labelled.append("called")
+        )
+
+        def broken_runtime() -> None:
+            raise ValidatorFaultError("the evaluation runtime is not installed")
+
+        with pytest.raises(ValidatorFaultError, match="not installed"):
+            _run(config, world, accuracy={}, monkeypatch=monkeypatch, check_runtime=broken_runtime)
+        assert not labelled
+
+    def test_a_runtime_that_dies_mid_cycle_stops_the_cycle(
+        self, config: Config, world: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The canary runs again after a model fails every batch."""
+        checks: list[str] = []
+
+        def runtime() -> None:
+            checks.append("check")
+            if len(checks) > 1:
+                raise ValidatorFaultError("CUDA error: device lost")
+
+        with pytest.raises(ValidatorFaultError, match="device lost"):
+            _run(
+                config,
+                world,
+                accuracy={},
+                monkeypatch=monkeypatch,
+                broken=frozenset({MINER_A.ss58_address}),
+                check_runtime=runtime,
+            )
+        assert len(checks) == 2
+
+    def test_a_broken_model_on_a_healthy_validator_is_scored_not_stopped(
+        self, config: Config, world: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        checks: list[str] = []
+        result = _run(
+            config,
+            world,
+            accuracy={},
+            monkeypatch=monkeypatch,
+            broken=frozenset({MINER_B.ss58_address}),
+            check_runtime=lambda: checks.append("check"),
+        )
+        assert len(checks) == 2  # before labelling, and after B failed every batch
+        assert any(
+            MINER_B.ss58_address in note and "every batch failed" in note for note in result.notes
+        )
