@@ -151,7 +151,9 @@ class LabellingConfig(BaseModel):
         provider error with no hint that the fix is one line of config. It is
         knowable the moment the file is read, so it is refused here.
         """
-        if self.model.startswith("gpt-5") and self.temperature == 0:
+        # Matched on the model's own name, so a provider prefix such as
+        # OpenRouter's `openai/` does not hide it (B30).
+        if self.model.rsplit("/", 1)[-1].startswith("gpt-5") and self.temperature == 0:
             raise ValueError(
                 f"model {self.model!r} rejects an explicit temperature of 0 "
                 "(HTTP 400: 'Only the default (1) value is supported'). "
