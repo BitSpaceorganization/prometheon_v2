@@ -5,44 +5,58 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+# Superseded pull request runs are cancelled. Runs on main are not, so every
+# commit that lands there keeps its result.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   lint:
     name: ruff (check + format)
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          version: "0.13.7"
       - run: uv python install 3.11
-      - run: uv sync --group dev
+      - run: uv sync --locked --group dev
       - run: uv run ruff check src tests
       - run: uv run ruff format --check src tests
 
   typecheck:
     name: mypy (strict)
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          version: "0.13.7"
       - run: uv python install 3.11
-      - run: uv sync --group dev
+      - run: uv sync --locked --group dev
       - run: uv run mypy src/prometheon
 
   test:
     name: pytest (py${{ matrix.python }})
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         python: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          version: "0.13.7"
       - run: uv python install ${{ matrix.python }}
-      - run: uv sync --group dev
+      - run: uv sync --locked --group dev
       # Every test, not a marker subset. An earlier version ran `-m unit` and
       # `-m contract` only, which silently excluded the end-to-end cycle tests,
       # the ones that check the modules actually compose, and the only place a
@@ -64,29 +78,36 @@ jobs:
   security:
     name: bandit (static analysis)
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          version: "0.13.7"
       - run: uv python install 3.11
-      - run: uv sync --group dev
+      - run: uv sync --locked --group dev
       - run: uv run --with bandit bandit -r src/prometheon -ll -q
 
   audit:
     name: pip-audit (dependency vulnerabilities)
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
-      - uses: astral-sh/setup-uv@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+        with:
+          version: "0.13.7"
       - run: uv python install 3.11
-      - run: uv sync --group dev
+      - run: uv sync --locked --group dev
       - run: uv run --with pip-audit pip-audit --skip-editable
 
   signatures:
     name: verify pushed commits are signed
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
       # Asks GitHub rather than git: verifying an SSH signature locally needs
