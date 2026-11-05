@@ -275,3 +275,44 @@ def test_zero_rows_are_left_out_of_the_vector() -> None:
         epoch_content_hash=HASH_A,
     )
     assert "5Idle" not in weights
+
+
+class TestThePermitIsReadByHotkeyNotByUid:
+    """S10: the permit column is in the SDK's row order, which need not be uid order.
+
+    v2 indexed it with the provider's uid. With rows ``(uid 1, uid 0)`` that
+    reads the other neuron's permit: a permitted provider is refused, and an
+    unpermitted one is accepted.
+    """
+
+    @staticmethod
+    def _rows(provider: str, *, provider_permit: bool) -> MetagraphView:
+        # Row 0 holds uid 1 (the provider); row 1 holds uid 0 (someone else),
+        # whose permit is the opposite of the provider's.
+        return MetagraphView(
+            netuid=NETUID,
+            block=1,
+            uids=(1, 0),
+            hotkeys=(provider, "5Somebody"),
+            stake_rao=(1, 1),
+            validator_permit=(provider_permit, not provider_permit),
+        )
+
+    def _verify(self, permit: bool) -> dict[str, int]:
+        provider = keypair(1)
+        return verify_mirrored(
+            record(provider),
+            provider=provider.ss58_address,
+            day=DAY,
+            netuid=NETUID,
+            metagraph=self._rows(provider.ss58_address, provider_permit=permit),
+            burn_hotkey=BURN,
+            epoch_content_hash=HASH_A,
+        )
+
+    def test_a_permitted_provider_is_accepted(self) -> None:
+        assert self._verify(permit=True) == {"5Miner": 1000, BURN: 500}
+
+    def test_an_unpermitted_provider_is_refused(self) -> None:
+        with pytest.raises(MirroredScoreError, match="no validator permit"):
+            self._verify(permit=False)
