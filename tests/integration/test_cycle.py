@@ -247,13 +247,22 @@ def _install_engines(
     return built
 
 
-def _miner(key: Keypair, uid: int, cold: Keypair, members: int) -> dict[str, Any]:
+def _miner(
+    key: Keypair, uid: int, cold: Keypair, verified: int, members: int | None = None
+) -> dict[str, Any]:
+    """A neuron with ``verified`` verified active members of ``members`` in all.
+
+    ``members`` defaults to a group comfortably above the floor of 30, or none
+    at all for a neuron with no verified members.
+    """
+    total = members if members is not None else (40 if verified else 0)
     return {
         "hotkey": key.ss58_address,
         "uid": uid,
         "coldkey": cold.ss58_address,
-        "verified_active_members": members,
-        "eligible": members >= 10,
+        "verified_active_members": verified,
+        "members": total,
+        "eligible": verified >= 10 and total >= 30,
     }
 
 
@@ -452,6 +461,53 @@ def test_only_paid_models_of_eligible_miners_reach_the_registry(
     )
     assert registry.seen == [MINER_A.ss58_address, MINER_B.ss58_address]
     assert result.model_statuses == {MINER_C.ss58_address: ModelStatus.INELIGIBLE}
+
+
+@pytest.mark.parametrize(
+    ("b_members", "expected"),
+    [
+        # One member short of 30: B is out of both pools, although 14 of its
+        # members are verified and active. A alone takes the 70% data pool and,
+        # as the only model, the whole 30% model pool.
+        (29, {"A": 700_000 + 300_000}),
+        # Exactly 30: the standard day, 2 * min(5, 5) * 10/10 = 10 each.
+        (30, {"A": 350_000 + 250_000, "B": 350_000 + 50_000}),
+    ],
+)
+def test_a_group_needs_thirty_members_as_well_as_ten_verified_active(
+    config: Config,
+    world: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+    b_members: int,
+    expected: dict[str, int],
+) -> None:
+    hub: FakeHub = world["hub"]
+    hub.publish_day(
+        DAY,
+        miners=[
+            _miner(VALIDATOR, 0, VALIDATOR, 0),
+            _miner(MINER_A, 1, COLD_A, 14),
+            _miner(MINER_B, 2, COLD_B, 14, b_members),
+            _miner(MINER_C, 3, COLD_C, 3),
+        ],
+        models=[_model(MINER_A, "a/guard", 100), _model(MINER_B, "b/guard", 200)],
+        test_lines=world["tests"],
+        production_lines=world["productions"],
+        policy_version=POLICY.version,
+        policy_sha256=POLICY.sha256,
+    )
+    result = _run(
+        config,
+        world,
+        accuracy={MINER_A.ss58_address: 1.0, MINER_B.ss58_address: 0.6},
+        monkeypatch=monkeypatch,
+    )
+
+    names = {MINER_A.ss58_address: "A", MINER_B.ss58_address: "B"}
+    assert {names[hotkey]: units for hotkey, units in result.split.weights.items()} == expected
+    assert result.split.burn_units == 0
+    if b_members < 30:
+        assert result.model_statuses[MINER_B.ss58_address] is ModelStatus.INELIGIBLE
 
 
 def test_unpaid_and_duplicate_models_are_listed_but_not_evaluated(

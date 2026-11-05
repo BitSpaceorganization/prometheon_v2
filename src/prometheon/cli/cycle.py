@@ -194,10 +194,13 @@ def run_cycle(
     _require_matching_policy(epoch, policy)
     notes.extend(_feed_notes(data))
 
-    floor = config.scoring.min_verified_active_members
-    eligible = eligible_miners(epoch, min_verified_active_members=floor)
+    eligible = eligible_miners(
+        epoch,
+        min_verified_active_members=config.scoring.min_verified_active_members,
+        min_members=config.scoring.min_members,
+    )
     eligible_by_hotkey = {miner.hotkey: miner for miner in eligible}
-    notes.extend(_eligibility_notes(epoch, floor))
+    notes.extend(_eligibility_notes(epoch, eligible_by_hotkey))
     say(f"{len(eligible)} of {len(epoch.miners)} registered miners are eligible")
 
     entries, statuses = _model_entries(epoch, eligible_by_hotkey)
@@ -504,17 +507,22 @@ def _feed_notes(data: DayData) -> list[str]:
     return notes
 
 
-def _eligibility_notes(epoch: Epoch, floor: int) -> list[str]:
-    """Where the hub's flag and this validator's own floor disagree."""
+def _eligibility_notes(epoch: Epoch, eligible: Mapping[str, EpochMiner]) -> list[str]:
+    """Where the hub's dashboard flag differs from this validator's decision.
+
+    The decision is this validator's, from the two counts and its configured
+    floors; the note only explains why the dashboard and this log disagree.
+    """
     notes: list[str] = []
     for miner in epoch.miners:
-        clears = miner.verified_active_members >= floor
-        if miner.eligible != clears:
-            flag = "eligible" if miner.eligible else "ineligible"
+        here = miner.hotkey in eligible
+        if miner.eligible is not None and miner.eligible != here:
+            shown = "eligible" if miner.eligible else "ineligible"
+            decided = "eligible" if here else "not eligible"
             notes.append(
-                f"{miner.hotkey}: the hub marks it {flag} with "
-                f"{miner.verified_active_members} verified active members against this "
-                f"validator's floor of {floor}; both must agree, so it is not eligible here"
+                f"{miner.hotkey}: the hub shows it as {shown} with "
+                f"{miner.verified_active_members} verified active of {miner.members} members; "
+                f"against this validator's floors it is {decided}"
             )
     return notes
 

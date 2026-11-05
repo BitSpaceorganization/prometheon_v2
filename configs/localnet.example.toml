@@ -63,8 +63,11 @@ dataset_top_n = 10
 # 25% and 5%, one model takes 30%. A pool burns only when nobody qualifies.
 model_rank_shares_bp = [2500, 400, 100]
 # The entry gate, for both pools: a miner counts only with at least this many
-# identity-verified active members. The hub's own flag must agree as well.
+# identity-verified active members in its group AND at least this many members
+# in total. Every member is phone-verified, and the total includes the verified
+# active ones. Both counts come from the signed epoch.
 min_verified_active_members = 10
+min_members = 30
 # Items whose normalised text has 64-bit SimHashes within this many bits are one
 # item, and only the earliest counts. The same value on every validator.
 near_duplicate_max_hamming = 3

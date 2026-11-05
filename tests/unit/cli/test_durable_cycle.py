@@ -132,6 +132,7 @@ def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
                 "uid": 0,
                 "coldkey": VALIDATOR.ss58_address,
                 "verified_active_members": 0,
+                "members": 0,
                 "eligible": False,
             }
         ],

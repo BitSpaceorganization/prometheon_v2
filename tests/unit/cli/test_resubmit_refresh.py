@@ -84,6 +84,7 @@ class World:
                         "uid": 0,
                         "coldkey": provider.ss58_address,
                         "verified_active_members": 0,
+                        "members": 0,
                         "eligible": False,
                     }
                 ],

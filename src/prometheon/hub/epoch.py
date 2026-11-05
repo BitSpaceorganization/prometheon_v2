@@ -106,21 +106,30 @@ def check_epoch_is_for(epoch: Epoch, *, day: dt.date, netuid: int, scoring_versi
         )
 
 
-def is_eligible(miner: EpochMiner, *, min_verified_active_members: int) -> bool:
+def is_eligible(miner: EpochMiner, *, min_verified_active_members: int, min_members: int) -> bool:
     """The one entry gate, for both pools.
 
-    The hub's flag and the validator's own floor must both agree. Either can
-    only narrow the field: a validator configured below the hub cannot add a
-    miner the hub left out, and one configured above it cannot be overruled.
+    A miner in the epoch's list is eligible with at least
+    ``min_verified_active_members`` identity-verified active members **and** at
+    least ``min_members`` members in total. Both floors come from the
+    validator's config and both counts from the signed epoch. The hub's own
+    ``eligible`` flag is for its dashboard and is not consulted.
     """
-    return miner.eligible and miner.verified_active_members >= min_verified_active_members
+    return (
+        miner.verified_active_members >= min_verified_active_members
+        and miner.members >= min_members
+    )
 
 
-def eligible_miners(epoch: Epoch, *, min_verified_active_members: int) -> tuple[EpochMiner, ...]:
+def eligible_miners(
+    epoch: Epoch, *, min_verified_active_members: int, min_members: int
+) -> tuple[EpochMiner, ...]:
     return tuple(
         miner
         for miner in epoch.miners
-        if is_eligible(miner, min_verified_active_members=min_verified_active_members)
+        if is_eligible(
+            miner, min_verified_active_members=min_verified_active_members, min_members=min_members
+        )
     )
 
 

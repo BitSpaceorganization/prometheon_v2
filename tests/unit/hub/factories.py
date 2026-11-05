@@ -30,14 +30,15 @@ class Clock:
 
 
 def miner_row(
-    hotkey: str, uid: int, coldkey: str, members: int = 14, eligible: bool = True
+    hotkey: str, uid: int, coldkey: str, verified: int = 14, members: int = 40
 ) -> dict[str, Any]:
     return {
         "hotkey": hotkey,
         "uid": uid,
         "coldkey": coldkey,
-        "verified_active_members": members,
-        "eligible": eligible,
+        "verified_active_members": verified,
+        "members": members,
+        "eligible": verified >= 10 and members >= 30,
     }
 
 
@@ -72,7 +73,7 @@ def production_line(
 
 def standard_miners() -> list[dict[str, Any]]:
     return [
-        miner_row(VALIDATOR.ss58_address, 0, VALIDATOR.ss58_address, members=0, eligible=False),
+        miner_row(VALIDATOR.ss58_address, 0, VALIDATOR.ss58_address, verified=0, members=0),
         miner_row(MINER_A.ss58_address, 1, COLD_A.ss58_address),
         miner_row(MINER_B.ss58_address, 2, COLD_B.ss58_address),
     ]

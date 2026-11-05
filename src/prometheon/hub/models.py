@@ -157,10 +157,16 @@ class EpochMiner(_Lenient):
     hotkey: str
     uid: StrictInt = Field(ge=0)
     coldkey: str
+    #: Members of the miner's group who are identity-verified and active, from
+    #: the feed's ``miners.json``; 0 for a neuron with no group.
     verified_active_members: StrictInt = Field(ge=0)
-    #: The hub's view. A validator also applies its own configured floor; see
+    #: Every member of the group. All of them are phone-verified, and the count
+    #: includes the verified active ones.
+    members: StrictInt = Field(ge=0)
+    #: The hub's own view, for its dashboard. It decides nothing here: a
+    #: validator applies the floors in its config to the two counts above; see
     #: :func:`prometheon.hub.epoch.is_eligible`.
-    eligible: StrictBool
+    eligible: StrictBool | None = None
 
     @field_validator("hotkey", "coldkey")
     @classmethod
@@ -168,6 +174,18 @@ class EpochMiner(_Lenient):
         if not is_ss58(value):
             raise ValueError(f"not an SS58 address: {value!r}")
         return value
+
+    @model_validator(mode="after")
+    def _counts_agree(self) -> EpochMiner:
+        # The verified active members are a subset of the group. A signed epoch
+        # that says otherwise was built wrongly, and scoring from it could pay
+        # the wrong miners, so it is refused as a whole.
+        if self.verified_active_members > self.members:
+            raise ValueError(
+                f"{self.hotkey} has {self.verified_active_members} verified active members "
+                f"but only {self.members} members"
+            )
+        return self
 
 
 class EpochModel(_Lenient):

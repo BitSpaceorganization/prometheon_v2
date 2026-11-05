@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import copy
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
+from pydantic import ValidationError
 from tests.unit.hub.factories import (
     COLD_A,
     DAY,
@@ -169,6 +170,21 @@ class TestTheSchema:
         with pytest.raises(EpochVerificationError, match="not one this client accepts"):
             verify_epoch(raw, keys=hub.epoch_keys)
 
+    def test_a_miner_without_a_member_count_is_refused(self, hub: FakeHub) -> None:
+        """Read as zero, a missing count would quietly burn both pools for the day."""
+        miners = standard_miners()
+        del miners[1]["members"]
+        raw = hub.publish_day(DAY, miners=miners)
+        with pytest.raises(EpochVerificationError, match="members"):
+            verify_epoch(raw, keys=hub.epoch_keys)
+
+    def test_more_verified_active_members_than_members_is_refused(self, hub: FakeHub) -> None:
+        miners = standard_miners()
+        miners[1]["members"] = 13
+        raw = hub.publish_day(DAY, miners=miners)
+        with pytest.raises(EpochVerificationError, match="14 verified active members but only 13"):
+            verify_epoch(raw, keys=hub.epoch_keys)
+
 
 class TestWhichDay:
     def test_the_right_epoch_passes(self, hub: FakeHub, signed: dict[str, Any]) -> None:
@@ -194,30 +210,51 @@ class TestWhichDay:
 
 
 class TestEligibility:
-    def _miner(self, members: int, eligible: bool) -> EpochMiner:
-        return EpochMiner.model_validate(
-            miner_row(MINER_A.ss58_address, 1, COLD_A.ss58_address, members, eligible)
-        )
+    """At least 10 verified active members AND at least 30 members in total."""
+
+    FLOORS: ClassVar[dict[str, int]] = {"min_verified_active_members": 10, "min_members": 30}
+
+    def _miner(self, verified: int, members: int, flag: bool | None = None) -> EpochMiner:
+        row = miner_row(MINER_A.ss58_address, 1, COLD_A.ss58_address, verified, members)
+        row["eligible"] = flag
+        return EpochMiner.model_validate(row)
 
     @pytest.mark.parametrize(
-        ("members", "flag", "expected"),
-        [(10, True, True), (9, True, False), (14, False, False), (0, False, False)],
+        ("verified", "members", "expected"),
+        [
+            (10, 30, True),
+            (9, 30, False),
+            (10, 29, False),
+            (14, 120, True),
+            (29, 29, False),
+            (0, 0, False),
+        ],
     )
-    def test_the_count_and_the_hub_flag_must_both_agree(
-        self, members: int, flag: bool, expected: bool
+    def test_both_counts_must_reach_their_floor(
+        self, verified: int, members: int, expected: bool
     ) -> None:
-        assert is_eligible(self._miner(members, flag), min_verified_active_members=10) is expected
+        assert is_eligible(self._miner(verified, members), **self.FLOORS) is expected
 
-    def test_a_stricter_validator_floor_narrows_the_field(self) -> None:
-        assert not is_eligible(self._miner(14, True), min_verified_active_members=15)
+    @pytest.mark.parametrize("flag", [True, False, None])
+    def test_the_hub_flag_decides_nothing(self, flag: bool | None) -> None:
+        assert is_eligible(self._miner(14, 30, flag), **self.FLOORS)
+        assert not is_eligible(self._miner(14, 29, flag), **self.FLOORS)
+
+    def test_the_floors_are_the_validators_config(self) -> None:
+        miner = self._miner(14, 40)
+        assert not is_eligible(miner, min_verified_active_members=15, min_members=30)
+        assert not is_eligible(miner, min_verified_active_members=10, min_members=41)
+        assert is_eligible(miner, min_verified_active_members=14, min_members=40)
+
+    def test_more_verified_active_members_than_members_cannot_be_built(self) -> None:
+        with pytest.raises(ValidationError, match="only 9 members"):
+            self._miner(10, 9)
 
     def test_eligible_miners_keeps_the_epoch_order(
         self, hub: FakeHub, signed: dict[str, Any]
     ) -> None:
         epoch = verify_epoch(signed, keys=hub.epoch_keys)
-        assert [
-            miner.hotkey for miner in eligible_miners(epoch, min_verified_active_members=10)
-        ] == [
+        assert [miner.hotkey for miner in eligible_miners(epoch, **self.FLOORS)] == [
             MINER_A.ss58_address,
             MINER_B.ss58_address,
         ]
