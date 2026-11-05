@@ -132,9 +132,8 @@ def build_parser() -> argparse.ArgumentParser:
             "schedule",
             help="run the cycle daily and the re-post every 30 minutes, in this process",
             description=(
-                "The alternative to two crontab entries, for a host with no cron or "
-                "systemd. One process runs both jobs, so a long cycle delays the next "
-                "re-post rather than submitting weights underneath itself. Wake-ups "
+                "The alternative to cron or systemd. The cycle runs on its own thread, "
+                "so re-posts keep the last vector counting while it works. Wake-ups "
                 "align to the wall clock, so every validator running this re-posts on "
                 "the same :00 and :30 instants."
             ),
@@ -148,6 +147,7 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="HOUR",
         help="UTC hour to start the daily cycle (default: 4)",
     )
+    schedule.add_argument("--policy", help="path to content_policy.md")
     schedule.add_argument(
         "--max-iterations",
         type=int,
