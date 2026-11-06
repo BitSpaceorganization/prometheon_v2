@@ -85,6 +85,11 @@ DEFAULT_MAX_EXCLUSION_RATE_BP: Final[int] = 2_000
 #: consecutive-batch guards apply.
 _MIN_CORPUS_FOR_RATE_CHECK: Final[int] = 50
 
+#: How many submitters must each have lost most of their test content before
+#: those losses say something about the labeller rather than the content. One
+#: submitter's content costs that submitter, never the cycle (B23).
+_MIN_SOURCES_FOR_SYSTEMIC_LOSS: Final[int] = 3
+
 #: The smallest batch the unanimity tripwire runs on. Below this, every item
 #: agreeing is unremarkable rather than suspicious.
 _MIN_CHUNK_FOR_BASE_RATE: Final[int] = 20
@@ -174,9 +179,14 @@ def label_items(
     rate, and two guards now enforce the assumption the design rests on:
 
     - ``max_consecutive_dead_chunks`` fails fast when whole batches fail back
-      to back, which is an endpoint fault rather than a corpus fault.
+      to back, which is an endpoint fault rather than a corpus fault. A batch
+      holding only one submitter's content does not count towards it.
     - ``max_exclusion_rate_bp`` is the backstop for a failure spread evenly
-      enough to slip past the first guard.
+      enough to slip past the first guard. It is measured over the production
+      content, which no submitter chose; test content trips the systemic
+      guard only when most of several submitters' content is lost. One
+      submitter's refused or unlabellable content is excluded and costs that
+      submitter, and never stops the cycle (B23).
 
     Without them a fully broken endpoint returned an empty corpus that looked
     exactly like a successful run over unlabellable content.
@@ -222,7 +232,10 @@ def label_items(
         excluded_before = len(run.excluded)
         _label_chunk(chunk, run)
 
-        if len(run.excluded) - excluded_before == len(chunk):
+        # A dead batch is evidence about the endpoint only when its items came
+        # from more than one source. Every item of one submitter failing says
+        # something about that submitter's content, and it costs them alone (B23).
+        if len(run.excluded) - excluded_before == len(chunk) and _sources(chunk) >= 2:
             consecutive_dead_chunks += 1
         else:
             consecutive_dead_chunks = 0
@@ -272,7 +285,7 @@ def label_items(
                 f"{_last_reason(run) or 'none recorded'}"
             )
 
-    _assert_exclusion_within_budget(run, total=len(items), max_rate_bp=max_exclusion_rate_bp)
+    _assert_exclusion_within_budget(run, items, max_rate_bp=max_exclusion_rate_bp)
 
     # Ordered by the *corpus*, not by whatever order the provider chose to emit
     # its entries in. The system prompt explicitly tells the model "order does
@@ -301,24 +314,52 @@ def _last_reason(run: _Run) -> str:
     return run.reasons.get(run.excluded[-1], "")
 
 
-def _assert_exclusion_within_budget(run: _Run, *, total: int, max_rate_bp: int) -> None:
-    """Refuse a corpus too damaged to be a benchmark.
+def _sources(items: Sequence[LabelItem]) -> int:
+    """How many independent sources ``items`` came from.
+
+    A test item's ``author`` is its miner's coldkey, so everything one party
+    submits is one source, however many items or hotkeys it spans. Production
+    content is a random sample with no submitter, so each item stands alone.
+    """
+    authors = {item.author for item in items if item.author is not None}
+    return len(authors) + sum(1 for item in items if item.author is None)
+
+
+def _assert_exclusion_within_budget(
+    run: _Run, items: Sequence[LabelItem], *, max_rate_bp: int
+) -> None:
+    """Refuse a corpus too damaged to be a benchmark, but never over one submitter.
 
     The backstop to the consecutive-failure guard, for a fault that ruins the
     day's ground truth without ever failing a whole batch in a row: a filter
     that refuses one topic, say. The module's justification for dropping items
-    ("ten out of ten thousand move no one's score") is only true at a low rate,
-    and nothing else enforced one.
-    """
-    if total == 0 or not run.excluded:
-        return
+    ("ten out of ten thousand move no one's score") is only true at a low rate.
 
-    # Nothing survived. Always fatal, at any corpus size: there is no reading of
-    # "labelled zero items successfully" that is a usable ground truth, and
-    # returning it would score every miner against nothing.
-    if len(run.excluded) >= total:
+    **What one submitter's content does is not evidence** (B23). A provider
+    refuses some content outright, and the corpus is sourced to contain policy
+    violations, so a submitter who fills the day with content written to trip
+    the filter used to push the exclusion rate over the ceiling and halt every
+    validator at once. Their refused items now cost them alone: each counts in
+    their ``S`` and in neither ``V``. The cycle stops only on evidence no single
+    submitter can produce:
+
+    - everything excluded, across more than one source;
+    - more than ``max_rate_bp`` of the unattributed production content
+      excluded, which no submitter chose;
+    - most of the test content lost for at least
+      :data:`_MIN_SOURCES_FOR_SYSTEMIC_LOSS` submitters, and for at least half
+      of all of them.
+    """
+    if not items or not run.excluded:
+        return
+    excluded = set(run.reasons)
+
+    # Nothing survived. Always fatal when more than one source was involved:
+    # there is no reading of "labelled zero items successfully" that is a usable
+    # ground truth, and returning it would score every miner against nothing.
+    if len(excluded) >= len(items) and _sources(items) >= 2:
         raise LabellingError(
-            f"labelling excluded every one of {total} items, so the day has no "
+            f"labelling excluded every one of {len(items)} items, so the day has no "
             "ground truth. This is an endpoint fault rather than a corpus fault "
             ", refusing to return an empty corpus that would score every miner "
             f"against nothing. Last reason: {_last_reason(run) or 'none recorded'}"
@@ -326,22 +367,36 @@ def _assert_exclusion_within_budget(run: _Run, *, total: int, max_rate_bp: int) 
 
     # The rate ceiling needs a sample worth taking a rate of. On a handful of
     # items one exclusion is already 25%, which says nothing about endpoint
-    # health; the guard exists to catch systemic failure over a real corpus.
-    # Below the floor the all-excluded check above is the only rate-like guard,
-    # and the consecutive-batch guard is unaffected by size either way.
-    if total < _MIN_CORPUS_FOR_RATE_CHECK:
-        return
+    # health.
+    unattributed = [item for item in items if item.author is None]
+    if len(unattributed) >= _MIN_CORPUS_FOR_RATE_CHECK:
+        lost = sum(1 for item in unattributed if item.item_id in excluded)
+        rate_bp = (lost * BASIS_POINTS) // len(unattributed)
+        if rate_bp > max_rate_bp:
+            raise LabellingError(
+                f"labelling excluded {lost} of {len(unattributed)} production items "
+                f"({rate_bp / 100:.1f}%), over the {max_rate_bp / 100:.1f}% ceiling. "
+                "No submitter chose that content, so this is the labeller, and a "
+                "corpus this incomplete is not a benchmark. Last reason: "
+                f"{_last_reason(run) or 'none recorded'}"
+            )
 
-    rate_bp = (len(run.excluded) * BASIS_POINTS) // total
-    if rate_bp <= max_rate_bp:
-        return
-    raise LabellingError(
-        f"labelling excluded {len(run.excluded)} of {total} items "
-        f"({rate_bp / 100:.1f}%), over the {max_rate_bp / 100:.1f}% ceiling. "
-        "A corpus this incomplete is not a benchmark, scoring on it would "
-        "measure models against whichever items happened to survive. Last "
-        f"reason: {_last_reason(run) or 'none recorded'}"
-    )
+    by_author: dict[str, list[str]] = {}
+    for item in items:
+        if item.author is not None:
+            by_author.setdefault(item.author, []).append(item.item_id)
+    mostly_lost = [
+        author
+        for author, ids in by_author.items()
+        if sum(1 for item_id in ids if item_id in excluded) * 2 > len(ids)
+    ]
+    if len(mostly_lost) >= max(_MIN_SOURCES_FOR_SYSTEMIC_LOSS, (len(by_author) + 1) // 2):
+        raise LabellingError(
+            f"labelling lost most of the test content of {len(mostly_lost)} of "
+            f"{len(by_author)} submitters. One submitter's content costs only that "
+            "submitter, but losses this widespread are the labeller's. Last reason: "
+            f"{_last_reason(run) or 'none recorded'}"
+        )
 
 
 def _require_labellable(items: Sequence[LabelItem]) -> None:
@@ -458,8 +513,7 @@ def _looks_subverted(chunk: Sequence[LabelItem], verdicts: Mapping[str, bool]) -
     # own and every such item counts as its own independent source. Test items
     # group by author: one author is one source no matter how many items they
     # sent.
-    authors = {item.author for item in low_base_rate if item.author is not None}
-    sources = len(authors) + sum(1 for item in low_base_rate if item.author is None)
+    sources = _sources(low_base_rate)
     if sources < _MIN_AUTHORS_FOR_BASE_RATE:
         return ""
     return (

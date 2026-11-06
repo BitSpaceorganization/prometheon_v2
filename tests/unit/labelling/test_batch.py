@@ -743,3 +743,126 @@ class TestHandingBatchesOverAsTheyLand:
     ) -> None:
         corpus, _ = _run(build_labeller, lambda items: verdicts(items, TRUTH))
         assert corpus.labels == {"a": True, "b": False, "c": True, "d": False}
+
+
+# --- B23: one submitter's refused content costs that submitter only ----------
+
+
+def _refusing(sent: list[dict[str, str]]) -> Any:
+    """A provider that refuses any batch carrying content written to trip its filter."""
+    if any(item["content"].startswith("TRIP") for item in sent):
+        return httpx.Response(
+            400, json={"error": {"message": "Your request was flagged by our safety system"}}
+        )
+    return json.dumps({"labels": [{"id": item["id"], "violates": False} for item in sent]})
+
+
+def _test_items(author: str, count: int, *, trip: bool) -> list[LabelItem]:
+    return [
+        LabelItem(
+            item_id=f"{author}-{n:03d}",
+            content=f"{'TRIP' if trip else 'fine'} {author} {n}",
+            expected_violating=True,
+            author=author,
+        )
+        for n in range(count)
+    ]
+
+
+def _production(count: int, *, trip_every: int = 0) -> list[LabelItem]:
+    return [
+        LabelItem(
+            item_id=f"p{n:04d}",
+            content=f"{'TRIP' if trip_every and n % trip_every == 0 else 'post'} {n}",
+            expected_violating=False,
+        )
+        for n in range(count)
+    ]
+
+
+def _interleave(*groups: list[LabelItem]) -> list[LabelItem]:
+    merged: list[LabelItem] = []
+    for row in range(max(len(group) for group in groups)):
+        merged.extend(group[row] for group in groups if row < len(group))
+    return merged
+
+
+class TestOneSubmittersRefusedContentNeverHaltsTheCycle:
+    """B23: a submitter could fill the day with content written to trip the filter.
+
+    v2 excluded each refused item, then aborted once exclusions passed 20% of the
+    corpus, or when three whole batches in a row were refused. Both were in one
+    submitter's hands, and every validator labels the same corpus, so every
+    validator stopped at once.
+    """
+
+    def test_a_third_of_the_corpus_refused_is_excluded_not_fatal(
+        self, build_labeller: Callable[..., Harness]
+    ) -> None:
+        tripping = _test_items("5ColdA", 60, trip=True)
+        honest = _test_items("5ColdB", 40, trip=False)
+        corpus, _ = _run(
+            build_labeller,
+            _refusing,
+            items=_interleave(tripping, honest, _production(100)),
+            batch_size=10,
+        )
+        # 60 of 200 is 30%, over the 20% ceiling v2 aborted at.
+        assert set(corpus.excluded_ids) == {item.item_id for item in tripping}
+        assert len(corpus.labels) == 140
+
+    def test_whole_batches_of_one_submitter_refused_are_not_an_endpoint_fault(
+        self, build_labeller: Callable[..., Harness]
+    ) -> None:
+        tripping = _test_items("5ColdA", 30, trip=True)
+        corpus, _ = _run(
+            build_labeller,
+            _refusing,
+            # The first three batches of ten are entirely the one submitter's.
+            items=[*tripping, *_production(70)],
+            batch_size=10,
+        )
+        assert len(corpus.excluded_ids) == 30
+        assert len(corpus.labels) == 70
+
+    def test_two_submitters_losing_everything_still_do_not_halt_it(
+        self, build_labeller: Callable[..., Harness]
+    ) -> None:
+        items = _interleave(
+            _test_items("5ColdA", 20, trip=True),
+            _test_items("5ColdB", 20, trip=True),
+            _test_items("5ColdC", 20, trip=False),
+            _test_items("5ColdD", 20, trip=False),
+            _production(60),
+        )
+        corpus, _ = _run(build_labeller, _refusing, items=items, batch_size=10)
+        assert len(corpus.excluded_ids) == 40
+
+
+class TestTheLabellersOwnFailuresStillStopIt:
+    """The guards still fire on evidence no single submitter can produce."""
+
+    def test_refused_production_content_past_the_ceiling_halts(
+        self, build_labeller: Callable[..., Harness]
+    ) -> None:
+        # Every third production post refused: 34 of 100 lost. Nobody chose those.
+        with pytest.raises(LabellingError, match="production items"):
+            _run(
+                build_labeller,
+                _refusing,
+                items=_production(100, trip_every=3),
+                batch_size=10,
+            )
+
+    def test_most_submitters_losing_their_content_halts(
+        self, build_labeller: Callable[..., Harness]
+    ) -> None:
+        items = _interleave(
+            _test_items("5ColdA", 20, trip=True),
+            _test_items("5ColdB", 20, trip=True),
+            _test_items("5ColdC", 20, trip=True),
+            _test_items("5ColdD", 20, trip=False),
+            _production(60),
+        )
+        with pytest.raises(LabellingError, match="3 of 4 submitters"):
+            _run(build_labeller, _refusing, items=items, batch_size=10)
