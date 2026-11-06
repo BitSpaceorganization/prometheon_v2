@@ -24,7 +24,7 @@ from prometheon.config import (
     HubConfig,
     WalletConfig,
 )
-from prometheon.errors import ConfigError
+from prometheon.errors import ConfigError, SubtensorError
 from prometheon.hub.client import HubClient
 from prometheon.hub.fake import FakeHub
 
@@ -47,17 +47,43 @@ def _config(treasury: str = TREASURY) -> Config:
 
 
 class Node:
-    def __init__(self, staked_rao: int) -> None:
-        self.staked_rao = staked_rao
+    """Stake per coldkey on one hotkey, and a transfer_stake that moves it.
+
+    ``lands`` and ``reports`` are separate on purpose: on a real chain the SDK
+    can report a failure for a transfer that went through.
+    """
+
+    def __init__(
+        self, staked_rao: int, *, lands: bool = True, reports_success: bool = True
+    ) -> None:
+        self.stakes: dict[str, int] = {COLDKEY.ss58_address: staked_rao, TREASURY: 0}
+        self.lands = lands
+        self.reports_success = reports_success
         self.transfers: list[dict[str, Any]] = []
 
+    @property
+    def staked_rao(self) -> int:
+        return self.stakes[COLDKEY.ss58_address]
+
     def get_stake(self, *, coldkey_ss58: str, hotkey_ss58: str, netuid: int) -> Any:
-        return SimpleNamespace(rao=self.staked_rao)
+        return SimpleNamespace(rao=self.stakes.get(coldkey_ss58, 0))
 
     def transfer_stake(self, **kwargs: Any) -> Any:
         self.transfers.append(kwargs)
+        if self.lands:
+            amount = kwargs["amount"].rao
+            self.stakes[COLDKEY.ss58_address] -= amount
+            destination = kwargs["destination_coldkey_ss58"]
+            self.stakes[destination] = self.stakes.get(destination, 0) + amount
+        if self.reports_success:
+            return SimpleNamespace(
+                success=True, message="Finalized.", error=None, extrinsic_receipt=None
+            )
         return SimpleNamespace(
-            success=True, message="Finalized.", error=None, extrinsic_receipt=None
+            success=False,
+            message="Client error: UnknownBlock: State already discarded for 0x45b1",
+            error=None,
+            extrinsic_receipt=None,
         )
 
 
@@ -142,10 +168,60 @@ class TestBuying:
     def test_too_little_stake_is_refused_before_anything_is_sent(
         self, node: Node, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        node.staked_rao = FEE_RAO - 1
+        node.stakes[COLDKEY.ss58_address] = FEE_RAO - 1
         with pytest.raises(ConfigError, match="less than"):
             _buy(monkeypatch, _config())
         assert node.transfers == []
+
+
+class TestAFailureReportIsCheckedAgainstTheChain:
+    """The SDK can report a failure for a transfer that landed.
+
+    It re-reads state after the write, at a block hash it took beforehand, and
+    on the local chain that read failed with "State already discarded" while the
+    fee was already in the treasury. The command told the miner the transfer had
+    failed, inviting them to pay twice.
+    """
+
+    def test_a_transfer_that_landed_is_reported_as_sent(
+        self,
+        node: Node,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        node.reports_success = False
+        assert _buy(monkeypatch, _config()) == 0
+        assert node.stakes[TREASURY] == FEE_RAO
+        err = capsys.readouterr().err
+        assert "but the transfer is on chain" in err
+        assert "State already discarded" in err
+
+    def test_a_transfer_that_did_not_land_is_an_error_naming_that(
+        self, node: Node, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        node.reports_success = False
+        node.lands = False
+        with pytest.raises(SubtensorError, match="nothing was transferred"):
+            _buy(monkeypatch, _config())
+        assert node.stakes[TREASURY] == 0
+
+    def test_when_the_chain_cannot_be_read_it_says_not_to_pay_again(
+        self, node: Node, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        node.reports_success = False
+        reads = {"count": 0}
+        real = node.get_stake
+
+        def flaky(**kwargs: Any) -> Any:
+            reads["count"] += 1
+            # The third read is the one after the failed send.
+            if reads["count"] >= 3:
+                raise ConnectionError("socket closed")
+            return real(**kwargs)
+
+        monkeypatch.setattr(node, "get_stake", flaky)
+        with pytest.raises(SubtensorError, match="Do not pay again"):
+            _buy(monkeypatch, _config())
 
 
 class TestTheBalance:
