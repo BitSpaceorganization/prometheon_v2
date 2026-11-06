@@ -22,6 +22,10 @@ environment with this package and the ``wrapper`` extra (torch, transformers).
 
     python tools/localnet/cycle.py --endpoint ws://127.0.0.1:9945 --workdir /tmp/run
 
+``--min-allowed-weights 3`` makes the chain demand more weights than the day
+earns, so the run also proves the vector is shaped to the subnet's limits and
+that the chain accepts it (S5).
+
 Each run registers a new subnet, so it can be repeated on the same chain.
 Nothing here touches a public network: //Alice, //Bob and the other dev
 accounts exist only on the local chain, and their keys are public by design.
@@ -325,6 +329,32 @@ def expected_units(record: dict[str, Any]) -> tuple[dict[str, int], int]:
     return units, TOTAL_UNITS - sum(units.values())
 
 
+def padded_by_hand(
+    units: dict[str, int], *, view: MetagraphView, validator: str, min_allowed_weights: int
+) -> dict[str, int]:
+    """docs/scoring.md "The subnet's weight limits", applied independently of the code.
+
+    Too few uids: the lowest-numbered registered uids not already in the vector,
+    the validator's own only if nothing else is left, each get
+    ceil(1,000,000 / 65535) = 16 units, taken from the largest entry.
+    """
+    required = min(len(view), min_allowed_weights)
+    present = {hotkey: amount for hotkey, amount in units.items() if amount > 0}
+    missing = required - len(present)
+    if missing <= 0:
+        return present
+    order = [hotkey for _uid, hotkey in sorted(zip(view.uids, view.hotkeys, strict=True))]
+    candidates = [hotkey for hotkey in order if hotkey not in present and hotkey != validator]
+    if len(candidates) < missing:
+        candidates.append(validator)
+    pad = -(-TOTAL_UNITS // 65_535)
+    donor = max(present, key=lambda hotkey: (present[hotkey], hotkey))
+    for hotkey in candidates[:missing]:
+        present[hotkey] = present.get(hotkey, 0) + pad
+    present[donor] -= pad * missing
+    return present
+
+
 # --- the run ----------------------------------------------------------------
 
 
@@ -334,6 +364,12 @@ def main() -> int:
     parser.add_argument("--workdir", type=Path, required=True)
     parser.add_argument("--hub-port", type=int, default=8600)
     parser.add_argument("--labeller-port", type=int, default=8601)
+    parser.add_argument(
+        "--min-allowed-weights",
+        type=int,
+        default=1,
+        help="set the subnet's min_allowed_weights, to exercise vector shaping (S5)",
+    )
     args = parser.parse_args()
 
     home = args.workdir / "home"
@@ -368,6 +404,10 @@ def main() -> int:
         ("sudo_set_commit_reveal_weights_enabled", {"netuid": netuid, "enabled": False}),
         ("sudo_set_weights_set_rate_limit", {"netuid": netuid, "weights_set_rate_limit": 0}),
         ("sudo_set_tempo", {"netuid": netuid, "tempo": 20}),
+        (
+            "sudo_set_min_allowed_weights",
+            {"netuid": netuid, "min_allowed_weights": args.min_allowed_weights},
+        ),
         ("sudo_set_admin_freeze_window", {"window": freeze}),
     ):
         check(sudo_call_extrinsic(subtensor, owner, function, params), function)
@@ -375,7 +415,13 @@ def main() -> int:
     assert not subtensor.commit_reveal_enabled(netuid=netuid), "commit-reveal is still on"
     assert subtensor.weights_rate_limit(netuid=netuid) == 0, "the rate limit did not change"
     assert subtensor.tempo(netuid=netuid) == 20, "the tempo did not change"
-    log("subnet started; commit-reveal off, no weights rate limit, tempo 20")
+    limits = subtensor.get_subnet_hyperparameters(netuid=netuid)
+    assert limits.min_allowed_weights == args.min_allowed_weights, "min_allowed_weights unchanged"
+    log(
+        "subnet started; commit-reveal off, no weights rate limit, tempo 20, "
+        f"min_allowed_weights {limits.min_allowed_weights}, "
+        f"max_weight_limit {limits.max_weight_limit}"
+    )
 
     for name, miner in miners.items():
         hotkey = miner.hotkey.ss58_address
@@ -559,9 +605,15 @@ def main() -> int:
     by_hand, burned = expected_units(record)
     if burned:
         by_hand[owner_hotkey] = by_hand.get(owner_hotkey, 0) + burned
+    view = view_of(subtensor, netuid)
+    by_hand = padded_by_hand(
+        by_hand,
+        view=view,
+        validator=owner.hotkey.ss58_address,
+        min_allowed_weights=args.min_allowed_weights,
+    )
     assert by_hand == sent, f"by hand {by_hand}, sent {sent}"
 
-    view = view_of(subtensor, netuid)
     vector = to_u16_chain_vector(resolve_allocations(sent, metagraph=view))
     uids, weights = convert_and_normalize_weights_and_uids(list(vector.uids), list(vector.weights))
     expected_on_chain = dict(zip(uids, weights, strict=True))
