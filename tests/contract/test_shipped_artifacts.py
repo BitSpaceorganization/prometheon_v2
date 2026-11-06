@@ -16,7 +16,7 @@ from prometheon.cli.main import build_parser
 from prometheon.cli.validator import _policy_version
 from prometheon.config import Config, ScoringConfig, load_config
 from prometheon.errors import ConfigError, OutdatedConfigError
-from prometheon.version import SCORING_VERSION
+from prometheon.version import SCORING_VERSION, SUBMISSION_FEE_ALPHA
 
 pytestmark = pytest.mark.contract
 
@@ -239,6 +239,53 @@ class TestAnOldConfigFailsLoudly:
         )
         with pytest.raises(OutdatedConfigError, match=r"prometheon-scoring/2\.1"):
             load_config(self._write(tmp_path, older))
+
+    @pytest.mark.parametrize("value", [1, 50])
+    def test_a_config_that_still_sets_the_fee_is_refused_not_ignored(
+        self, tmp_path: Path, value: int
+    ) -> None:
+        """The fee is a published rule now. A copy that sets it, even to 50, says so.
+
+        Ignoring the line would leave whoever set it believing it still changes
+        what `credits buy` sends.
+        """
+        text = _filled_in(ROOT / "configs" / "finney.example.toml", tmp_path).read_text(
+            encoding="utf-8"
+        )
+        older = text.replace(
+            'treasury_coldkey = ""\n', f'treasury_coldkey = ""\nsubmission_fee_alpha = {value}\n'
+        )
+        assert f"submission_fee_alpha = {value}" in older
+        with pytest.raises(OutdatedConfigError, match=r"no longer a setting.*50 alpha per credit"):
+            load_config(self._write(tmp_path, older))
+
+
+class TestTheFeeIsOnePublishedNumber:
+    """The hub prices credits at 50 alpha; `credits buy` sends exactly that.
+
+    It used to come from `[credits] submission_fee_alpha`, so a miner could change
+    it locally and send an amount the hub would not credit as they expected.
+    """
+
+    def test_the_code_sends_the_published_fee(self) -> None:
+        assert SUBMISSION_FEE_ALPHA == 50
+
+    @pytest.mark.parametrize("name", ["README.md", "docs/miner.md"])
+    def test_the_docs_state_the_fee_the_code_sends(self, name: str) -> None:
+        text = (ROOT / name).read_text(encoding="utf-8")
+        assert f"{SUBMISSION_FEE_ALPHA} alpha" in text
+
+    def test_no_shipped_file_offers_the_fee_as_a_setting(self) -> None:
+        import re
+
+        paths = [*_configs(), ROOT / "README.md", *sorted((ROOT / "docs").glob("*.md"))]
+        offenders = [
+            path.name
+            for path in paths
+            # `submission_fee_alpha_rao` is the hub's field in the credits reply.
+            if re.search(r"submission_fee_alpha(?!_rao)", path.read_text(encoding="utf-8"))
+        ]
+        assert not offenders, offenders
 
 
 class TestTheDocsNameNoNetuid:

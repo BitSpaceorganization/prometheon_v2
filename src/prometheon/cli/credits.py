@@ -2,7 +2,8 @@
 
 A model is evaluated only when its submission fee is covered by a credit. A
 miner buys credits by moving alpha stake on the subnet to the treasury coldkey
-(``transfer_stake``): one credit per ``submission_fee_alpha``, remainders carry
+(``transfer_stake``): one credit per
+:data:`~prometheon.version.SUBMISSION_FEE_ALPHA` alpha, remainders carry
 forward, and the credits belong to the sending coldkey, shared by every hotkey
 under it. The hub reads those transfers from the chain and publishes the ledger
 with the block and extrinsic of every entry, so anyone can recompute it.
@@ -26,6 +27,7 @@ from prometheon.config import Config
 from prometheon.errors import ConfigError, SubtensorError
 from prometheon.hub.client import HubClient
 from prometheon.hub.models import is_ss58
+from prometheon.version import SUBMISSION_FEE_ALPHA
 
 #: Rao per alpha (and per TAO): amounts travel as integers.
 RAO_PER_ALPHA: Final[int] = 1_000_000_000
@@ -86,7 +88,12 @@ def cmd_balance(args: argparse.Namespace) -> int:
     with _hub(config) as hub:
         balance = hub.get_credits(address)
 
-    fee = balance.submission_fee_alpha_rao or config.credits.submission_fee_alpha * RAO_PER_ALPHA
+    fee = balance.submission_fee_alpha_rao or SUBMISSION_FEE_ALPHA * RAO_PER_ALPHA
+    if fee != SUBMISSION_FEE_ALPHA * RAO_PER_ALPHA:
+        note(
+            f"warning: the hub prices a credit at {_alpha(fee)}, but this release sends "
+            f"{SUBMISSION_FEE_ALPHA} alpha per credit. Do not buy until they agree"
+        )
     out(
         table(
             [
@@ -112,7 +119,7 @@ def cmd_buy(args: argparse.Namespace) -> int:
     config = load(args.config)
     if args.credits < 1:
         raise ConfigError("--credits must be at least 1")
-    amount_rao = args.credits * config.credits.submission_fee_alpha * RAO_PER_ALPHA
+    amount_rao = args.credits * SUBMISSION_FEE_ALPHA * RAO_PER_ALPHA
     treasury = treasury_coldkey(config)
     wallet = open_wallet(config)
     coldkey = wallet.coldkeypub.ss58_address

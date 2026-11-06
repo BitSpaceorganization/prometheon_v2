@@ -1,4 +1,4 @@
-"""Single source of the package version and the scoring version."""
+"""Single source of the package version, the scoring version and the submission fee."""
 
 from typing import Final
 
@@ -15,4 +15,10 @@ __version__: Final[str] = "3.0.0"
 #: that was published sat unbumped through three weight-changing releases.
 SCORING_VERSION: Final[str] = "prometheon-scoring/3.0"
 
-__all__ = ["SCORING_VERSION", "__version__"]
+#: The model submission fee: alpha per credit. A published rule, not a setting.
+#: The hub prices credits at exactly this, so a miner who could change it
+#: locally would send an amount the hub does not count the way they expect.
+#: README.md and docs/miner.md state it, and a contract test holds them to it.
+SUBMISSION_FEE_ALPHA: Final[int] = 50
+
+__all__ = ["SCORING_VERSION", "SUBMISSION_FEE_ALPHA", "__version__"]
