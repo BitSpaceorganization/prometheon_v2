@@ -63,7 +63,7 @@ Be clear about what a validator can and can't check. It can check that the feed 
 
 ### Model submissions and credits
 
-A miner pays 50 alpha of stake to the treasury coldkey on the subnet (`prometheon credits buy` sends the `transfer_stake`) and gets one credit. A credit is spent when a new set of weights first appears in a frozen epoch. Re-committing the same weights costs nothing. A model without a credit is listed as `unpaid` and isn't scored. It's picked up at the next freeze after a credit arrives. Credits belong to the coldkey that paid, and are shared by every hotkey under it. **There are no refunds.** The ledger is public, with the block number and extrinsic hash of every entry.
+A miner pays 50 alpha of stake to the treasury coldkey on the subnet (`prometheon credits buy` sends the `transfer_stake`) and gets one credit. A credit is spent only when a model is evaluated: at the first freeze where its fee is covered, its miner is eligible and it passes the model checks. Re-committing the same weights costs nothing. A model without a credit is listed as `unpaid` and isn't scored. It's picked up at the next freeze after a credit arrives. Credits belong to the coldkey that paid, and are shared by every hotkey under it. **There are no refunds.** The ledger is public, with the block number and extrinsic hash of every entry.
 
 ### How the owner team takes part
 
@@ -144,6 +144,7 @@ docs/                       guides, the scoring rules and the hub contract
 | [`docs/validator.md`](./docs/validator.md) | Running the daily cycle |
 | [`docs/hub-contract.md`](./docs/hub-contract.md) | The signed epoch, the feed lines, and the hub's routes |
 | [`docs/localnet.md`](./docs/localnet.md) | Running the whole cycle on a local chain |
+| [`docs/open-design-issues.md`](./docs/open-design-issues.md) | Two design questions left for the team: the time budget and the efficiency term |
 
 ## License
 

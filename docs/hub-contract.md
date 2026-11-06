@@ -75,13 +75,15 @@ Lowercase hex, no trailing newline. The LFS sha256s come from `GET /api/models/{
 
 ### Payment
 
-For each fingerprint, among the hotkeys committing it in this epoch:
+The hub lists a model only if it passes the hub's own copy of the registry checks: the file manifest, at most 256 weight files, `config.json` with a `model_type` the runtime knows, the 24 GiB and 64 MiB ceilings, and weights in LFS. For each fingerprint, among the hotkeys committing it in this epoch:
 
-1. A hotkey that already paid for this fingerprint holds it: `paid`, with no new spend.
-2. Otherwise, in `(commit_block, hotkey)` order, the first hotkey whose coldkey has a free credit at `frozen_block` holds it: `paid`, and one credit is spent.
+1. A hotkey that has already spent a credit on this fingerprint holds it: `paid`, with no new spend.
+2. Otherwise, in `(commit_block, hotkey)` order, the first hotkey whose coldkey has a free credit at `frozen_block` holds it: `paid`. **The credit is spent at this freeze only if the holder's miner is eligible**, which is the only case in which validators evaluate it. Otherwise it is set aside for this freeze and carried forward.
 3. Everyone else is `duplicate` if a holder exists, or `unpaid` if nobody could pay. Neither spends anything.
 
-An unpaid commit doesn't claim a fingerprint. Deposits count toward a freeze only with `block <= frozen_block`.
+So a credit is spent only when a model is evaluated. Anyone can recompute the spends from the published epochs alone: a spend happens when a row is `paid`, its miner's row is eligible, and the pair has no earlier spend. An unpaid commit doesn't claim a fingerprint. Deposits count toward a freeze only with `block <= frozen_block`.
+
+**Validators and the hub must agree on the model limits.** If a validator ran different size ceilings or a different `model_type` list from the hub, a model could be charged but not evaluated there, or the reverse. Keep `[evaluation]` at the shipped values.
 
 ---
 

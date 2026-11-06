@@ -151,6 +151,16 @@ Units resolve to uids against a fresh metagraph at send time, then scale to `u16
 
 Every allocation on this page uses largest remainder too. Floors first, then one unit at a time to the largest remainders, with ties by hotkey. Parts always sum to the pool exactly.
 
+### The subnet's weight limits
+
+The chain refuses a vector that names fewer uids than `min(subnet size, min_allowed_weights)`, or in which one uid's share exceeds `max_weight_limit / 65535`. The only exception is a single weight on the validator's own uid. Validators read both limits before every send and bend the vector to them, the same way on every validator:
+
+- **Too few uids.** The lowest-numbered registered uids not already in the vector are added, never the validator's own unless nothing else is left. Each gets `ceil(1,000,000 / 65535) = 16` units, the least the chain carries, taken from the largest entry.
+- **A share over the cap.** It's cut to the cap. The excess is emission nobody may be paid, so it burns to the owner hotkey, up to the same cap. Only what the burn can't hold, when the burn is itself over the cap, is shared among the other entries in proportion to what they hold.
+- **Too few entries to fit the cap at all**, for example everything burning with a 50% cap and a validator that isn't the owner. The validator refuses to send rather than pay uids nobody scored.
+
+On the defaults a new subnet gets (`min_allowed_weights = 1`, `max_weight_limit = 65535`), nothing changes. **The owner should keep it that way.** The rules can burn up to 100% of a day, and a cap below 65535 makes such a day unsendable for every validator but the owner. The published record carries the vector as sent, after shaping, so a mirror reproduces it exactly.
+
 ## Worked example
 
 These are the numbers in `tests/integration/test_validator_run.py`, which drives `prometheon validator run` end to end and checks each one. The setup:

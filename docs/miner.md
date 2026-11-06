@@ -107,9 +107,10 @@ uv run prometheon credits buy --config ~/prometheon.toml             # sends it,
 
 - One credit per 50 alpha. Remainders carry forward.
 - Credits belong to the **coldkey** that paid, and every hotkey under it can use them.
-- A credit is spent when a new `(hotkey, weights fingerprint)` first appears in a frozen epoch. **Re-committing the same weights costs nothing.** New weights are a new fingerprint and cost a new credit.
+- **A credit is spent only when the model is evaluated:** at the first freeze where your coldkey has a free credit, your miner is eligible, and the model passes the model checks. After that, the same `(hotkey, weights fingerprint)` costs nothing again. **Re-committing the same weights costs nothing.** New weights are a new fingerprint and cost a new credit.
 - A model committed without a credit is listed as `unpaid` and isn't evaluated. It's picked up at the next freeze after a credit arrives.
-- A paid model whose hotkey isn't eligible that day isn't evaluated that day. The credit is spent at its first freeze anyway, and the fingerprint stays paid for later days.
+- A covered model whose miner isn't eligible that day isn't evaluated, and **its credit isn't spent**. The credit waits for a day the model is evaluated.
+- The hub lists only models that pass its own copy of the registry checks (manifest, at most 256 weight files, a known `model_type`, the size ceilings, and weights in LFS), so a model that fails them is never charged.
 - **There are no refunds.** The ledger is public: `prometheon credits balance` shows each entry with its block number and extrinsic hash.
 
 ### Commit on chain
