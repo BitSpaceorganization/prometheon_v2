@@ -101,10 +101,14 @@ These fail loudly rather than produce a plausible-looking result:
 | Your `content_policy.md` hashes differently from the epoch's | you'd be labelling against different rules from everyone else |
 | Hugging Face can't be reached to verify a model | marking the model invalid on this validator alone would split its vector from everyone else's |
 | The canary can't run a model on your device | `validator.fault`. Fix your install or drivers; nothing is submitted |
-| Labelling failed 3 batches in a row, or excluded more than 20% of the corpus | what's left isn't a benchmark |
-| A low-base-rate batch came back unanimously violating, across two or more independent sources | evidence the labeller stopped labelling |
+| Labelling failed 3 batches in a row, each holding more than one submitter's content | an endpoint fault, not content |
+| More than 20% of the production content excluded, or most of the test content lost for at least 3 submitters and at least half of them | what's left isn't a benchmark, and no single submitter could cause it |
+| Production posts still come back violating when each is asked about alone: 10 or more in one batch, or more than 90% of at least 20 over the day | the labeller has stopped labelling |
+| The vector can't be bent to the subnet's `max_weight_limit` without paying uids nobody scored | the owner has to raise the limit; see [`scoring.md`](./scoring.md#the-subnets-weight-limits) |
 
-**What doesn't stop a cycle: any single miner.** A model that won't download, won't load, runs out of memory or times out is scored on what it completed, and one that never produced a verdict is published as `unreachable`. A repository that was deleted or made private is `invalid` for the day. The rest of the field is scored as normal.
+**What doesn't stop a cycle: any single submitter's content.** Items the provider refuses, or that never label cleanly, are excluded and cost their submitter, who keeps them in `S` with neither `V`. A batch that comes back unanimously violating against a low base rate is asked again one item at a time, where no item can reach another's verdict, and the summary counts those batches.
+
+**Nor does any single miner's model.** A model that won't download, won't load, runs out of memory or times out is scored on what it completed, and one that never produced a verdict is published as `unreachable`. A repository that was deleted or made private is `invalid` for the day. The rest of the field is scored as normal.
 
 ## Reading the summary
 
@@ -232,6 +236,8 @@ You still need a registered hotkey with a validator permit, and you still need t
 Labelling is the bill you control. It scales with the corpus, and the policy goes with every batch, so batches of 100 items (the maximum and the default) keep the overhead down.
 
 Evaluation is your GPU time. Each eligible paid model is downloaded once per revision, loaded, run over the corpus and freed before the next. Only paid models of eligible miners are run, and the submission fee keeps the field to models someone paid to enter.
+
+Disk is the other limit: the download cache keeps every revision it has seen. With `[evaluation] discard_checkpoints = true`, each model is deleted after scoring, so the disk needs to hold only the largest model rather than the whole field. Files another revision still uses, such as an unchanged tokenizer, are kept.
 
 ## Upgrading
 
