@@ -283,9 +283,9 @@ def sync_metagraph_view(subtensor: Any, *, netuid: int) -> MetagraphView:
 
 
 def read_hyperparameters(subtensor: Any, *, netuid: int) -> ChainHyperparameters:
-    """Read the two hyperparameters the submission gates depend on.
+    """Read the hyperparameters the submission gates and the vector's shape depend on.
 
-    Both come from a single call. An earlier version used two convenience
+    All of them come from a single call. An earlier version used two convenience
     accessors that do not exist on ``Subtensor`` and hid the mistake behind
     ``except AttributeError``; see the module docstring. Called immediately
     before submission so the gates run on fresh values, not on whatever was
@@ -311,12 +311,42 @@ def read_hyperparameters(subtensor: Any, *, netuid: int) -> ChainHyperparameters
         hyperparameters, "weights_version", owner="subnet hyperparameters"
     )
 
+    # The two limits the chain checks every vector against (S5). Read strictly:
+    # assuming "no limit" when the SDK renamed a field is how a vector gets
+    # refused at the end of a cycle.
+    min_allowed_weights = _require_field(
+        hyperparameters, "min_allowed_weights", owner="subnet hyperparameters"
+    )
+    max_weight_limit = _require_field(
+        hyperparameters, "max_weight_limit", owner="subnet hyperparameters"
+    )
+    if min_allowed_weights is None or max_weight_limit is None:
+        raise SubtensorError(
+            f"subtensor returned no weight limits for netuid={netuid}; a vector cannot be "
+            "shaped to limits that are unknown"
+        )
+
     return ChainHyperparameters(
         # None means the subnet never set a version; the documented default is
         # 0, and the gate compares against a configured int that is never None.
         weights_version=0 if weights_version is None else int(weights_version),
         commit_reveal_enabled=bool(commit_reveal),
+        min_allowed_weights=int(min_allowed_weights),
+        max_weight_limit=_raw_u16_limit(max_weight_limit),
     )
+
+
+def _raw_u16_limit(value: Any) -> int:
+    """``max_weight_limit`` as the chain stores it, a u16 where 65535 is no cap.
+
+    The SDK's hyperparameter object carries the raw u16, while its convenience
+    accessor returns a fraction of one. A fraction is converted rather than
+    trusted to be the raw value, because 1.0 read as a u16 would be a cap of
+    1/65535 and would block every vector.
+    """
+    if isinstance(value, float) and 0.0 <= value <= 1.0:
+        return round(value * 65_535)
+    return int(value)
 
 
 def read_subnet_owner_hotkey(subtensor: Any, *, netuid: int) -> str:

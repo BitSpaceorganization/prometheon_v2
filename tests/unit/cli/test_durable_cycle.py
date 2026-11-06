@@ -22,6 +22,7 @@ import pytest
 from bittensor_wallet import Keypair
 
 from prometheon.chain.metagraph import MetagraphView
+from prometheon.chain.weights import ChainHyperparameters
 from prometheon.cli import validator as cli
 from prometheon.cli.record import finish_record
 from prometheon.cli.state import CycleState, load_state, save_state, state_path
@@ -33,7 +34,7 @@ from prometheon.config import (
     ValidatorRuntimeConfig,
     WalletConfig,
 )
-from prometheon.errors import ConfigError, SetWeightsFailedError
+from prometheon.errors import ConfigError, ScoringError, SetWeightsFailedError
 from prometheon.hub.auth import CallerRole, verify_evaluation
 from prometheon.hub.client import HubClient
 from prometheon.hub.fake import FakeHub
@@ -190,11 +191,11 @@ def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setattr(
         cli.chain,
         "read_hyperparameters",
-        lambda *_a, **_k: SimpleNamespace(weights_version=0, commit_reveal_enabled=False),
+        lambda *_a, **_k: ChainHyperparameters(weights_version=0, commit_reveal_enabled=False),
     )
     monkeypatch.setattr(
         "prometheon.cli.cycle.chain.read_hyperparameters",
-        lambda *_a, **_k: SimpleNamespace(weights_version=0, commit_reveal_enabled=False),
+        lambda *_a, **_k: ChainHyperparameters(weights_version=0, commit_reveal_enabled=False),
     )
     monkeypatch.setattr(
         "prometheon.cli.cycle.chain.detect_capabilities",
@@ -410,8 +411,40 @@ class TestTheStateFile:
 
 def test_finishing_a_record_moves_a_departed_miners_units_to_burn() -> None:
     draft = _draft("e" * 64)
-    finished = finish_record(draft, gone={MINER_B})
+    # B left before the send, so submit_allocation sent its units to the owner.
+    sent = {MINER_A: 600_000, OWNER: 400_000}
+    finished = finish_record(draft, sent=sent, burn_hotkey=OWNER, uids={})
     weights = {row.hotkey: row.weight for row in finished.results}
     assert weights == {MINER_A: 600_000, MINER_B: 0}
     assert finished.burned_weight == 400_000
     assert sum(weights.values()) + finished.burned_weight == 1_000_000
+
+
+def test_the_record_reproduces_a_vector_shaped_to_the_chains_limits() -> None:
+    """S5: the record describes the shaped vector, padding row included."""
+    draft = _draft("e" * 64)
+    padding = Keypair.create_from_uri("//DurablePadding").ss58_address
+    # min_allowed_weights made the cycle add a uid: 16 units, paid by A, the
+    # largest entry. B and the burn are as computed.
+    sent = {MINER_A: 599_984, MINER_B: 390_000, OWNER: 10_000, padding: 16}
+    finished = finish_record(draft, sent=sent, burn_hotkey=OWNER, uids={padding: 9})
+
+    weights = {row.hotkey: row.weight for row in finished.results}
+    assert weights == {MINER_A: 599_984, MINER_B: 390_000, padding: 16}
+    assert finished.burned_weight == 10_000
+    row = next(row for row in finished.results if row.hotkey == padding)
+    assert (row.uid, row.model_status, row.dataset_submitted_count) == (
+        9,
+        ModelStatus.NOT_COMMITTED,
+        0,
+    )
+    # Rows plus burn are exactly what was sent, as a mirror will rebuild it.
+    rebuilt = {**weights, OWNER: finished.burned_weight}
+    assert rebuilt == sent
+
+
+def test_a_record_cannot_name_a_padding_uid_it_does_not_know() -> None:
+    draft = _draft("e" * 64)
+    sent = {MINER_A: 599_984, MINER_B: 390_000, OWNER: 10_000, "5Stranger": 16}
+    with pytest.raises(ScoringError, match="uid it was sent at is unknown"):
+        finish_record(draft, sent=sent, burn_hotkey=OWNER, uids={})

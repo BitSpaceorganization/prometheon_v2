@@ -144,11 +144,22 @@ def _send(config: Config, state: CycleState, *, wallet: Any, subtensor: Any) -> 
         )
     state.sent_at = int(time.time())
     state.sent_weights = dict(sent.units)
+    state.sent_uids = dict(sent.uids)
     state.gone = list(sent.gone)
     state.receipt = sent.receipt
     save_state(config, state)
     if sent.gone:
         note(f"{len(sent.gone)} hotkey(s) had deregistered; their units went to burn")
+    if sent.padded:
+        note(
+            f"the subnet requires more weights than this vector had: {len(sent.padded)} uid(s) "
+            "were added with the smallest possible weight"
+        )
+    if sent.capped:
+        note(
+            f"{len(sent.capped)} share(s) were cut to the subnet's max_weight_limit; the excess "
+            "was burned, or shared among the other entries where the burn was over the limit"
+        )
     note(f"weights submitted for {state.day.isoformat()}: {sent.receipt or 'no receipt returned'}")
     return state
 
@@ -165,9 +176,16 @@ def _publish(config: Config, state: CycleState, *, wallet: Any, hub: HubClient) 
         return
     if not state.signed:
         draft = EvaluationSubmission.model_validate(state.record)
-        # After the send, so rows for hotkeys that deregistered in between are
-        # zeroed and their units counted as burn, as they were sent (B5).
-        signed = auth.sign_evaluation(wallet.hotkey, finish_record(draft, gone=state.gone))
+        # After the send, so the record describes the vector as it was sent:
+        # units of hotkeys that deregistered in between counted as burn (B5),
+        # and any shaping to the chain's weight limits (S5).
+        finished = finish_record(
+            draft,
+            sent=state.sent_weights if state.sent_weights is not None else state.weights,
+            burn_hotkey=state.burn_hotkey,
+            uids=state.sent_uids or {},
+        )
+        signed = auth.sign_evaluation(wallet.hotkey, finished)
         state.record = json.loads(signed.model_dump_json())
         state.signed = True
         save_state(config, state)

@@ -36,7 +36,7 @@ from prometheon.config import (
     ScoringConfig,
     WalletConfig,
 )
-from prometheon.errors import ConfigError, ValidatorFaultError
+from prometheon.errors import ConfigError, ValidatorFaultError, WeightSubmissionError
 from prometheon.evaluation.engine import ModerationResult, Verdict
 from prometheon.hub.auth import CallerRole
 from prometheon.hub.client import HubClient
@@ -95,9 +95,18 @@ def _text(seed: int, *, violating: bool) -> str:
 class FakeChain:
     """The accessors ``prometheon.chain.subtensor`` requires, and no more."""
 
-    def __init__(self, hotkeys: list[str], *, owner: str) -> None:
+    def __init__(
+        self,
+        hotkeys: list[str],
+        *,
+        owner: str,
+        min_allowed_weights: int = 1,
+        max_weight_limit: int = 65_535,
+    ) -> None:
         self._hotkeys = [owner, *hotkeys]
         self._owner = owner
+        self.min_allowed_weights = min_allowed_weights
+        self.max_weight_limit = max_weight_limit
         self.submitted: list[dict[str, Any]] = []
 
     def metagraph(self, netuid: int, lite: bool = True) -> Any:
@@ -111,7 +120,12 @@ class FakeChain:
         )
 
     def get_subnet_hyperparameters(self, netuid: int) -> Any:
-        return SimpleNamespace(weights_version=0, commit_reveal_weights_enabled=False)
+        return SimpleNamespace(
+            weights_version=0,
+            commit_reveal_weights_enabled=False,
+            min_allowed_weights=self.min_allowed_weights,
+            max_weight_limit=self.max_weight_limit,
+        )
 
     def get_subnet_owner_hotkey(self, netuid: int) -> str:
         return self._owner
@@ -446,6 +460,101 @@ def test_a_whole_cycle_produces_the_exact_v3_vector(
     on_chain = world["chain"].submitted[0]
     assert sum(on_chain["weights"]) == 65_535
     assert on_chain["uids"] == [1, 2]
+
+
+def test_a_vector_is_bent_to_the_subnets_weight_limits_before_it_is_sent(
+    config: Config, world: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """S5: the standard day names two uids; this subnet requires three.
+
+    C, the lowest uid not already weighted (other than the validator, which is
+    the owner here), is added with ceil(1,000,000 / 65535) = 16 units taken
+    from the largest entry, A's 600,000.
+    """
+    world["chain"].min_allowed_weights = 3
+    result = _run(
+        config,
+        world,
+        accuracy={MINER_A.ss58_address: 1.0, MINER_B.ss58_address: 0.6},
+        monkeypatch=monkeypatch,
+    )
+    sent = submit_weights(
+        result,
+        config=config,
+        subtensor=world["chain"],
+        wallet=SimpleNamespace(hotkey=VALIDATOR),
+        mechid=0,
+    )
+    assert dict(sent.units) == {
+        MINER_A.ss58_address: 600_000 - 16,
+        MINER_B.ss58_address: 400_000,
+        MINER_C.ss58_address: 16,
+    }
+    assert sent.padded == (MINER_C.ss58_address,)
+    assert sent.uids[MINER_C.ss58_address] == 3
+    on_chain = world["chain"].submitted[0]
+    assert on_chain["uids"] == [1, 2, 3]
+    assert sum(on_chain["weights"]) == 65_535
+    assert on_chain["weights"][2] == 1
+
+
+def test_a_share_over_the_cap_burns_its_excess(
+    config: Config, world: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """S5: on a 40% cap, neither winner may hold what it earned.
+
+    cap = 1,000,000 x (26214 - 1) // 65535 = 399,984. A's 600,000 and B's
+    400,000 are both cut to it; the 200,032 nobody may be paid burns to the
+    owner, which is uid 0.
+    """
+    world["chain"].max_weight_limit = 26_214
+    result = _run(
+        config,
+        world,
+        accuracy={MINER_A.ss58_address: 1.0, MINER_B.ss58_address: 0.6},
+        monkeypatch=monkeypatch,
+    )
+    sent = submit_weights(
+        result,
+        config=config,
+        subtensor=world["chain"],
+        wallet=SimpleNamespace(hotkey=VALIDATOR),
+        mechid=0,
+    )
+    assert dict(sent.units) == {
+        MINER_A.ss58_address: 399_984,
+        MINER_B.ss58_address: 399_984,
+        VALIDATOR.ss58_address: 200_032,
+    }
+    assert set(sent.capped) == {MINER_A.ss58_address, MINER_B.ss58_address}
+    assert world["chain"].submitted[0]["uids"] == [0, 1, 2]
+
+
+def test_a_vector_the_cap_cannot_fit_is_never_sent(
+    config: Config, world: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Burn-only on a 50% cap: the rest would have to pay uids nobody scored."""
+    world["chain"].max_weight_limit = 32_768
+    world["hub"].publish_day(
+        DAY,
+        miners=[_miner(VALIDATOR, 0, VALIDATOR, 0), _miner(MINER_A, 1, COLD_A, 3)],
+        test_lines=world["tests"][:10],
+        production_lines=world["productions"],
+        policy_version=POLICY.version,
+        policy_sha256=POLICY.sha256,
+    )
+    result = _run(config, world, accuracy={}, monkeypatch=monkeypatch)
+    assert dict(result.split.weights) == {VALIDATOR.ss58_address: 1_000_000}
+    with pytest.raises(WeightSubmissionError, match="raise max_weight_limit"):
+        submit_weights(
+            result,
+            config=config,
+            subtensor=world["chain"],
+            # A validator other than the owner, so this is not a self-weight.
+            wallet=SimpleNamespace(hotkey=MINER_C),
+            mechid=0,
+        )
+    assert world["chain"].submitted == []
 
 
 def test_only_paid_models_of_eligible_miners_reach_the_registry(
