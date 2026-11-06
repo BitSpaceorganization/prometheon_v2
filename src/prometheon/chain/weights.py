@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from fractions import Fraction
 from typing import Final
 
 from prometheon.chain.metagraph import MetagraphView
@@ -32,6 +33,7 @@ from prometheon.errors import (
     WeightSubmissionError,
     WeightsVersionMismatchError,
 )
+from prometheon.scoring.allocation import AllocationTarget, allocate
 
 #: What u16 weights sum to on chain.
 CHAIN_WEIGHT_UNITS: Final[int] = 65_535
@@ -97,6 +99,10 @@ class ChainHyperparameters:
 
     weights_version: int
     commit_reveal_enabled: bool
+    #: The fewest weights a validator may set (capped at the subnet's size).
+    min_allowed_weights: int = 1
+    #: The largest share one uid may hold, as a fraction of 65535. 65535 is no cap.
+    max_weight_limit: int = 65_535
 
 
 @dataclass(frozen=True)
@@ -254,13 +260,200 @@ def to_u16_chain_vector(allocations: Sequence[WeightAllocation]) -> ChainWeightV
     )
 
 
+@dataclass(frozen=True)
+class ShapedAllocation:
+    """A hotkey->units vector the chain will accept, and what had to change."""
+
+    units: dict[str, int]
+    #: Hotkeys given the smallest possible weight only to meet the chain's
+    #: minimum number of weights, in the order they were added.
+    padded: tuple[str, ...]
+    #: Hotkeys whose share was cut to the chain's largest allowed share.
+    capped: tuple[str, ...]
+
+
+def shape_for_chain(
+    units: Mapping[str, int],
+    *,
+    hyperparameters: ChainHyperparameters,
+    metagraph: MetagraphView,
+    validator_hotkey: str,
+    burn_hotkey: str,
+) -> ShapedAllocation:
+    """Bend a vector to the subnet's weight limits, so the chain accepts it (S5).
+
+    The chain refuses a weight vector that names fewer uids than
+    ``min(subnet size, min_allowed_weights)``, or in which one uid holds a larger
+    share than ``max_weight_limit / 65535``, unless it is a single self-weight.
+    v2 read neither, so a day where everything burned, or a field of one,
+    could be refused at the very end of a cycle. On the default limits (1 and
+    65535) nothing changes.
+
+    - **Too few uids**: the lowest-numbered registered uids not already in the
+      vector, other than the validator's own, are added with the smallest
+      amount that survives as a non-zero ``u16``. The units come out of the
+      largest entry.
+    - **A share over the cap**: it is cut to the cap. The excess is emission
+      nobody may be paid, so it burns: it goes to the burn hotkey, up to the
+      same cap. Only what the burn cannot hold, which happens when the burn is
+      itself the entry over the cap, goes to the other entries in proportion
+      to what they already hold. Repeated until nothing is over. A vector that
+      cannot fit at all, because it has too few entries for the cap, raises:
+      paying a large share to uids nobody scored is not a shape the rules
+      allow, and the owner can raise ``max_weight_limit``.
+
+    Deterministic, so every validator bends the same vector the same way.
+    """
+    shaped = {hotkey: amount for hotkey, amount in units.items() if amount > 0}
+    if not shaped:
+        raise WeightSubmissionError("there is nothing to send: every allocation is zero")
+    if list(shaped) == [validator_hotkey]:
+        # A single self-weight is exempt from both limits.
+        return ShapedAllocation(units=shaped, padded=(), capped=())
+    total = sum(shaped.values())
+    padded = _pad_to_minimum(shaped, total, hyperparameters, metagraph, validator_hotkey)
+    capped = _cap_to_limit(shaped, total, hyperparameters, metagraph, burn_hotkey)
+    return ShapedAllocation(units=shaped, padded=tuple(padded), capped=tuple(capped))
+
+
+def _pad_to_minimum(
+    shaped: dict[str, int],
+    total: int,
+    hyperparameters: ChainHyperparameters,
+    metagraph: MetagraphView,
+    validator_hotkey: str,
+) -> list[str]:
+    required = min(len(metagraph), hyperparameters.min_allowed_weights)
+    missing = required - len(shaped)
+    if missing <= 0:
+        return []
+    candidates = [
+        hotkey
+        for _uid, hotkey in sorted(zip(metagraph.uids, metagraph.hotkeys, strict=True))
+        if hotkey not in shaped and hotkey != validator_hotkey
+    ]
+    if len(candidates) < missing and metagraph.is_registered(validator_hotkey):
+        # Only when the subnet is so small that nothing else is left.
+        candidates.append(validator_hotkey)
+    if len(candidates) < missing:
+        raise WeightSubmissionError(
+            f"the subnet requires {required} weights and only {len(shaped) + len(candidates)} "
+            "uids are available to carry them"
+        )
+    # The smallest amount that is still at least one u16 unit after scaling.
+    pad = -(-total // CHAIN_WEIGHT_UNITS)
+    donor = max(shaped, key=lambda hotkey: (shaped[hotkey], hotkey))
+    if shaped[donor] - pad * missing < pad:
+        raise WeightSubmissionError("no entry is large enough to pay for the padding")
+    added = candidates[:missing]
+    for hotkey in added:
+        shaped[hotkey] = pad
+    shaped[donor] -= pad * missing
+    return added
+
+
+def _cap_to_limit(
+    shaped: dict[str, int],
+    total: int,
+    hyperparameters: ChainHyperparameters,
+    metagraph: MetagraphView,
+    burn_hotkey: str,
+) -> list[str]:
+    limit = hyperparameters.max_weight_limit
+    if limit >= CHAIN_WEIGHT_UNITS:
+        return []
+    # One u16 unit under the limit absorbs the rounding in the SDK's conversion.
+    cap = total * max(limit - 1, 0) // CHAIN_WEIGHT_UNITS
+    can_burn = burn_hotkey in shaped or metagraph.is_registered(burn_hotkey)
+    holders = len(shaped) + (1 if can_burn and burn_hotkey not in shaped else 0)
+    if cap * holders < total:
+        raise WeightSubmissionError(
+            f"max_weight_limit={limit} lets one uid hold at most {cap} of {total} units, "
+            f"and this vector has {holders} possible holders, so it cannot be sent without "
+            "paying uids nobody scored. The subnet owner has to raise max_weight_limit"
+        )
+    capped: list[str] = []
+    while over := sorted(hotkey for hotkey, amount in shaped.items() if amount > cap):
+        excess = sum(shaped[hotkey] - cap for hotkey in over)
+        for hotkey in over:
+            shaped[hotkey] = cap
+            if hotkey not in capped:
+                capped.append(hotkey)
+        if can_burn:
+            # Emission nobody may be paid is burned, as far as the cap allows.
+            burned = min(excess, cap - shaped.get(burn_hotkey, 0))
+            if burned > 0:
+                shaped[burn_hotkey] = shaped.get(burn_hotkey, 0) + burned
+                excess -= burned
+        if not excess:
+            continue
+        under = sorted((hotkey, amount) for hotkey, amount in shaped.items() if amount < cap)
+        targets = [
+            AllocationTarget(key=hotkey, weight=Fraction(amount)) for hotkey, amount in under
+        ]
+        for hotkey, extra in allocate(excess, targets).items():
+            shaped[hotkey] += extra
+    return capped
+
+
+def sdk_emitted(vector: ChainWeightVector) -> tuple[list[int], list[int]]:
+    """The ``(uids, weights)`` the SDK will actually put in the extrinsic.
+
+    Mirrors ``convert_weights_and_uids_for_emit``: scale so the largest weight is
+    65535, round each, and drop any that round to zero.
+    """
+    largest = float(max(vector.weights))
+    uids: list[int] = []
+    weights: list[int] = []
+    for uid, weight in zip(vector.uids, vector.weights, strict=True):
+        scaled = round(float(weight) / largest * CHAIN_WEIGHT_UNITS)
+        if scaled:
+            uids.append(uid)
+            weights.append(scaled)
+    return uids, weights
+
+
+def chain_refusal(
+    vector: ChainWeightVector,
+    *,
+    hyperparameters: ChainHyperparameters,
+    subnet_n: int,
+    validator_uid: int | None,
+) -> str | None:
+    """Why the chain would refuse this vector, or ``None`` if it would accept it.
+
+    The same two checks subtensor runs in ``do_set_weights``: the minimum
+    length, then the largest normalised share against ``max_weight_limit``.
+    A single weight on the validator's own uid is exempt from both.
+    """
+    uids, weights = sdk_emitted(vector)
+    if not uids:
+        return "every weight rounds to zero"
+    if len(uids) == 1 and uids[0] == validator_uid:
+        return None
+    required = min(subnet_n, hyperparameters.min_allowed_weights)
+    if len(uids) < required:
+        return f"{len(uids)} weights, and the subnet requires at least {required}"
+    limit = hyperparameters.max_weight_limit
+    if limit < CHAIN_WEIGHT_UNITS and max(weights) * CHAIN_WEIGHT_UNITS > limit * sum(weights):
+        return (
+            f"one uid holds {max(weights) / sum(weights):.4%} of the vector, over "
+            f"max_weight_limit={limit} ({limit / CHAIN_WEIGHT_UNITS:.4%})"
+        )
+    return None
+
+
 __all__ = [
     "CHAIN_WEIGHT_UNITS",
     "ChainCapabilities",
     "ChainHyperparameters",
     "ChainWeightVector",
+    "ShapedAllocation",
     "WeightAllocation",
     "assert_submission_allowed",
+    "chain_refusal",
     "resolve_allocations",
+    "sdk_emitted",
+    "shape_for_chain",
     "to_u16_chain_vector",
 ]

@@ -46,8 +46,12 @@ class CycleState:
     weights: dict[str, int]
     computed_at: int
     sent_at: int | None = None
-    #: Units as actually sent: deregistered hotkeys' units moved to burn.
+    #: Units as actually sent: deregistered hotkeys' units moved to burn, and
+    #: the vector shaped to the chain's weight limits.
     sent_weights: dict[str, int] | None = None
+    #: The uid of each hotkey in ``sent_weights`` when it was sent. The record
+    #: needs it for a uid that was added only to meet the chain's minimum.
+    sent_uids: dict[str, int] | None = None
     #: Hotkeys that had deregistered by the time weights were sent.
     gone: list[str] = field(default_factory=list)
     receipt: str | None = None
@@ -118,6 +122,7 @@ def _from_json(raw: Any) -> CycleState:
         raise TypeError("the state file is not a JSON object")
     weights = {str(key): int(value) for key, value in dict(raw["weights"]).items()}
     sent = raw.get("sent_weights")
+    sent_uids = raw.get("sent_uids")
     # A v2 file carries `submitted_at` and no `sent_at`: its vector was sent.
     sent_at = raw.get("sent_at", raw.get("submitted_at"))
     return CycleState(
@@ -130,6 +135,9 @@ def _from_json(raw: Any) -> CycleState:
         sent_at=int(sent_at) if sent_at is not None else None,
         sent_weights=(
             {str(key): int(value) for key, value in dict(sent).items()} if sent else None
+        ),
+        sent_uids=(
+            {str(key): int(value) for key, value in dict(sent_uids).items()} if sent_uids else None
         ),
         gone=[str(hotkey) for hotkey in raw.get("gone", [])],
         receipt=raw.get("receipt"),

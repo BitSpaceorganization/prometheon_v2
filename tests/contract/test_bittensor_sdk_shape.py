@@ -252,17 +252,29 @@ def test_an_actually_empty_metagraph_fails_the_cycle() -> None:
 
 def test_the_hyperparameter_fields_the_gates_read_still_exist() -> None:
     names = {field.name for field in dataclasses.fields(bittensor.SubnetHyperparameters)}
-    assert {"weights_version", "commit_reveal_weights_enabled"} <= names
+    assert {
+        "weights_version",
+        "commit_reveal_weights_enabled",
+        "min_allowed_weights",
+        "max_weight_limit",
+    } <= names
 
 
 def test_hyperparameters_read_through_the_adapter() -> None:
     fields = {field.name: None for field in dataclasses.fields(bittensor.SubnetHyperparameters)}
-    fields.update(weights_version=7, commit_reveal_weights_enabled=True)
+    fields.update(
+        weights_version=7,
+        commit_reveal_weights_enabled=True,
+        min_allowed_weights=8,
+        max_weight_limit=32_768,
+    )
     raw = bittensor.SubnetHyperparameters(**fields)  # type: ignore[arg-type]
 
     result = adapter.read_hyperparameters(_Client(hyperparameters=raw), netuid=42)
 
     assert result.weights_version == 7
+    # The object carries the raw u16, unlike the SDK's fraction-returning accessor.
+    assert (result.min_allowed_weights, result.max_weight_limit) == (8, 32_768)
     assert result.commit_reveal_enabled is True
 
 
@@ -446,3 +458,39 @@ def test_transfer_stake_takes_what_credits_buy_sends() -> None:
 def test_get_stake_takes_what_credits_buy_reads() -> None:
     parameters = set(inspect.signature(bittensor.Subtensor.get_stake).parameters)
     assert {"coldkey_ss58", "hotkey_ss58", "netuid"} <= parameters
+
+
+# ---------------------------------------------------------------------------
+# What the SDK puts in the extrinsic
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("uids", "weights"),
+    [
+        ((1, 2), (39_321, 26_214)),
+        ((0, 2, 3, 4), (65_532, 1, 1, 1)),
+        ((0, 2, 3, 4), (32_767, 27_307, 4_369, 1_092)),
+        ((0, 2, 3, 4), (45_875, 16_384, 655, 2_621)),
+        ((5,), (65_535,)),
+    ],
+)
+def test_the_emit_simulation_matches_the_sdk(
+    uids: tuple[int, ...], weights: tuple[int, ...]
+) -> None:
+    """S5's acceptance check models the SDK's conversion; it has to match it exactly.
+
+    ``set_weights`` passes the u16 vector through
+    ``convert_and_normalize_weights_and_uids``, which rescales so the largest
+    weight is 65535, rounds, and drops zeros. If the model drifted from the SDK,
+    the shaping could pass a vector the chain then refuses.
+    """
+    from bittensor.utils.weight_utils import convert_and_normalize_weights_and_uids
+
+    from prometheon.chain.weights import ChainWeightVector, sdk_emitted
+
+    vector = ChainWeightVector(
+        uids=uids, weights=weights, hotkeys=tuple(f"5Hotkey{uid}" for uid in uids)
+    )
+    expected = convert_and_normalize_weights_and_uids(list(uids), list(weights))
+    assert sdk_emitted(vector) == (list(expected[0]), list(expected[1]))

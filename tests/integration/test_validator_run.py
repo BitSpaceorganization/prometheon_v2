@@ -109,7 +109,12 @@ class Chain:
         )
 
     def get_subnet_hyperparameters(self, netuid: int) -> Any:
-        return SimpleNamespace(weights_version=0, commit_reveal_weights_enabled=False)
+        return SimpleNamespace(
+            weights_version=0,
+            commit_reveal_weights_enabled=False,
+            min_allowed_weights=1,
+            max_weight_limit=65_535,
+        )
 
     def get_subnet_owner_hotkey(self, netuid: int) -> str:
         return OWNER.ss58_address

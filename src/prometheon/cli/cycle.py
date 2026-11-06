@@ -41,7 +41,9 @@ from prometheon.chain.commitment import ModelCommitment as ChainCommitment
 from prometheon.chain.metagraph import MetagraphView
 from prometheon.chain.weights import (
     assert_submission_allowed,
+    chain_refusal,
     resolve_allocations,
+    shape_for_chain,
     to_u16_chain_vector,
 )
 from prometheon.config import Config
@@ -50,6 +52,7 @@ from prometheon.errors import (
     ConfigError,
     SubtensorError,
     ValidatorFaultError,
+    WeightSubmissionError,
 )
 from prometheon.evaluation.corpus import (
     EvaluationCorpus,
@@ -336,10 +339,17 @@ class SubmittedAllocation:
     """What actually went on chain, which the published record has to describe."""
 
     receipt: str | None
-    #: Units as sent, after deregistered hotkeys' units moved to burn.
+    #: Units as sent: deregistered hotkeys' units moved to burn, then the vector
+    #: shaped to the chain's weight limits.
     units: Mapping[str, int]
     #: Hotkeys that had deregistered by the time of sending.
     gone: tuple[str, ...]
+    #: The uid each sent hotkey had at the time of sending.
+    uids: Mapping[str, int] = field(default_factory=dict)
+    #: Hotkeys added only to meet the chain's minimum number of weights.
+    padded: tuple[str, ...] = ()
+    #: Hotkeys whose share was cut to the chain's largest allowed share.
+    capped: tuple[str, ...] = ()
 
 
 def submit_weights(
@@ -378,8 +388,9 @@ def submit_allocation(
     Commit-reveal switched on mid-cycle is exactly the case the gate exists
     for, and an early-only check would miss it.
     """
+    hyperparameters = chain.read_hyperparameters(subtensor, netuid=config.chain.netuid)
     assert_submission_allowed(
-        hyperparameters=chain.read_hyperparameters(subtensor, netuid=config.chain.netuid),
+        hyperparameters=hyperparameters,
         capabilities=chain.detect_capabilities(subtensor),
         configured_version_key=config.chain.version_key,
         fail_on_weights_version_mismatch=config.chain.fail_on_weights_version_mismatch,
@@ -398,7 +409,28 @@ def submit_allocation(
         # (B19).
         _require_burn_target(fresh, burn_hotkey, netuid=config.chain.netuid)
 
-    vector = to_u16_chain_vector(resolve_allocations(units, metagraph=fresh))
+    # Bent to the subnet's weight limits, then checked the way the chain will
+    # check it, so a vector the chain would refuse is never sent (S5).
+    validator_hotkey = wallet.hotkey.ss58_address
+    shaped = shape_for_chain(
+        units,
+        hyperparameters=hyperparameters,
+        metagraph=fresh,
+        validator_hotkey=validator_hotkey,
+        burn_hotkey=burn_hotkey,
+    )
+    if shaped.units.get(burn_hotkey) and not units.get(burn_hotkey):
+        # The cap sent some emission to the burn that was not burning before.
+        _require_burn_target(fresh, burn_hotkey, netuid=config.chain.netuid)
+    vector = to_u16_chain_vector(resolve_allocations(shaped.units, metagraph=fresh))
+    refusal = chain_refusal(
+        vector,
+        hyperparameters=hyperparameters,
+        subnet_n=len(fresh),
+        validator_uid=fresh.uid_for(validator_hotkey),
+    )
+    if refusal is not None:
+        raise WeightSubmissionError(f"the chain would refuse this vector: {refusal}")
     receipt = chain.submit_set_weights(
         subtensor,
         wallet=wallet,
@@ -407,7 +439,14 @@ def submit_allocation(
         version_key=config.chain.version_key,
         mechid=mechid,
     )
-    return SubmittedAllocation(receipt=receipt, units=dict(units), gone=tuple(gone))
+    return SubmittedAllocation(
+        receipt=receipt,
+        units=dict(shaped.units),
+        gone=tuple(gone),
+        uids=dict(zip(vector.hotkeys, vector.uids, strict=True)),
+        padded=shaped.padded,
+        capped=shaped.capped,
+    )
 
 
 def build_results(result: CycleResult) -> tuple[MinerResult, ...]:

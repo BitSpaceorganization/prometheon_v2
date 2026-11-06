@@ -248,17 +248,24 @@ class TestReadHyperparameters:
     def test_reads_both_gate_inputs_from_one_call(self) -> None:
         subtensor = FakeSubtensor(
             hyperparameters=FakeHyperparameters(
-                commit_reveal_weights_enabled=True, weights_version=7
+                commit_reveal_weights_enabled=True,
+                weights_version=7,
+                min_allowed_weights=8,
+                max_weight_limit=32_768,
             )
         )
         result = adapter.read_hyperparameters(subtensor, netuid=42)
         assert result.commit_reveal_enabled is True
         assert result.weights_version == 7
+        assert (result.min_allowed_weights, result.max_weight_limit) == (8, 32_768)
 
     def test_an_unset_weights_version_collapses_to_the_documented_default(self) -> None:
         subtensor = FakeSubtensor(
             hyperparameters=FakeHyperparameters(
-                commit_reveal_weights_enabled=False, weights_version=None
+                commit_reveal_weights_enabled=False,
+                weights_version=None,
+                min_allowed_weights=1,
+                max_weight_limit=65_535,
             )
         )
         assert adapter.read_hyperparameters(subtensor, netuid=42).weights_version == 0
@@ -266,8 +273,14 @@ class TestReadHyperparameters:
     @pytest.mark.parametrize(
         "fields",
         [
-            {"weights_version": 7},
-            {"commit_reveal_weights_enabled": False},
+            {"weights_version": 7, "min_allowed_weights": 1, "max_weight_limit": 65_535},
+            {"commit_reveal_weights_enabled": False, "min_allowed_weights": 1},
+            {"commit_reveal_weights_enabled": False, "weights_version": 1, "max_weight_limit": 9},
+            {
+                "commit_reveal_weights_enabled": False,
+                "weights_version": 1,
+                "min_allowed_weights": 1,
+            },
         ],
     )
     def test_a_missing_field_fails_loud_instead_of_defaulting(self, fields: dict[str, Any]) -> None:
