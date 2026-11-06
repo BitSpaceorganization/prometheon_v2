@@ -23,7 +23,7 @@ from typing import Any, Final
 from prometheon.chain import subtensor as chain
 from prometheon.cli._common import EXIT_OK, load, note, open_wallet, out, table
 from prometheon.config import Config
-from prometheon.errors import ConfigError
+from prometheon.errors import ConfigError, SubtensorError
 from prometheon.hub.client import HubClient
 from prometheon.hub.models import is_ss58
 
@@ -135,8 +135,8 @@ def cmd_buy(args: argparse.Namespace) -> int:
     note("")
     note(
         "This is a transfer_stake on chain: your alpha stake on that hotkey moves to the "
-        "treasury coldkey. Credits belong to your coldkey and are spent when a new model "
-        "first appears in a frozen epoch. There are no refunds."
+        "treasury coldkey. Credits belong to your coldkey and are spent only when a model is "
+        "evaluated. There are no refunds."
     )
 
     subtensor = chain.connect(config.chain.network)
@@ -158,20 +158,74 @@ def cmd_buy(args: argparse.Namespace) -> int:
         note("not confirmed: nothing was sent")
         return EXIT_OK
 
-    receipt = chain.submit_transfer_stake(
-        subtensor,
-        wallet=wallet,
-        destination_coldkey=treasury,
-        hotkey=hotkey,
-        netuid=config.chain.netuid,
-        amount_rao=amount_rao,
+    treasury_before = chain.read_stake_rao(
+        subtensor, coldkey=treasury, hotkey=hotkey, netuid=config.chain.netuid
     )
+    try:
+        receipt = chain.submit_transfer_stake(
+            subtensor,
+            wallet=wallet,
+            destination_coldkey=treasury,
+            hotkey=hotkey,
+            netuid=config.chain.netuid,
+            amount_rao=amount_rao,
+        )
+    except SubtensorError as exc:
+        # The SDK re-reads state after a write lands, and that read can fail
+        # although the transfer is in: seen on the local chain, where the miner
+        # was told it failed with the fee already in the treasury. Told that, a
+        # miner pays twice. So the chain decides, not the SDK's report.
+        _require_landed(
+            subtensor,
+            treasury=treasury,
+            hotkey=hotkey,
+            netuid=config.chain.netuid,
+            before=treasury_before,
+            amount_rao=amount_rao,
+            error=exc,
+        )
+        note(
+            f"the SDK reported an error ({exc}), but the transfer is on chain: the treasury's "
+            f"stake on that hotkey grew by at least {_alpha(amount_rao * 99 // 100)}"
+        )
+        receipt = None
     note(f"sent: {receipt or 'no receipt returned'}")
     note(
         "Credits appear once the hub has indexed that block. Check with "
         "`prometheon credits balance`"
     )
     return EXIT_OK
+
+
+def _require_landed(
+    subtensor: Any,
+    *,
+    treasury: str,
+    hotkey: str,
+    netuid: int,
+    before: int,
+    amount_rao: int,
+    error: SubtensorError,
+) -> None:
+    """Raise unless the treasury's stake on ``hotkey`` grew by the amount sent.
+
+    A transfer within one subnet moves alpha without a swap, so the treasury
+    gains the full amount; 1% of slack covers any fee. Its stake can only drift
+    up meanwhile, from emission, which is far smaller than a fee.
+    """
+    try:
+        after = chain.read_stake_rao(subtensor, coldkey=treasury, hotkey=hotkey, netuid=netuid)
+    except SubtensorError as exc:
+        raise SubtensorError(
+            f"{error}. Whether the transfer landed could not be read either ({exc}). Do not "
+            "pay again until `prometheon credits balance` or a block explorer shows whether "
+            "it did"
+        ) from error
+    if after - before < amount_rao * 99 // 100:
+        raise SubtensorError(
+            f"{error}. The treasury's stake on that hotkey did not grow, so nothing was "
+            "transferred. Check `prometheon credits balance` before trying again"
+        ) from error
 
 
 def _confirmed(amount_rao: int, treasury: str) -> bool:
