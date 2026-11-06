@@ -36,7 +36,7 @@ uv run --extra wrapper python tools/localnet/cycle.py \
     --endpoint ws://127.0.0.1:9945 --workdir /tmp/prometheon-localnet
 ```
 
-The script needs network access to Hugging Face. It uses ports 8600 for the hub and 8601 for the labeller (`--hub-port`, `--labeller-port`). It prints each CLI command's output and ends with:
+The script needs network access to Hugging Face. It uses ports 8600 for the hub and 8601 for the labeller (`--hub-port`, `--labeller-port`). Add `--min-allowed-weights 3` to make the chain demand more weights than the day earns. The run then also checks, by hand, that the vector was shaped to the subnet's limits and that the chain accepted it (see [`scoring.md`](./scoring.md#the-subnets-weight-limits)). It prints each CLI command's output and ends with:
 
 ```text
 [localnet] units sent:      {...}
@@ -70,7 +70,7 @@ The dev accounts' keys are public by design, and none of this exists anywhere bu
 
 ## Things the localnet does differently
 
-- **Short forks are routine.** The image runs two block authors with fast blocks. The SDK reads state again after a write, at a block hash it took before the write, and that read occasionally fails with `State already discarded` although the extrinsic is in. The script checks each setup write by its effect, such as the stake or the registration, rather than by the SDK's report.
+- **Short forks are routine.** The image runs two block authors with fast blocks. The SDK reads state again after a write, at a block hash it took before the write, and that read occasionally fails with `State already discarded` although the extrinsic is in. The script checks each setup write by its effect, such as the stake or the registration, rather than by the SDK's report. `prometheon credits buy` does the same for the payment itself: if the SDK reports a failure, the command reads the treasury's stake and reports what actually happened.
 - **The scoring floor is lowered for the run.** `model_min_scored_items` is set to 10, because the day holds a few dozen items rather than thousands. Every other `[scoring]` value is the shipped one.
 - **CPU, float32.** Fine for two small models. It isn't a measure of what a real day costs; see [`validator.md`](./validator.md#hardware).
 
