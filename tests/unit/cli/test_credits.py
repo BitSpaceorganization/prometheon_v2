@@ -27,6 +27,7 @@ from prometheon.config import (
 from prometheon.errors import ConfigError, SubtensorError
 from prometheon.hub.client import HubClient
 from prometheon.hub.fake import FakeHub
+from prometheon.version import SUBMISSION_FEE_ALPHA
 
 pytestmark = pytest.mark.unit
 
@@ -224,6 +225,19 @@ class TestAFailureReportIsCheckedAgainstTheChain:
             _buy(monkeypatch, _config())
 
 
+class TestTheFeeIsNotConfigurable:
+    def test_one_credit_is_the_published_fifty_alpha(
+        self, node: Node, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        assert _buy(monkeypatch, _config()) == 0
+        (transfer,) = node.transfers
+        assert transfer["amount"].rao == SUBMISSION_FEE_ALPHA * 1_000_000_000 == FEE_RAO
+
+    def test_the_settings_no_longer_carry_a_fee(self) -> None:
+        with pytest.raises(ValueError, match="Extra inputs are not permitted"):
+            CreditsConfig(treasury_coldkey=TREASURY, submission_fee_alpha=1)  # type: ignore[call-arg]
+
+
 class TestTheBalance:
     def test_it_reads_the_public_ledger(
         self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -258,7 +272,37 @@ class TestTheBalance:
         cli.cmd_balance(
             argparse.Namespace(config="cfg.toml", address=COLDKEY.ss58_address, limit=10)
         )
-        printed = capsys.readouterr().out
+        captured = capsys.readouterr()
+        printed = captured.out
         assert "credits          1" in printed
         assert "carried forward  10 alpha" in printed
         assert "block 42: deposit 60 alpha +1 credit(s) 0xabc" in printed
+        assert "warning" not in captured.err
+
+    def test_a_hub_pricing_credits_differently_is_flagged(
+        self, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """This release sends 50 alpha a credit; a hub asking for more must be noticed."""
+        hub = FakeHub(netuid=NETUID)
+        hub.credits[COLDKEY.ss58_address] = {
+            "coldkey": COLDKEY.ss58_address,
+            "balance": 0,
+            "remainder_alpha_rao": 0,
+            "submission_fee_alpha_rao": 60 * 1_000_000_000,
+            "entries": [],
+        }
+        monkeypatch.setattr(cli, "load", lambda _path: _config())
+        monkeypatch.setattr(
+            cli,
+            "_hub",
+            lambda config: HubClient(
+                base_url="https://hub.invalid",
+                netuid=NETUID,
+                epoch_keys={},
+                transport=httpx.MockTransport(hub.handler),
+            ),
+        )
+        cli.cmd_balance(
+            argparse.Namespace(config="cfg.toml", address=COLDKEY.ss58_address, limit=10)
+        )
+        assert "prices a credit at 60 alpha, but this release sends 50" in capsys.readouterr().err

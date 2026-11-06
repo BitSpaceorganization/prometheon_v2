@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from prometheon.errors import ConfigError, OutdatedConfigError
 from prometheon.security.signatures import is_ed25519_public_key
-from prometheon.version import SCORING_VERSION
+from prometheon.version import SCORING_VERSION, SUBMISSION_FEE_ALPHA
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -408,7 +408,11 @@ class ValidatorRuntimeConfig(BaseModel):
 
 
 class CreditsConfig(BaseModel):
-    """Submission credits: what a model's evaluation costs, and who is paid."""
+    """Submission credits: who is paid.
+
+    What a credit costs is not here: it is the published rule
+    :data:`~prometheon.version.SUBMISSION_FEE_ALPHA`, which the hub prices by.
+    """
 
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", frozen=True)
 
@@ -417,8 +421,6 @@ class CreditsConfig(BaseModel):
     #: subnet, and ``credits buy`` refuses to send anything until it is set,
     #: here or in ``PROMETHEON_TREASURY_COLDKEY``.
     treasury_coldkey: str = ""
-    #: Alpha per credit. One credit covers one new model at one freeze.
-    submission_fee_alpha: int = Field(default=50, ge=1)
 
 
 class MinerRuntimeConfig(BaseModel):
@@ -488,6 +490,15 @@ def _require_current_rules(raw: dict[str, Any], path: Path) -> None:
         raise OutdatedConfigError(
             f"{path} states scoring_version = {stated!r}, but this build implements "
             f"{SCORING_VERSION!r}. Copy the example config from this release and compare"
+        )
+    credits = raw.get("credits")
+    if isinstance(credits, dict) and "submission_fee_alpha" in credits:
+        # Refused rather than ignored: whoever set it expects it to change what
+        # `credits buy` sends, and it no longer can.
+        raise OutdatedConfigError(
+            f"{path} sets [credits] submission_fee_alpha, which is no longer a setting. The fee "
+            f"is fixed at {SUBMISSION_FEE_ALPHA} alpha per credit by the published rules, "
+            "because that is what the hub credits. Delete the line"
         )
 
 

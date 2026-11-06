@@ -23,7 +23,7 @@ from collections.abc import Sequence
 from prometheon.cli import credits, miner, validator
 from prometheon.cli._common import EXIT_FAILED, EXIT_USAGE, fail, note
 from prometheon.errors import PrometheonError
-from prometheon.version import __version__
+from prometheon.version import SUBMISSION_FEE_ALPHA, __version__
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -112,7 +112,7 @@ def build_parser() -> argparse.ArgumentParser:
             help="pay for credits: transfer_stake from your coldkey to the treasury",
             description=(
                 "Moves alpha stake on the subnet from your coldkey to the treasury coldkey, "
-                "one credit per [credits] submission_fee_alpha. Prints the transfer first. "
+                f"one credit per {SUBMISSION_FEE_ALPHA} alpha. Prints the transfer first. "
                 "There are no refunds."
             ),
         )
