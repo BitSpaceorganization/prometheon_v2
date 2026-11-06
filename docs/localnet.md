@@ -63,8 +63,8 @@ It's a development chain, but it may be shared, so here is everything the run wr
 - **Registrations and stake:**
   - `//Bob` and `//Charlie` register a miner hotkey each.
   - `//Alice` stakes 1,000 TAO on the validator hotkey.
-  - Each miner stakes 50 TAO.
-  - 1 alpha moves to `//Eve` as the credit. The run sets the fee to 1 alpha.
+  - Each miner stakes in 100 TAO steps until its hotkey holds 55 alpha.
+  - Each miner then pays one credit to `//Eve`: the published fee of 50 alpha. The fee isn't a setting, so the run pays the real amount.
 
 The dev accounts' keys are public by design, and none of this exists anywhere but the local chain. The script never stops the container.
 
