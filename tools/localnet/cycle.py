@@ -65,6 +65,7 @@ from prometheon.hub.auth import CallerRole
 from prometheon.hub.fake import FakeHub, serve
 from prometheon.registry.huggingface import HuggingFaceClient, weights_fingerprint
 from prometheon.scoring.dedupe import normalized_sha256
+from prometheon.version import SUBMISSION_FEE_ALPHA
 
 ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE = ROOT / "configs" / "localnet.example.toml"
@@ -432,7 +433,14 @@ def main() -> int:
         )
     add_stake(subtensor, owner, netuid, 1000, "add_stake for the validator")
     for name, miner in miners.items():
-        add_stake(subtensor, miner, netuid, 50, f"add_stake {name}")
+        # Enough alpha for one credit at the published fee, with some to spare.
+        # What 100 TAO buys depends on the new subnet's pool, so stake until it is.
+        for _ in range(20):
+            if stake_on(subtensor, miner, netuid) >= (SUBMISSION_FEE_ALPHA + 5) * 10**9:
+                break
+            add_stake(subtensor, miner, netuid, 100, f"add_stake {name}")
+        else:
+            raise SystemExit(f"{name} could not stake {SUBMISSION_FEE_ALPHA} alpha for a credit")
     log("waiting for an epoch so the validator holds a permit")
     for attempt in range(60):
         view = view_of(subtensor, netuid)
@@ -453,7 +461,8 @@ def main() -> int:
     shared: dict[str, dict[str, Any]] = {
         "chain": {"network": args.endpoint, "netuid": netuid},
         "hub": {"base_url": f"http://127.0.0.1:{args.hub_port}", "epoch_keys": hub.epoch_keys},
-        "credits": {"treasury_coldkey": treasury, "submission_fee_alpha": 1},
+        # The fee is not a setting: one credit is the published 50 alpha.
+        "credits": {"treasury_coldkey": treasury},
     }
     configs = {
         name: write_config(
