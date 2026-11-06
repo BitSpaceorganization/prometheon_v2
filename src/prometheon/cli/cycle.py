@@ -235,6 +235,11 @@ def run_cycle(
         policy=policy.text,
         batch_size=config.labelling.batch_size,
     )
+    if labelled.isolated_batches:
+        notes.append(
+            f"{labelled.isolated_batches} labelling batch(es) answered unanimously against a "
+            "low base rate and were asked again one item at a time"
+        )
 
     corpus = build_corpus(
         content_hash=data.verified.content_hash,
