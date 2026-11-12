@@ -1,11 +1,11 @@
 """The published record, built so it always reproduces the vector that was sent.
 
-A mirror rebuilds a provider's vector from its record: each row's ``weight``,
-plus ``burned_weight`` on the burn hotkey. That only works if the record says
-exactly what was sent. v2 broke this twice (B5): it folded burn into the owner's
-row, so a mirror counted it twice, and it described the vector as computed,
-not as sent, so a miner that deregistered before the send kept its units in the
-record while the provider had sent them to burn.
+A validator in copy mode rebuilds the owner validator's vector from its record:
+each row's ``weight``, plus ``burned_weight`` on the burn hotkey. That only works
+if the record says exactly what was sent. v2 broke this twice (B5): it folded
+burn into the owner's row, so a copy counted it twice, and it described the
+vector as computed, not as sent, so a miner that deregistered before the send
+kept its units in the record while the validator had sent them to burn.
 
 So the record is drafted when the cycle finishes and finished after the send,
 from the units actually sent. A hotkey that turned out to be deregistered gets a

@@ -19,9 +19,10 @@ This page is the contract as the validator client in this repository implements 
 | Route | Auth | Returns |
 |---|---|---|
 | `POST /api/v1/validator/epoch` `{"day":"YYYY-MM-DD"}` | signed by a hotkey with a validator permit | `{"epoch":{...},"urls":{"test":"...","production":"..."},"urls_expire_at":<unix s>}`. URLs last 1 hour. `409 db.snapshot_not_ready` (with `retry_after_seconds`) while the day can still be built; `404 db.not_found` if it never will be |
+| `POST /api/v1/validator/weights` `{"day":"YYYY-MM-DD"}` | signed by a hotkey with a validator permit, exactly like the epoch request | `{"record": <the owner validator's record exactly as posted>}`, for validators in copy mode. `409 db.snapshot_not_ready` (with `retry_after_seconds`) until that record exists; `404 db.not_found` for a day that never will have one. The hub serves the owner validator's record only, and the client refuses a record signed by any hotkey other than its `copy_from` |
 | `GET /api/v1/epochs/{day}` | public | the epoch without URLs, bare or as `{"epoch":{...}}` |
 | `POST /api/v1/results` | the record's own signature; the envelope is optional | `{"evaluation_id","accepted_at","duplicate"}`. The same bytes again: `200` with `duplicate: true`. A different record for the same day and validator: `409 db.duplicate_evaluation`, and the first stands |
-| `GET /api/v1/results/{day}/{validator}` | public | the record exactly as it was posted |
+| `GET /api/v1/results/{day}/{validator}` | public | the record exactly as it was posted, for anyone auditing a validator. Copy mode doesn't use it |
 | `GET /api/v1/corpus?day&cursor` | public, rate limited | test content from day N, available from 00:00 UTC on day N+2. 50 items a page, each only `{id, body, claimed_violating, created_at}`, with no author or miner. Earlier days return `403 db.embargoed` with `available_at`. There's no download route |
 | `GET /api/v1/credits/{coldkey_or_hotkey}` | public | the credit balance and ledger, below |
 

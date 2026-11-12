@@ -436,7 +436,7 @@ def test_the_record_reproduces_a_vector_shaped_to_the_chains_limits() -> None:
         ModelStatus.NOT_COMMITTED,
         0,
     )
-    # Rows plus burn are exactly what was sent, as a mirror will rebuild it.
+    # Rows plus burn are exactly what was sent, as a copying validator will rebuild it.
     rebuilt = {**weights, OWNER: finished.burned_weight}
     assert rebuilt == sent
 

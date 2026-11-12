@@ -1,9 +1,10 @@
-"""Validator commands: run a cycle, re-post its weights, mirror, schedule.
+"""Validator commands: run a cycle or copy one, re-post its weights, schedule.
 
 ``run`` wires the real world into :mod:`prometheon.cli.cycle` and does the two
 things a cycle cannot do for itself: submit weights, and publish the record.
 Both are gated by config so a new operator can watch a full cycle run without
-touching the chain.
+touching the chain. In copy mode, ``run`` submits the owner validator's weights
+instead; see :mod:`prometheon.scoring.copied`.
 """
 
 from __future__ import annotations
@@ -38,7 +39,7 @@ from prometheon.cli.cycle import (
 )
 from prometheon.cli.record import draft_record, finish_record
 from prometheon.cli.state import CycleState, load_state, save_state, state_path
-from prometheon.config import Config, ScoreSource
+from prometheon.config import Config, ValidatorMode
 from prometheon.errors import ConfigError, HubError, PrometheonError
 from prometheon.hub import auth
 from prometheon.hub.client import HubClient
@@ -46,7 +47,7 @@ from prometheon.hub.models import EvaluationSubmission
 from prometheon.labelling.client import OpenAICompatibleClient
 from prometheon.registry.huggingface import HuggingFaceClient
 from prometheon.registry.validation import ModelRegistry
-from prometheon.scoring.mirrored import verify_mirrored
+from prometheon.scoring.copied import verify_copied_record
 
 #: A cycle scores *yesterday*: today's content is still arriving.
 _DEFAULT_LAG_DAYS = 1
@@ -206,37 +207,35 @@ def _publish(config: Config, state: CycleState, *, wallet: Any, hub: HubClient) 
     note(f"results published{' (already stored)' if accepted.duplicate else ''}")
 
 
-#: How many days back a mirror will look for a record newer than the one it
-#: holds. A mirror that fell behind did so because its daily run failed, and
-#: three days is well past the point where an operator should have noticed.
-#: It also bounds the request count: a mirror that is already current sends
-#: none at all.
-MIRROR_LOOKBACK_DAYS: Final[int] = 3
+#: How many days back a copying validator looks for a record newer than the one
+#: it holds. One that fell behind did so because its daily run failed, and
+#: three days is well past the point where an operator should have noticed. It
+#: also bounds the request count: a copying validator that is current sends none.
+COPY_LOOKBACK_DAYS: Final[int] = 3
 
 
-def _mirrored_for(
+def _copied_for(
     hub: Any,
     config: Config,
     *,
     day: dt.date,
-    provider: str,
     metagraph: Any,
     burn_hotkey: str,
 ) -> Mapping[str, int] | None:
-    """One day's verified weights, or ``None`` if this is not a day to use.
+    """One day's verified weights from the owner validator, or ``None``.
 
     ``None`` covers the two ordinary cases together, because the caller treats
-    them identically: the provider has not published this day yet, and the
-    record it did publish does not verify against the pinned hotkey. Neither is
+    them identically: the owner validator has not posted this day yet, and the
+    record the hub served does not verify against ``copy_from``. Neither is
     worth a log line on a timer that fires every thirty minutes; both mean the
     caller should look at an older day, and failing that keep what it holds.
     """
     try:
-        submission = hub.get_result(day, provider)
+        record = hub.request_weights(day)
         verified = hub.get_public_epoch(day)
-        return verify_mirrored(
-            submission,
-            provider=provider,
+        weights: Mapping[str, int] = verify_copied_record(
+            record,
+            owner=config.validator.copy_from,
             day=day,
             netuid=config.chain.netuid,
             metagraph=metagraph,
@@ -245,9 +244,10 @@ def _mirrored_for(
         )
     except Exception:
         return None
+    return weights
 
 
-def _refresh_mirrored(
+def _refresh_copied(
     config: Config,
     *,
     stored_day: dt.date,
@@ -256,40 +256,39 @@ def _refresh_mirrored(
     burn_hotkey: str,
     today: dt.date,
 ) -> tuple[dt.date, Mapping[str, int]] | None:
-    """The newest record the provider has published after ``stored_day``.
+    """The newest record the owner validator has posted after ``stored_day``.
 
     ``None`` means keep what is on disk, and that is the ordinary outcome.
 
-    A mirror fetched its provider's record once, when `validator run` last
-    fired, and re-posted that vector every half hour until the next daily run.
-    If that run happened before the provider published -- which is exactly what
-    a provider retrying a failed cycle causes -- the mirror's run failed, wrote
-    nothing, and it spent the next day re-posting the *previous* day's vector.
-    Observed on mainnet under v2 on 2026-09-11: a provider published three and a half
-    hours late after a retry, and 22.5% of validating stake sat on the day
-    before for the rest of the day.
+    A copying validator fetches the owner validator's record once, when
+    `validator run` fires, and re-posts that vector every half hour until the
+    next daily run. If that run happened before the owner validator posted --
+    which is exactly what an owner validator retrying a failed cycle causes --
+    the run wrote nothing, and the copy spent the next day re-posting the
+    *previous* day's vector. Observed on mainnet under v2 on 2026-09-11: a
+    provider published three and a half hours late after a retry, and 22.5% of
+    validating stake sat on the day before for the rest of the day.
 
-    Re-reading the day already held would not have helped, because a published
+    Re-reading the day already held would not have helped, because a posted
     record is immutable: the hub accepts an identical resend and refuses a
     revision. The only thing worth looking for is a *newer* day, which is what
     this does.
 
-    A mirror that is current asks for nothing: there are no candidate days, so
+    A copy that is current asks for nothing: there are no candidate days, so
     the whole function is a date comparison. Only one that is behind spends a
-    request, and then at most ``MIRROR_LOOKBACK_DAYS`` of them.
+    request, and then at most ``COPY_LOOKBACK_DAYS`` of them.
 
     **Never raises.** Weights stop counting once ``activity_cutoff`` passes, so
-    a hub that is down, or a day the provider has not published yet, must
+    a hub that is down, or a day the owner validator has not posted yet, must
     not stop this validator submitting. Both are ordinary and neither is worth
     a line in the log; the caller falls back to the vector on disk.
     """
-    provider = config.scoring.score_provider
     # A cycle scores the day before it runs, so nothing newer than yesterday
     # can exist. Newest first: the freshest record wins and the rest are
     # never requested.
     candidates: list[dt.date] = []
     day = today - dt.timedelta(days=1)
-    while day > stored_day and len(candidates) < MIRROR_LOOKBACK_DAYS:
+    while day > stored_day and len(candidates) < COPY_LOOKBACK_DAYS:
         candidates.append(day)
         day -= dt.timedelta(days=1)
     if not candidates:
@@ -297,14 +296,13 @@ def _refresh_mirrored(
 
     try:
         metagraph = chain.sync_metagraph_view(subtensor, netuid=config.chain.netuid)
-        # Public reads: a mirror needs no signature to fetch a published record.
-        with _hub_client(config) as hub:
+        # The weights route is for validators only, so the request is signed.
+        with _hub_client(config, keypair=wallet.hotkey) as hub:
             for candidate in candidates:
-                weights = _mirrored_for(
+                weights = _copied_for(
                     hub,
                     config,
                     day=candidate,
-                    provider=provider,
                     metagraph=metagraph,
                     burn_hotkey=burn_hotkey,
                 )
@@ -368,10 +366,10 @@ def cmd_resubmit(args: argparse.Namespace) -> int:
     if waiting:
         note(f"rate limit not clear for another {waiting} blocks; nothing sent")
     else:
-        # In endpoint mode every re-post looks for a newer provider record
-        # than the one held. A mirror that only replays cannot catch up.
-        if config.scoring.score_source is ScoreSource.ENDPOINT:
-            found = _refresh_mirrored(
+        # In copy mode every re-post looks for a newer record from the owner
+        # validator than the one held. A copy that only replays cannot catch up.
+        if config.validator.mode is ValidatorMode.COPY:
+            found = _refresh_copied(
                 config,
                 stored_day=state.day,
                 wallet=wallet,
@@ -382,8 +380,8 @@ def cmd_resubmit(args: argparse.Namespace) -> int:
             if found is not None:
                 day, refreshed = found
                 note(
-                    f"{config.scoring.score_provider} has published {day.isoformat()}, newer "
-                    f"than the {state.day.isoformat()} vector held"
+                    f"the owner validator {config.validator.copy_from} has posted "
+                    f"{day.isoformat()}, newer than the {state.day.isoformat()} vector held"
                 )
                 state = CycleState(
                     day=day,
@@ -434,20 +432,27 @@ def _wait_for_weights_window(
 
 
 @chain.closes_connections
-def cmd_mirror(args: argparse.Namespace) -> int:
-    """Submit another validator's published scores instead of computing any.
+def cmd_copy(args: argparse.Namespace) -> int:
+    """Submit the owner validator's weights for the day, unchanged.
 
-    Reads the record ``score_provider`` published for the day, verifies it, and
-    sends its weights. No labelling, no model evaluation, no GPU -- and no
-    independent opinion, which is the trade `ScoringConfig.score_source`
-    describes.
+    Fetches the owner validator's record from the hub's validators-only route,
+    checks it (see :func:`~prometheon.scoring.copied.verify_copied_record`),
+    and sends its weights. No labelling, no model evaluation, no GPU, and no
+    opinion of its own: the owner validator's results decide this validator's
+    weights.
     """
     config = load(args.config)
     day = _target_day(args)
-    provider = config.scoring.score_provider
+    owner = config.validator.copy_from
+    if not config.hub.epoch_keys:
+        raise ConfigError(
+            "no hub key is pinned under [hub.epoch_keys], so the day's epoch cannot be "
+            "verified, and a copied record is checked against it. Copy the key from the "
+            "release notes of the version you run"
+        )
     wallet = open_wallet(config)
     note(
-        f"validator {wallet.hotkey.ss58_address} mirroring {provider} "
+        f"validator {wallet.hotkey.ss58_address} copying the owner validator {owner} "
         f"for {day.isoformat()} on netuid={config.chain.netuid}"
     )
 
@@ -455,15 +460,17 @@ def cmd_mirror(args: argparse.Namespace) -> int:
     metagraph = chain.sync_metagraph_view(subtensor, netuid=config.chain.netuid)
     burn_hotkey = chain.read_subnet_owner_hotkey(subtensor, netuid=config.chain.netuid)
 
-    with _hub_client(config) as hub:
-        note(f"fetching {provider}'s record for {day.isoformat()}")
-        submission = hub.get_result(day, provider)
+    with _hub_client(config, keypair=wallet.hotkey) as hub:
+        note(f"fetching the owner validator's record for {day.isoformat()}")
+        # Not posted yet raises EpochNotReadyError, which the scheduler
+        # retries without counting it as a failure.
+        record = hub.request_weights(day)
         # The signed epoch this validator can verify for itself, so a record
         # describing a different day is caught rather than trusted.
         verified = hub.get_public_epoch(day)
-        weights = verify_mirrored(
-            submission,
-            provider=provider,
+        weights = verify_copied_record(
+            record,
+            owner=owner,
             day=day,
             netuid=config.chain.netuid,
             metagraph=metagraph,
@@ -475,12 +482,12 @@ def cmd_mirror(args: argparse.Namespace) -> int:
         table(
             [
                 ("day", day.isoformat()),
-                ("provider", provider),
-                ("scoring version", submission.scoring_version),
-                ("epoch", submission.epoch_content_hash[:12]),
-                ("corpus", submission.corpus_content_hash[:12]),
+                ("copying", owner),
+                ("scoring version", record.scoring_version),
+                ("epoch", record.epoch_content_hash[:12]),
+                ("corpus", record.corpus_content_hash[:12]),
                 ("weighted hotkeys", str(len(weights))),
-                ("burn", str(submission.burned_weight)),
+                ("burn", str(record.burned_weight)),
             ]
         )
     )
@@ -493,15 +500,15 @@ def cmd_mirror(args: argparse.Namespace) -> int:
         note("submit_weights is off: the record verified but nothing was sent")
         return EXIT_OK
 
-    # Wait the rate limit out rather than raising into it. A mirror cycle and a
+    # Wait the rate limit out rather than raising into it. A copy and a
     # re-post both run on timers and land inside the 100-block (~20 min) window
     # routinely; `cmd_resubmit` skips because it retries in thirty minutes, but
     # this call has a specific day's vector to land and skipping would lose it.
     #
-    # Raising is what the previous version did, and under a supervisor that is
-    # a restart loop: the process exits non-zero, comes back, re-runs the whole
-    # cycle, and hits the same limit. Observed three times over before one
-    # submission landed.
+    # Raising is what an earlier version did, and under a supervisor that is a
+    # restart loop: the process exits non-zero, comes back, runs the whole
+    # thing again, and hits the same limit. Observed three times over before
+    # one submission landed.
     state = CycleState(
         day=day,
         netuid=config.chain.netuid,
@@ -525,10 +532,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     and evaluating the day again. ``--force`` computes it again regardless.
     """
     config = load(args.config)
-    if config.scoring.score_source is ScoreSource.ENDPOINT:
+    if config.validator.mode is ValidatorMode.COPY:
         # `validator run` stays the one command an operator schedules, whichever
         # mode they chose; the config decides what it does.
-        return cmd_mirror(args)
+        return cmd_copy(args)
     day = _target_day(args)
     policy = _policy_text(args)
     if not config.hub.epoch_keys:
@@ -666,7 +673,7 @@ def cmd_schedule(args: argparse.Namespace) -> int:
     from prometheon.cli.schedule import run_forever
 
     config = load(args.config)
-    mode = config.scoring.score_source.value
+    mode = config.validator.mode.value
     note(
         f"scheduler started: cycle at {args.cycle_hour:02d}:00 UTC in {mode} mode, "
         f"re-post on :00 and :30"
@@ -745,4 +752,4 @@ def _summary(result: object, rows: tuple[object, ...]) -> str:
     )
 
 
-__all__ = ["cmd_mirror", "cmd_resubmit", "cmd_run", "cmd_schedule"]
+__all__ = ["cmd_copy", "cmd_resubmit", "cmd_run", "cmd_schedule"]

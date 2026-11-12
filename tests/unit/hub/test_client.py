@@ -26,6 +26,7 @@ from prometheon.errors import (
     FeedFileError,
     HubAuthError,
     HubError,
+    RecordMissingError,
 )
 from prometheon.hub.auth import sign_evaluation, verify_evaluation
 from prometheon.hub.client import HubClient
@@ -236,6 +237,59 @@ class TestResults:
         unsigned = _record().model_copy(update={"signature": ""})
         with make_client() as client, pytest.raises(HubError, match="unsigned"):
             client.submit_result(unsigned)
+
+
+class TestTheOwnerValidatorsWeights:
+    """Copy mode's route: the owner validator's record, for validators only."""
+
+    def _post(self, hub: FakeHub, make_client: ClientFactory) -> EvaluationSubmission:
+        record = _record()
+        hub.owner_validator = VALIDATOR.ss58_address
+        with make_client() as client:
+            client.submit_result(record)
+        return record
+
+    def test_the_record_comes_back_exactly_as_posted_and_still_verifies(
+        self, make_client: ClientFactory, hub: FakeHub
+    ) -> None:
+        posted = self._post(hub, make_client)
+        with make_client() as client:
+            fetched = client.request_weights(DAY)
+
+        assert fetched == posted
+        verify_evaluation(fetched)
+
+    def test_the_request_is_signed_by_the_asking_validator(
+        self, make_client: ClientFactory, hub: FakeHub
+    ) -> None:
+        self._post(hub, make_client)
+        with make_client() as client:
+            client.request_weights(DAY)
+        assert ("POST", "/api/v1/validator/weights") in hub.request_log
+
+    def test_a_day_the_owner_has_not_posted_yet_is_not_ready(
+        self, make_client: ClientFactory, hub: FakeHub
+    ) -> None:
+        hub.owner_validator = VALIDATOR.ss58_address
+        with make_client() as client, pytest.raises(EpochNotReadyError, match="retry after 600s"):
+            client.request_weights(DAY)
+
+    def test_a_day_that_will_never_have_a_record_says_so(
+        self, make_client: ClientFactory, hub: FakeHub
+    ) -> None:
+        hub.owner_validator = VALIDATOR.ss58_address
+        with make_client() as client, pytest.raises(RecordMissingError):
+            client.request_weights(DAY - dt.timedelta(days=30))
+
+    def test_a_miner_cannot_ask(self, make_client: ClientFactory, hub: FakeHub) -> None:
+        self._post(hub, make_client)
+        with make_client(keypair=MINER_A) as client, pytest.raises(HubAuthError):
+            client.request_weights(DAY)
+
+    def test_nobody_unsigned_can_ask(self, make_client: ClientFactory, hub: FakeHub) -> None:
+        self._post(hub, make_client)
+        with make_client(keypair=None) as client, pytest.raises(HubError, match="needs a hotkey"):
+            client.request_weights(DAY)
 
 
 class TestPublicReads:

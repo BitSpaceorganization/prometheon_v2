@@ -1,4 +1,4 @@
-"""A mirrored record is checked for provenance before it is ever submitted."""
+"""A copied record is checked for provenance before it is ever submitted."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from bittensor_wallet import Keypair
 from prometheon.chain.metagraph import MetagraphView
 from prometheon.hub.auth import sign_evaluation
 from prometheon.hub.models import EvaluationSubmission, MinerResult, ModelStatus
-from prometheon.scoring.mirrored import MirroredScoreError, verify_mirrored
+from prometheon.scoring.copied import CopyRefusedError, verify_copied_record
 from prometheon.version import SCORING_VERSION
 
 pytestmark = pytest.mark.unit
@@ -47,11 +47,11 @@ def result(hotkey: str, uid: int, weight: int) -> MinerResult:
     )
 
 
-def record(provider: Keypair, **overrides: object) -> EvaluationSubmission:
+def record(owner: Keypair, **overrides: object) -> EvaluationSubmission:
     fields: dict[str, object] = {
         "date": DAY,
         "netuid": NETUID,
-        "validator_hotkey": provider.ss58_address,
+        "validator_hotkey": owner.ss58_address,
         "scoring_version": SCORING_VERSION,
         "policy_version": "2026-08-07",
         "epoch_content_hash": HASH_A,
@@ -64,11 +64,11 @@ def record(provider: Keypair, **overrides: object) -> EvaluationSubmission:
         "completed_at": 2,
     }
     fields.update(overrides)
-    return sign_evaluation(provider, EvaluationSubmission(**fields))  # type: ignore[arg-type]
+    return sign_evaluation(owner, EvaluationSubmission(**fields))  # type: ignore[arg-type]
 
 
-def metagraph(provider: str, *, permit: bool = True, registered: bool = True) -> MetagraphView:
-    hotkeys = (provider,) if registered else ("5Somebody",)
+def metagraph(owner: str, *, permit: bool = True, registered: bool = True) -> MetagraphView:
+    hotkeys = (owner,) if registered else ("5Somebody",)
     return MetagraphView(
         netuid=NETUID,
         block=1,
@@ -80,13 +80,13 @@ def metagraph(provider: str, *, permit: bool = True, registered: bool = True) ->
 
 
 def test_a_well_formed_record_yields_its_weights() -> None:
-    provider = keypair(1)
-    weights = verify_mirrored(
-        record(provider),
-        provider=provider.ss58_address,
+    owner = keypair(1)
+    weights = verify_copied_record(
+        record(owner),
+        owner=owner.ss58_address,
         day=DAY,
         netuid=NETUID,
-        metagraph=metagraph(provider.ss58_address),
+        metagraph=metagraph(owner.ss58_address),
         burn_hotkey=BURN,
         epoch_content_hash=HASH_A,
     )
@@ -97,12 +97,12 @@ def test_a_well_formed_record_yields_its_weights() -> None:
 
 
 def test_a_record_from_another_validator_is_refused() -> None:
-    """Pinning the provider is what stops the hub choosing who to trust."""
+    """Copying copy_from and no other is what stops the hub choosing whom to trust."""
     other = keypair(2)
-    with pytest.raises(MirroredScoreError, match="mirrors"):
-        verify_mirrored(
+    with pytest.raises(CopyRefusedError, match="and no other hotkey"):
+        verify_copied_record(
             record(other),
-            provider=keypair(1).ss58_address,
+            owner=keypair(1).ss58_address,
             day=DAY,
             netuid=NETUID,
             metagraph=metagraph(other.ss58_address),
@@ -111,96 +111,96 @@ def test_a_record_from_another_validator_is_refused() -> None:
 
 
 def test_a_tampered_record_fails_its_signature() -> None:
-    provider = keypair(1)
-    signed = record(provider)
+    owner = keypair(1)
+    signed = record(owner)
     forged = signed.model_copy(update={"results": (result("5Attacker", 9, 999_999),)})
-    with pytest.raises(MirroredScoreError, match="signature does not verify"):
-        verify_mirrored(
+    with pytest.raises(CopyRefusedError, match="signature does not verify"):
+        verify_copied_record(
             forged,
-            provider=provider.ss58_address,
+            owner=owner.ss58_address,
             day=DAY,
             netuid=NETUID,
-            metagraph=metagraph(provider.ss58_address),
+            metagraph=metagraph(owner.ss58_address),
             burn_hotkey=BURN,
         )
 
 
 def test_the_wrong_day_or_netuid_is_refused() -> None:
-    provider = keypair(1)
-    with pytest.raises(MirroredScoreError, match="is for 2026-08-23"):
-        verify_mirrored(
-            record(provider, date=dt.date(2026, 8, 23)),
-            provider=provider.ss58_address,
+    owner = keypair(1)
+    with pytest.raises(CopyRefusedError, match="is for 2026-08-23"):
+        verify_copied_record(
+            record(owner, date=dt.date(2026, 8, 23)),
+            owner=owner.ss58_address,
             day=DAY,
             netuid=NETUID,
-            metagraph=metagraph(provider.ss58_address),
+            metagraph=metagraph(owner.ss58_address),
             burn_hotkey=BURN,
         )
-    with pytest.raises(MirroredScoreError, match="netuid=1"):
-        verify_mirrored(
-            record(provider, netuid=1),
-            provider=provider.ss58_address,
+    with pytest.raises(CopyRefusedError, match="netuid=1"):
+        verify_copied_record(
+            record(owner, netuid=1),
+            owner=owner.ss58_address,
             day=DAY,
             netuid=NETUID,
-            metagraph=metagraph(provider.ss58_address),
+            metagraph=metagraph(owner.ss58_address),
             burn_hotkey=BURN,
         )
 
 
-def test_a_provider_without_a_permit_is_refused() -> None:
-    provider = keypair(1)
-    with pytest.raises(MirroredScoreError, match="no validator permit"):
-        verify_mirrored(
-            record(provider),
-            provider=provider.ss58_address,
+def test_an_owner_validator_without_a_permit_is_refused() -> None:
+    owner = keypair(1)
+    with pytest.raises(CopyRefusedError, match="no validator permit"):
+        verify_copied_record(
+            record(owner),
+            owner=owner.ss58_address,
             day=DAY,
             netuid=NETUID,
-            metagraph=metagraph(provider.ss58_address, permit=False),
+            metagraph=metagraph(owner.ss58_address, permit=False),
             burn_hotkey=BURN,
         )
-    with pytest.raises(MirroredScoreError, match="not registered"):
-        verify_mirrored(
-            record(provider),
-            provider=provider.ss58_address,
+    with pytest.raises(CopyRefusedError, match="not registered"):
+        verify_copied_record(
+            record(owner),
+            owner=owner.ss58_address,
             day=DAY,
             netuid=NETUID,
-            metagraph=metagraph(provider.ss58_address, registered=False),
+            metagraph=metagraph(owner.ss58_address, registered=False),
             burn_hotkey=BURN,
         )
 
 
 def test_a_record_naming_a_different_epoch_is_refused() -> None:
     """Catches being served a stale day, or a record for another day's content."""
-    provider = keypair(1)
-    with pytest.raises(MirroredScoreError, match="describe different days"):
-        verify_mirrored(
-            record(provider),
-            provider=provider.ss58_address,
+    owner = keypair(1)
+    with pytest.raises(CopyRefusedError, match="describe different days"):
+        verify_copied_record(
+            record(owner),
+            owner=owner.ss58_address,
             day=DAY,
             netuid=NETUID,
-            metagraph=metagraph(provider.ss58_address),
+            metagraph=metagraph(owner.ss58_address),
             burn_hotkey=BURN,
             epoch_content_hash="c" * 64,
         )
 
 
-def test_the_vector_sums_to_what_the_provider_submitted() -> None:
+def test_the_vector_sums_to_what_the_owner_validator_submitted() -> None:
     """The check that would have caught the dropped burn.
 
-    Provenance can pass on a vector the provider never sent. Asserting the
-    *total* is what ties the mirrored vector to the original: drop the burn and
+    Provenance can pass on a vector the owner never sent. Asserting the
+    *total* is what ties the copied vector to the original: drop the burn and
     the sum falls short, and every miner is silently renormalised upward by the
     burn fraction -- 20% burn became a 1.25x on every miner in production, with
     vtrust at 0.8 as the only visible symptom.
     """
-    provider = keypair(1)
-    signed = record(provider)
-    weights = verify_mirrored(
+    owner = keypair(1)
+    signed = record(owner)
+    weights = verify_copied_record(
         signed,
-        provider=provider.ss58_address,
+        owner=owner.ss58_address,
         day=DAY,
         netuid=NETUID,
-        metagraph=metagraph(provider.ss58_address),
+        metagraph=metagraph(owner.ss58_address),
         burn_hotkey=BURN,
         epoch_content_hash=HASH_A,
     )
@@ -211,32 +211,32 @@ def test_the_vector_sums_to_what_the_provider_submitted() -> None:
 
 def test_a_record_that_burned_nothing_carries_no_burn_row() -> None:
     """Zero burn is not a row. An explicit 0 would still be a weight the
-    provider did not assign, and `resolve_allocations` would carry it."""
-    provider = keypair(1)
-    signed = record(provider, burned_weight=0)
-    weights = verify_mirrored(
+    owner did not assign, and `resolve_allocations` would carry it."""
+    owner = keypair(1)
+    signed = record(owner, burned_weight=0)
+    weights = verify_copied_record(
         signed,
-        provider=provider.ss58_address,
+        owner=owner.ss58_address,
         day=DAY,
         netuid=NETUID,
-        metagraph=metagraph(provider.ss58_address),
+        metagraph=metagraph(owner.ss58_address),
         burn_hotkey=BURN,
         epoch_content_hash=HASH_A,
     )
     assert BURN not in weights
 
 
-def test_a_provider_that_is_also_a_miner_has_its_burn_summed_not_overwritten() -> None:
+def test_an_owner_validator_that_is_also_a_miner_has_its_burn_summed() -> None:
     """The owner hotkey can earn as a miner too. Its row carries its earnings and
     the record carries its burn, so the two add and neither is counted twice."""
-    provider = keypair(1)
-    signed = record(provider, results=(result(BURN, 7, 300),))
-    weights = verify_mirrored(
+    owner = keypair(1)
+    signed = record(owner, results=(result(BURN, 7, 300),))
+    weights = verify_copied_record(
         signed,
-        provider=provider.ss58_address,
+        owner=owner.ss58_address,
         day=DAY,
         netuid=NETUID,
-        metagraph=metagraph(provider.ss58_address),
+        metagraph=metagraph(owner.ss58_address),
         burn_hotkey=BURN,
         epoch_content_hash=HASH_A,
     )
@@ -244,31 +244,31 @@ def test_a_provider_that_is_also_a_miner_has_its_burn_summed_not_overwritten() -
 
 
 def test_a_record_computed_under_other_rules_is_refused() -> None:
-    """v2 never compared the scoring version, so a provider on other rules was
-    mirrored without anyone noticing (B26)."""
-    provider = keypair(1)
-    with pytest.raises(MirroredScoreError, match="computed under"):
-        verify_mirrored(
-            record(provider, scoring_version="prometheon-scoring/2.1"),
-            provider=provider.ss58_address,
+    """v2 never compared the scoring version, so a record under other rules was
+    copied without anyone noticing (B26)."""
+    owner = keypair(1)
+    with pytest.raises(CopyRefusedError, match="computed under"):
+        verify_copied_record(
+            record(owner, scoring_version="prometheon-scoring/2.1"),
+            owner=owner.ss58_address,
             day=DAY,
             netuid=NETUID,
-            metagraph=metagraph(provider.ss58_address),
+            metagraph=metagraph(owner.ss58_address),
             burn_hotkey=BURN,
             epoch_content_hash=HASH_A,
         )
 
 
 def test_zero_rows_are_left_out_of_the_vector() -> None:
-    """A provider does not send a hotkey it gave nothing to."""
-    provider = keypair(1)
-    signed = record(provider, results=(result("5Miner", 7, 1000), result("5Idle", 8, 0)))
-    weights = verify_mirrored(
+    """A owner does not send a hotkey it gave nothing to."""
+    owner = keypair(1)
+    signed = record(owner, results=(result("5Miner", 7, 1000), result("5Idle", 8, 0)))
+    weights = verify_copied_record(
         signed,
-        provider=provider.ss58_address,
+        owner=owner.ss58_address,
         day=DAY,
         netuid=NETUID,
-        metagraph=metagraph(provider.ss58_address),
+        metagraph=metagraph(owner.ss58_address),
         burn_hotkey=BURN,
         epoch_content_hash=HASH_A,
     )
@@ -278,39 +278,39 @@ def test_zero_rows_are_left_out_of_the_vector() -> None:
 class TestThePermitIsReadByHotkeyNotByUid:
     """S10: the permit column is in the SDK's row order, which need not be uid order.
 
-    v2 indexed it with the provider's uid. With rows ``(uid 1, uid 0)`` that
-    reads the other neuron's permit: a permitted provider is refused, and an
+    v2 indexed it with the owner's uid. With rows ``(uid 1, uid 0)`` that
+    reads the other neuron's permit: a permitted owner is refused, and an
     unpermitted one is accepted.
     """
 
     @staticmethod
-    def _rows(provider: str, *, provider_permit: bool) -> MetagraphView:
-        # Row 0 holds uid 1 (the provider); row 1 holds uid 0 (someone else),
-        # whose permit is the opposite of the provider's.
+    def _rows(owner: str, *, owner_permit: bool) -> MetagraphView:
+        # Row 0 holds uid 1 (the owner); row 1 holds uid 0 (someone else),
+        # whose permit is the opposite of the owner's.
         return MetagraphView(
             netuid=NETUID,
             block=1,
             uids=(1, 0),
-            hotkeys=(provider, "5Somebody"),
+            hotkeys=(owner, "5Somebody"),
             stake_rao=(1, 1),
-            validator_permit=(provider_permit, not provider_permit),
+            validator_permit=(owner_permit, not owner_permit),
         )
 
     def _verify(self, permit: bool) -> dict[str, int]:
-        provider = keypair(1)
-        return verify_mirrored(
-            record(provider),
-            provider=provider.ss58_address,
+        owner = keypair(1)
+        return verify_copied_record(
+            record(owner),
+            owner=owner.ss58_address,
             day=DAY,
             netuid=NETUID,
-            metagraph=self._rows(provider.ss58_address, provider_permit=permit),
+            metagraph=self._rows(owner.ss58_address, owner_permit=permit),
             burn_hotkey=BURN,
             epoch_content_hash=HASH_A,
         )
 
-    def test_a_permitted_provider_is_accepted(self) -> None:
+    def test_a_permitted_owner_validator_is_accepted(self) -> None:
         assert self._verify(permit=True) == {"5Miner": 1000, BURN: 500}
 
-    def test_an_unpermitted_provider_is_refused(self) -> None:
-        with pytest.raises(MirroredScoreError, match="no validator permit"):
+    def test_an_unpermitted_owner_validator_is_refused(self) -> None:
+        with pytest.raises(CopyRefusedError, match="no validator permit"):
             self._verify(permit=False)

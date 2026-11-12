@@ -239,6 +239,12 @@ class EpochMissingError(HubError):
     code: str = "hub.epoch_missing"
 
 
+class RecordMissingError(HubError):
+    """The hub says the owner validator's record for this day will never exist."""
+
+    code: str = "hub.record_missing"
+
+
 class EpochVerificationError(HubError):
     """The epoch's signature, schema, or contents could not be accepted.
 
@@ -346,6 +352,7 @@ __all__ = [
     "ModelTooLargeError",
     "OutdatedConfigError",
     "PrometheonError",
+    "RecordMissingError",
     "RegistryError",
     "RegistryUnavailableError",
     "RepoUnavailableError",

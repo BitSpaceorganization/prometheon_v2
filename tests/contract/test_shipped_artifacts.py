@@ -126,6 +126,17 @@ class TestTheShippedConfigsLoad:
         assert scoring.model_rank_shares_bp == (2500, 400, 100), path.name
         assert scoring.dataset_share_bp + sum(scoring.model_rank_shares_bp) == 10_000
 
+    @pytest.mark.parametrize("path", _configs(), ids=lambda p: p.name)
+    def test_copy_mode_refuses_the_shipped_placeholder(self, path: Path, tmp_path: Path) -> None:
+        """Switching to copy mode without filling in copy_from copies nobody."""
+        copy = _filled_in(path, tmp_path)
+        copy.write_text(
+            copy.read_text(encoding="utf-8").replace('mode = "score"', 'mode = "copy"'),
+            encoding="utf-8",
+        )
+        with pytest.raises(ConfigError, match="copy_from"):
+            load_config(copy)
+
 
 class TestTheShippedPolicyIsUsable:
     def test_it_exists(self) -> None:

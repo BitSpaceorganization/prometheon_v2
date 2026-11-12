@@ -6,6 +6,10 @@ its two content files. The client verifies the epoch against the pinned key,
 downloads the files, checks them against the epoch, and parses them. Nothing
 the hub says is used before the signature over it has verified.
 
+A second signed call serves copy mode: ``POST /api/v1/validator/weights``
+returns the owner validator's record for a day, exactly as it was posted. The
+caller verifies it; see :mod:`prometheon.scoring.copied`.
+
 The other routes are public reads (a published result, an epoch without file
 URLs, a credit balance) and the results upload, which is authenticated by the
 record's own signature and also carries the envelope.
@@ -38,6 +42,7 @@ from prometheon.errors import (
     EpochVerificationError,
     HubAuthError,
     HubError,
+    RecordMissingError,
 )
 from prometheon.hub import auth
 from prometheon.hub.epoch import check_epoch_is_for, epoch_content_hash, verify_epoch
@@ -201,6 +206,32 @@ class HubClient:
             miners={miner.hotkey: miner for miner in epoch.miners},
         )
         return DayData(verified=bundle.verified, feed=feed)
+
+    def request_weights(self, day: dt.date) -> EvaluationSubmission:
+        """``POST /api/v1/validator/weights``: the owner validator's record for ``day``.
+
+        Validators only, signed like the epoch request. The record comes back
+        exactly as the owner validator posted it, and nothing here trusts it:
+        the caller checks who signed it before using a unit of it.
+
+        Raises :class:`EpochNotReadyError` while the owner validator has not
+        posted the day yet, which the scheduler retries without counting, and
+        :class:`RecordMissingError` for a day that will never have one.
+        """
+        body = json.dumps({"day": day.isoformat()}, separators=(",", ":")).encode("utf-8")
+        response = self._send("POST", f"{API_PREFIX}/validator/weights", body=body, signed=True)
+        raw = _json(response)
+        if not isinstance(raw, dict) or not isinstance(raw.get("record"), dict):
+            raise HubError(
+                "the weights response carries no record object", status_code=response.status_code
+            )
+        try:
+            return EvaluationSubmission.model_validate(raw["record"])
+        except ValidationError as exc:
+            raise HubError(
+                f"the hub returned a record this client cannot accept: {exc}",
+                status_code=response.status_code,
+            ) from exc
 
     def download(self, url: str) -> bytes:
         """One presigned file, unsigned, capped while it streams."""
@@ -388,6 +419,8 @@ def _error_for(response: httpx.Response, method: str, path: str) -> HubError:
         return HubAuthError(message, status_code=status, error_code=code)
     if status == 404 and path.endswith("/validator/epoch"):
         return EpochMissingError(message, status_code=status, error_code=code)
+    if status == 404 and path.endswith("/validator/weights"):
+        return RecordMissingError(message, status_code=status, error_code=code)
     return HubError(message, status_code=status, error_code=code)
 
 

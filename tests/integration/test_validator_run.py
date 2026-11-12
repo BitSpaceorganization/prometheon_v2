@@ -362,7 +362,7 @@ def run_day(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Any]:
                 }
             )
 
-        hub = FakeHub(netuid=NETUID)
+        hub = FakeHub(netuid=NETUID, owner_validator=VALIDATOR.ss58_address)
         hub.register(VALIDATOR.ss58_address, CallerRole.VALIDATOR)
         miners = [
             {
@@ -472,6 +472,9 @@ def run_day(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Any]:
             "state": state,
             "raw_record": stored,
             "raw_epoch": raw_epoch,
+            "hub": hub,
+            "config": example,
+            "home": tmp_path,
         }
 
     yield run
@@ -584,3 +587,95 @@ def test_a_day_with_no_data_winner_burns_exactly_the_data_pool(run_day: Any) -> 
     assert record.burned_weight == 700_000
     rows = {row.hotkey: row.weight for row in record.results if row.weight}
     assert {**rows, OWNER.ss58_address: record.burned_weight} == expected
+
+
+# --- copy mode ------------------------------------------------------------------
+
+COPIER_URI = "//E2E-Copier"
+COPIER = Keypair.create_from_uri(COPIER_URI)
+
+
+def test_a_copy_mode_validator_sends_the_owner_validators_vector_unchanged(
+    run_day: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The owner validator scores the standard day and posts its record. A second
+    validator in copy mode then fetches that record from the hub's validators-only
+    route, checks it, and sends exactly the same vector: same uids, same weights.
+    It needs no labelling key and no model runtime, and touches neither."""
+    day = run_day(STANDARD)
+    assert day["code"] == 0
+
+    def never(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("copy mode labelled or ran a model")
+
+    monkeypatch.delenv("E2E_LABELLER_KEY")
+    monkeypatch.setattr("prometheon.cli.cycle.build_engine", never)
+    monkeypatch.setattr("prometheon.cli.cycle.label_items", never)
+    monkeypatch.setattr("prometheon.cli.cycle.check_evaluation_runtime", never)
+    hub: FakeHub = day["hub"]
+    hub.register(COPIER.ss58_address, CallerRole.VALIDATOR)
+    home: Path = day["home"]
+
+    wallet = Wallet(name="copier", hotkey="default", path=str(home / ".bittensor" / "wallets"))
+    wallet.create_coldkey_from_uri(
+        "//E2E-CopierCold", use_password=False, overwrite=True, suppress=True
+    )
+    wallet.create_hotkey_from_uri(COPIER_URI, use_password=False, overwrite=True, suppress=True)
+
+    copier = dict(day["config"])
+    copier["wallet"] = {"name": "copier", "hotkey": "default"}
+    copier["validator"] = {
+        **day["config"]["validator"],
+        "state_directory": str(home / "copier-state"),
+        "mode": "copy",
+        "copy_from": VALIDATOR.ss58_address,
+    }
+    copier_config = home / "copier.toml"
+    copier_config.write_text(_toml(copier))
+
+    cli_main = importlib.import_module("prometheon.cli.main")
+    code = cli_main.main(
+        ["validator", "run", "--config", str(copier_config), "--date", DAY.isoformat()]
+    )
+
+    assert code == 0
+    owner_sent, copier_sent = day["sent"]
+    assert copier_sent == owner_sent
+    state = json.loads((home / "copier-state" / "last-weights.json").read_text())
+    assert state["sent_weights"] == day["state"]["sent_weights"]
+    assert ("POST", "/api/v1/validator/weights") in hub.request_log
+    assert not any("/results/" in target for _method, target in hub.request_log)
+
+
+def test_copy_mode_refuses_a_record_from_any_other_hotkey(run_day: Any) -> None:
+    """The hub serves the owner validator's record; a copy pinned to another
+    hotkey refuses it rather than submitting somebody else's vector."""
+    day = run_day(STANDARD)
+    hub: FakeHub = day["hub"]
+    hub.register(COPIER.ss58_address, CallerRole.VALIDATOR)
+    home: Path = day["home"]
+
+    wallet = Wallet(name="copier", hotkey="default", path=str(home / ".bittensor" / "wallets"))
+    wallet.create_coldkey_from_uri(
+        "//E2E-CopierCold", use_password=False, overwrite=True, suppress=True
+    )
+    wallet.create_hotkey_from_uri(COPIER_URI, use_password=False, overwrite=True, suppress=True)
+
+    copier = dict(day["config"])
+    copier["wallet"] = {"name": "copier", "hotkey": "default"}
+    copier["validator"] = {
+        **day["config"]["validator"],
+        "state_directory": str(home / "copier-state"),
+        "mode": "copy",
+        "copy_from": MINERS["A"][0].ss58_address,
+    }
+    copier_config = home / "copier.toml"
+    copier_config.write_text(_toml(copier))
+
+    cli_main = importlib.import_module("prometheon.cli.main")
+    code = cli_main.main(
+        ["validator", "run", "--config", str(copier_config), "--date", DAY.isoformat()]
+    )
+
+    assert code != 0
+    assert len(day["sent"]) == 1, "the copy sent nothing"

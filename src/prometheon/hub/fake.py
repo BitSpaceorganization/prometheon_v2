@@ -125,6 +125,8 @@ class FakeHub:
     #: Where presigned URLs point. The default never resolves, which suits a
     #: MockTransport; :func:`serve` points it at the server itself.
     storage_base: str = f"https://{_STORAGE_HOST}"
+    #: The owner validator, whose record the copy-mode route serves.
+    owner_validator: str | None = None
 
     def __post_init__(self) -> None:
         self.directory = StaticHotkeyDirectory({}, netuid=self.netuid)
@@ -232,6 +234,8 @@ class FakeHub:
 
         if route == "/api/v1/validator/epoch" and request.method == "POST":
             return self._epoch(request, target)
+        if route == "/api/v1/validator/weights" and request.method == "POST":
+            return self._weights(request, target)
         if route == "/api/v1/results" and request.method == "POST":
             return self._post_result(request, target)
         if request.method == "GET":
@@ -271,18 +275,45 @@ class FakeHub:
 
     def _epoch(self, request: httpx.Request, target: str) -> httpx.Response:
         require_validator(self._authenticate(request, target))
-        try:
-            body = json.loads(request.content)
-            day = _day(body["day"])
-        except (ValueError, KeyError, TypeError) as exc:
-            raise _ReplyError(
-                'body must be {"day": "YYYY-MM-DD"}', status=400, code=HubErrorCode.BAD_REQUEST
-            ) from exc
+        day = _requested_day(request)
         stored = self._built(day)
         expires = self.now() + URL_LIFETIME_SECONDS
         urls = {name: self._presign(day, name, expires) for name in ("test", "production")}
         return httpx.Response(
             200, json={"epoch": stored.raw_epoch, "urls": urls, "urls_expire_at": expires}
+        )
+
+    def _weights(self, request: httpx.Request, target: str) -> httpx.Response:
+        """The owner validator's record for a day, for validators in copy mode.
+
+        Served byte for byte as it was posted, inside ``{"record": ...}``, so its
+        signature still verifies. 409 while the day can still get one, 404 for a
+        day that never will.
+        """
+        require_validator(self._authenticate(request, target))
+        day = _requested_day(request)
+        stored = (
+            self.results.get((day, self.owner_validator))
+            if self.owner_validator is not None
+            else None
+        )
+        if stored is not None:
+            return httpx.Response(
+                200,
+                content=b'{"record":' + stored + b"}",
+                headers={"content-type": "application/json"},
+            )
+        if self.owner_validator is not None and (day in self.days or day in self.not_ready):
+            raise _ReplyError(
+                f"the owner validator has not posted {day.isoformat()} yet",
+                status=409,
+                code=HubErrorCode.SNAPSHOT_NOT_READY,
+                detail={"retry_after_seconds": 600},
+            )
+        raise _ReplyError(
+            f"there is no owner validator record for {day.isoformat()}, and there will not be",
+            status=404,
+            code=HubErrorCode.NOT_FOUND,
         )
 
     def _post_result(self, request: httpx.Request, target: str) -> httpx.Response:
@@ -401,6 +432,17 @@ class FakeHub:
         base = self.storage_base.rstrip("/")
         prefix = "" if base.endswith("/storage") or base.endswith(_STORAGE_HOST) else "/storage"
         return f"{base}{prefix}/{day.isoformat()}/{name}/{token}"
+
+
+def _requested_day(request: httpx.Request) -> dt.date:
+    """The ``{"day": "YYYY-MM-DD"}`` body both validator routes take."""
+    try:
+        body = json.loads(request.content)
+        return _day(body["day"])
+    except (ValueError, KeyError, TypeError) as exc:
+        raise _ReplyError(
+            'body must be {"day": "YYYY-MM-DD"}', status=400, code=HubErrorCode.BAD_REQUEST
+        ) from exc
 
 
 def _day(raw: object) -> dt.date:

@@ -14,7 +14,10 @@ What this proves, end to end, on a chain nobody else uses:
    and publishes its signed record to the hub;
 5. the weights are read back from the chain and checked three ways: against
    the vector the validator saved before sending, against the record it
-   published, and against the spec's split computed by hand from the record.
+   published, and against the spec's split computed by hand from the record;
+6. a second validator in copy mode runs ``prometheon validator run``: it fetches
+   the owner validator's record from the hub's validators-only weights route,
+   checks it, and sets the same weights, which are read back from the chain.
 
 Requirements: the opentensor subtensor localnet image published on a local
 port (see docs/localnet.md), network access to Hugging Face, and a Python
@@ -427,15 +430,29 @@ def main() -> int:
 
     # --- 1. a subnet, its owner (who also validates) and two miners -------
     owner = dev_wallet(home, "owner", "//Alice", "//Alice//prometheon-validator")
+    # A second validator, which copies the owner validator instead of scoring.
+    copier = dev_wallet(home, "copier", "//Dave", "//Dave//prometheon-validator")
     miners = {
         "miner-a": dev_wallet(home, "miner-a", "//Bob", "//Bob//prometheon-miner"),
         "miner-b": dev_wallet(home, "miner-b", "//Charlie", "//Charlie//prometheon-miner"),
     }
     treasury = dev_wallet(home, "treasury", "//Eve", None).coldkeypub.ss58_address
 
+    # Checked by its effect, a new netuid, like every other setup write. On a
+    # fresh image the chain makes dozens of blocks a second, so the block the
+    # SDK validated against can be pruned before the pool reads it, and the
+    # call reports "State already discarded" whether or not it landed.
     before = set(subtensor.get_all_subnets_netuid())
-    check(subtensor.register_subnet(owner), "register_subnet")
-    (netuid,) = set(subtensor.get_all_subnets_netuid()) - before
+    for attempt in range(5):
+        response = subtensor.register_subnet(owner)
+        created = set(subtensor.get_all_subnets_netuid()) - before
+        if created:
+            break
+        if attempt == 4:
+            check(response, "register_subnet")
+        log(f"register_subnet did not land ({getattr(response, 'message', '')!r}); retrying")
+        wait_blocks(subtensor, 5)
+    (netuid,) = created
     log(f"registered netuid {netuid}; owner and validator hotkey {owner.hotkey.ss58_address}")
     for attempt in range(60):
         if subtensor.start_call(owner, netuid).success:
@@ -478,7 +495,13 @@ def main() -> int:
             f"burned_register {name}",
             lambda hotkey=hotkey: subtensor.is_hotkey_registered(hotkey, netuid=netuid),
         )
+    landed(
+        subtensor.burned_register(copier, netuid),
+        "burned_register copier",
+        lambda: subtensor.is_hotkey_registered(copier.hotkey.ss58_address, netuid=netuid),
+    )
     add_stake(subtensor, owner, netuid, 1000, "add_stake for the validator")
+    add_stake(subtensor, copier, netuid, 1000, "add_stake for the copy-mode validator")
     for name, miner in miners.items():
         # Enough alpha for one credit at the published fee, with some to spare.
         # What 100 TAO buys depends on the new subnet's pool, so stake until it is.
@@ -488,19 +511,27 @@ def main() -> int:
             add_stake(subtensor, miner, netuid, 100, f"add_stake {name}")
         else:
             raise SystemExit(f"{name} could not stake {SUBMISSION_FEE_ALPHA} alpha for a credit")
-    log("waiting for an epoch so the validator holds a permit")
+    log("waiting for an epoch so both validators hold a permit")
     for attempt in range(60):
         view = view_of(subtensor, netuid)
-        if view.has_validator_permit(owner.hotkey.ss58_address):
+        if view.has_validator_permit(owner.hotkey.ss58_address) and view.has_validator_permit(
+            copier.hotkey.ss58_address
+        ):
             break
         if attempt == 59:
-            raise SystemExit("the validator never received a permit")
+            raise SystemExit("the validators never received a permit")
         wait_blocks(subtensor, 5)
     log(f"neurons: {dict(zip(view.uids, view.hotkeys, strict=True))}")
 
     # --- 2. local services: a hub and a labeller ---------------------------
-    hub = FakeHub(netuid=netuid, key_id="localnet", signing_seed=secrets.token_hex(32))
+    hub = FakeHub(
+        netuid=netuid,
+        key_id="localnet",
+        signing_seed=secrets.token_hex(32),
+        owner_validator=owner.hotkey.ss58_address,
+    )
     hub.register(owner.hotkey.ss58_address, CallerRole.VALIDATOR)
+    hub.register(copier.hotkey.ss58_address, CallerRole.VALIDATOR)
     hub_server = serve(hub, port=args.hub_port)
     labeller = ThreadingHTTPServer(("127.0.0.1", args.labeller_port), Labeller)
     threading.Thread(target=labeller.serve_forever, name="labeller", daemon=True).start()
@@ -541,6 +572,21 @@ def main() -> int:
             "submit_weights": True,
             "dry_run": False,
             "submit_results": True,
+        },
+    )
+    # Copy mode: no labeller, no evaluation settings. It copies the owner
+    # validator and nothing else.
+    configs["copier"] = write_config(
+        args.workdir / "copier.toml",
+        **shared,
+        wallet={"name": "copier"},
+        validator={
+            "state_directory": str(args.workdir / "copier-state"),
+            "submit_weights": True,
+            "dry_run": False,
+            "submit_results": True,
+            "mode": "copy",
+            "copy_from": owner.hotkey.ss58_address,
         },
     )
 
@@ -695,9 +741,24 @@ def main() -> int:
     log(f"read from chain: {on_chain}")
     assert on_chain == expected_on_chain, f"chain holds {on_chain}, expected {expected_on_chain}"
 
+    # --- 7. a validator in copy mode sets the owner validator's weights -----
+    cli(home, "validator", "run", "--config", str(configs["copier"]), "--date", day.isoformat())
+    copied = json.loads((args.workdir / "copier-state" / "last-weights.json").read_text())
+    copied_sent = {hotkey: int(units) for hotkey, units in copied["sent_weights"].items()}
+    assert copied_sent == sent, f"the copy sent {copied_sent}, the owner validator {sent}"
+    view = view_of(subtensor, netuid)
+    copier_uid = view.uid_for(copier.hotkey.ss58_address)
+    copied_on_chain = dict(dict(subtensor.weights(netuid=netuid)).get(copier_uid, []))
+    log(f"copy-mode validator (uid {copier_uid}) on chain: {copied_on_chain}")
+    assert copied_on_chain == on_chain, (
+        f"the copy holds {copied_on_chain} on chain, the owner validator {on_chain}"
+    )
+    assert ("POST", "/api/v1/validator/weights") in hub.request_log, "copy mode used another route"
+
     hub_server.shutdown()
     labeller.shutdown()
     log("PASS: chain weights = the vector computed, saved and published = the spec by hand")
+    log("PASS: the copy-mode validator set the owner validator's weights, unchanged")
     return 0
 
 
