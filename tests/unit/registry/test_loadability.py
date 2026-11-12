@@ -123,6 +123,24 @@ class TestTheFrozenMappingIsTheImages:
         assert "llama" in known, "Llama 3.2 declares `llama`"
         assert "flint" not in known, "Flint arrived in 5.21, the first release to need Python 3.11"
 
+    def test_it_leaves_out_what_the_engine_refuses_to_run(self) -> None:
+        """Listed means runnable, not just recognised.
+
+        The engine shares one policy prefix across items, which only plain and
+        sliding-window attention layers allow. Transformers 5.20 knows
+        linear-attention and hybrid architectures whose layers write into their
+        own state; the engine refuses them at load, so listing them would let a
+        miner pay the fee for a model that scores nothing on every validator.
+        """
+        known = known_model_types()
+        refused = {"qwen3_5", "qwen3_5_text", "qwen3_next", "mamba", "mamba2", "jamba", "falcon_h1"}
+        assert not refused & known
+
+    def test_it_lists_only_what_a_causal_language_model_loader_can_load(self) -> None:
+        known = known_model_types()
+        assert "vit" not in known, "an image encoder is not a causal language model"
+        assert "EvollaModel" not in known
+
     def test_it_is_not_read_from_the_local_environment(self) -> None:
         """Whatever is installed here must not change the answer."""
         import sys

@@ -122,6 +122,14 @@ def encode_item(tokenizer: Any, content: str) -> list[int]:
 _FRAME_TOKEN_ALLOWANCE: Final[int] = 128
 
 
+def _has_sliding_window(cache: Any) -> bool:
+    """Whether any layer of a prefix cache keeps only a window of the past."""
+    from transformers.cache_utils import DynamicSlidingWindowLayer
+
+    layers = getattr(cache, "layers", ())
+    return any(isinstance(layer, DynamicSlidingWindowLayer) for layer in layers)
+
+
 class EngineError(EvaluationError):
     """The engine could not run this model at all."""
 
@@ -311,13 +319,21 @@ class ModerationEngine:
 
         encoded = [(item_id, encode_item(self._tokenizer, content)) for item_id, content in items]
 
+        # A sliding-window layer counts padding inside its window, so a padded
+        # row reaches fewer policy tokens back than the same item judged alone,
+        # and its verdict would move with the length of its longest neighbour.
+        # One item per forward pass has no padding, so a model with such layers
+        # is judged on each item alone. Every validator takes the same branch
+        # for the same model, so packing stays pinned.
+        step = 1 if _has_sliding_window(prefix_cache) else MICRO_BATCH
+
         # Order is preserved exactly: items are packed into fixed-width windows
         # in the order they arrived, so the verdict sequence is the same one the
         # per-item path produced and every downstream count still lines up with
         # the corpus order the batch was built from.
         verdicts: list[Verdict] = []
-        for start in range(0, len(encoded), MICRO_BATCH):
-            window = encoded[start : start + MICRO_BATCH]
+        for start in range(0, len(encoded), step):
+            window = encoded[start : start + step]
             decisions = self._decide_batch(
                 prefix_cache, prefix_len, [item_ids for _, item_ids in window]
             )
@@ -413,10 +429,10 @@ class ModerationEngine:
         Sliding-window layers are the exception. Their window is counted in
         cache slots, padding included, so a padded row reaches that many fewer
         policy tokens back than the same item judged alone. Where the window is
-        shorter than the policy, as in Gemma 3, an item's probabilities move
-        with the length of the longest item in its window. Packing is pinned, so
-        every validator still computes the same numbers, and full-attention
-        layers are unaffected.
+        shorter than the policy, as in Gemma 3, an item's probabilities would
+        move with the length of the longest item beside it. ``moderate``
+        therefore hands a model with such layers one item per call, which has
+        no padding.
 
         Out of memory is not fatal and not a model failure. The window is halved
         and retried, down to a single item, because a checkpoint that fits the

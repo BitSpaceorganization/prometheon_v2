@@ -45,8 +45,8 @@ wrapper = [
     # it means regenerating that list and checking the engine's prefix cache,
     # which leans on 5.x cache internals that a minor release can change.
     "transformers>=5.20.2,<5.21",
-    # Raised from `<2.6`, which could not run the hardware `docs/validator.md`
-    # mandates. 2.5.1 builds kernels up to sm_90; an RTX 5090 is sm_120, and the
+    # Raised from `<2.6`, which could not run an RTX 5090, a card many
+    # validators will use. 2.5.1 builds kernels up to sm_90; an RTX 5090 is sm_120, and the
     # failure is silent in the worst way: `torch.cuda.is_available()` still
     # returns True, so `resolve_device("auto")` picks cuda and every forward
     # then dies with "no kernel image is available for execution on the device".
