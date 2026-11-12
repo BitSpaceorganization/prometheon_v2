@@ -38,10 +38,10 @@ Your members write posts and say, for each one, whether it violates [`content_po
 
 ## 2. The data pool, 70%
 
-Each validator labels every test post itself, against the policy, with its own labeller. Your members' claims are never trusted as ground truth. For the day, after near-duplicates are removed:
+Each validator labels every test post itself, against the policy, with its own labeller, one post per request. The labeller never sees your members' claims, and they're never trusted as ground truth. For the day:
 
 ```text
-S      = your test posts that remain
+S      = your test posts in the day's feed
 V_pos  = posts claimed violating that the labeller found violating
 V_neg  = posts claimed compliant that the labeller found compliant
 
@@ -54,7 +54,7 @@ What this means in practice:
 
 - **Balance pays.** 40 violating and 0 compliant scores 0. 20 and 20 scores 40.
 - **Accuracy pays.** Posts the labeller disagrees with stay in `S`, so they dilute the score.
-- **Copies are worth nothing.** Posts are normalised (Unicode NFKC, lower case, punctuation, symbols and invisible characters removed, spaces collapsed). Any post whose normalised text matches an earlier post, exactly or within 3 bits of a 64-bit SimHash, is dropped. Only the earliest post in the whole day's corpus is kept, whoever wrote it. Reposting someone else's post, or your own with different punctuation, earns nothing.
+- **Copies don't get in.** BitFan refuses a post that's a near-copy of one already written, whoever wrote it. Reposting someone else's post, or your own with different punctuation, never reaches the feed.
 
 [`scoring.md`](./scoring.md#data-pool-70) has worked examples.
 
@@ -143,7 +143,7 @@ On a validator, two more checks run against the epoch. Your fingerprint must mat
 
 ### How models are ranked
 
-Each eligible paid model runs over the day's labelled corpus: everyone's test posts plus a sample of up to 10,000 public BitFan posts. **Test posts from your own coldkey are excluded**, from every hotkey under it, so recognising your own posts buys nothing.
+Each eligible paid model runs over the day's labelled corpus: everyone's test posts plus a sample of about 200 public BitFan posts. **Test posts from your own coldkey are excluded**, from every hotkey under it, so recognising your own posts buys nothing.
 
 ```text
 accuracy = correct / scored
@@ -163,7 +163,7 @@ A day's test posts become readable two days later on the hub's public viewer, 50
 
 - **Recognising your own posts.** They aren't in your model's corpus.
 - **Flooding one class.** `min(V_pos, V_neg)` is zero.
-- **Reposting.** Near-duplicates keep only the earliest post of the whole day.
+- **Reposting.** BitFan refuses a near-copy of a post already written.
 - **Copying a model.** The same weights have the same fingerprint, and the earliest committer holds it. Renaming files or mirroring the repository changes nothing.
 - **Answering `YES` to everything.** Test content is balanced by construction and production content is mostly compliant, so a degenerate model is wrong on most items.
 - **Answering fast instead of well.** Efficiency is capped at 15% and applied multiplicatively, so it can't overturn a larger accuracy gap.

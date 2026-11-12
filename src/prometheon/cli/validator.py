@@ -727,7 +727,6 @@ def _summary(result: object, rows: tuple[object, ...]) -> str:
                 f"{len(feed.test)} test, {len(feed.production)} production, "
                 f"{len(feed.rejected)} rejected",
             ),
-            ("near-duplicates", f"{len(result.duplicates)} removed"),
             ("eligible miners", f"{len(result.eligible)}/{len(result.epoch.miners)}"),
             ("corpus items", str(len(result.corpus.items))),
             (

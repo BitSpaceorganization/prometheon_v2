@@ -16,10 +16,11 @@ The order of the stages is a contract:
    against it. Every validator therefore scores the same miners, the same
    models and the same content, whenever it runs (v2 read commitments live from
    the chain, so two validators could score different models: bug B6).
-3. **Near-duplicates out, then label, then evaluate.** The day's corpus is
-   reduced to the earliest copy of each text before anything is paid for.
-   Ground truth is fixed before any model sees the corpus, so no model can
-   influence what it is measured against.
+3. **Label, then evaluate.** Every accepted post is labelled, one post per
+   request, and the labeller never sees the author's claim. BitFan refuses a
+   near-copy of an earlier post when it is written, so the validator no longer
+   removes near-duplicates itself. Ground truth is fixed before any model sees
+   the corpus, so no model can influence what it is measured against.
 4. **Score.** Weights and the published record are computed from the same
    in-memory result.
 
@@ -75,8 +76,8 @@ from prometheon.evaluation.runner import (
 from prometheon.hub.client import DayData, HubClient
 from prometheon.hub.epoch import eligible_miners
 from prometheon.hub.models import Epoch, EpochMiner, MinerResult, ModelStatus, Payment
-from prometheon.labelling.batch import LabelledCorpus, label_items
 from prometheon.labelling.client import ChatCompletionClient
+from prometheon.labelling.labeller import LabelledCorpus, label_items
 from prometheon.labelling.prompt import LabelItem
 from prometheon.registry.validation import (
     InvalidReason,
@@ -86,7 +87,6 @@ from prometheon.registry.validation import (
 )
 from prometheon.scoring.combine import WeightSplit, combine_weights
 from prometheon.scoring.dataset import DatasetScore, DatasetSubmission, score_dataset
-from prometheon.scoring.dedupe import CorpusEntry, drop_near_duplicates
 from prometheon.scoring.model import ModelEvaluation, ModelRanking, score_models
 from prometheon.version import SCORING_VERSION
 
@@ -110,10 +110,6 @@ class CycleResult:
 
     day: dt.date
     data: DayData
-    #: Item ids left after near-duplicate removal, across both files.
-    kept_ids: frozenset[str]
-    #: Each removed id, and the earlier kept id it duplicates.
-    duplicates: Mapping[str, str]
     eligible: tuple[EpochMiner, ...]
     labelled: LabelledCorpus
     corpus: EvaluationCorpus
@@ -218,33 +214,26 @@ def run_cycle(
         say("checking that this validator can run a model")
         check_runtime()
 
-    # --- 3. near-duplicates out, then ground truth -------------------------
-    dedupe = drop_near_duplicates(
-        _corpus_entries(data), max_hamming=config.scoring.near_duplicate_max_hamming
-    )
-    kept = frozenset(dedupe.kept)
-    if dedupe.dropped:
-        notes.append(f"{len(dedupe.dropped)} items removed as near-duplicates of earlier items")
-
+    # --- 3. ground truth, one post per request ----------------------------
     coldkeys = {miner.hotkey: miner.coldkey for miner in epoch.miners}
-    to_label = _label_items_for(data, kept, coldkeys)
-    say(f"labelling {len(to_label)} items")
+    to_label = _label_items_for(data, coldkeys)
+    say(f"labelling {len(to_label)} posts, {config.labelling.max_in_flight} at a time")
     labelled = label_items(
         to_label,
         client=labeller,
         policy=policy.text,
-        batch_size=config.labelling.batch_size,
+        max_in_flight=config.labelling.max_in_flight,
     )
-    if labelled.isolated_batches:
+    if labelled.excluded_ids:
         notes.append(
-            f"{labelled.isolated_batches} labelling batch(es) answered unanimously against a "
-            "low base rate and were asked again one item at a time"
+            f"{len(labelled.excluded_ids)} posts never labelled cleanly and were excluded; "
+            "an excluded test post stays in its miner's S"
         )
 
     corpus = build_corpus(
         content_hash=data.verified.content_hash,
-        test_items=_labelled_test(data, kept, labelled, coldkeys),
-        production_items=_labelled_production(data, kept, labelled),
+        test_items=_labelled_test(data, labelled, coldkeys),
+        production_items=_labelled_production(data, labelled),
     )
     say(f"corpus is {len(corpus.items)} items")
 
@@ -297,7 +286,7 @@ def run_cycle(
 
     # --- 5. score both pools and reduce to one vector ----------------------
     say("scoring")
-    dataset_scores = score_dataset(_dataset_submissions(data, kept, labelled, eligible))
+    dataset_scores = score_dataset(_dataset_submissions(data, labelled, eligible))
     ranking = score_models(
         [
             ModelEvaluation(
@@ -321,8 +310,6 @@ def run_cycle(
     return CycleResult(
         day=day,
         data=data,
-        kept_ids=kept,
-        duplicates=dedupe.dropped,
         eligible=eligible,
         labelled=labelled,
         corpus=corpus,
@@ -632,48 +619,27 @@ def _stop_on_upstream_outage(validations: tuple[MinerValidation, ...]) -> None:
         )
 
 
-def _corpus_entries(data: DayData) -> list[CorpusEntry]:
-    feed = data.feed
-    return [
-        *(CorpusEntry(line.item_id, line.created_at_micros, line.body) for line in feed.test),
-        *(CorpusEntry(line.item_id, line.created_at_micros, line.body) for line in feed.production),
-    ]
+def _label_items_for(data: DayData, coldkeys: Mapping[str, str]) -> list[LabelItem]:
+    """Every accepted post, as the labeller is allowed to see it.
 
+    A post's id and text, and nothing else: **the author's claim is never
+    sent**, and :class:`LabelItem` has no field that could carry it. ``source``
+    is the miner's coldkey, so the day's exclusions can be judged by who they
+    fell on, and it never leaves this process either.
 
-def _label_items_for(
-    data: DayData, kept: frozenset[str], coldkeys: Mapping[str, str]
-) -> list[LabelItem]:
-    """Everything to be labelled, in one deterministic interleaved order.
-
-    ``expected_violating`` is the prior, never the answer: for test content it
-    is the submitter's claim, for production content a low base rate. The
-    labelling tripwire uses it to tell a legitimately unanimous batch from a
-    subverted labeller, and needs to know whose claim each prior is. That
-    ``author`` is the miner's **coldkey**: two hotkeys under one coldkey are one
-    source, so one party cannot make a forged unanimity look like two (B22).
-
-    The order comes from the epoch's content hash, so every validator batches
-    identically, and test and production items interleave, so an injection
-    that survives one batch is spread across the field rather than aimed.
+    Ordered by the epoch's content hash, so every validator asks in the same
+    order. The order decides no verdict; it keeps two validators' logs
+    comparable.
     """
     content_hash = data.verified.content_hash
     items = [
         *(
-            LabelItem(
-                item_id=line.item_id,
-                content=line.body,
-                expected_violating=line.claimed_violating,
-                author=coldkeys[line.miner_hotkey],
-            )
+            LabelItem(item_id=line.item_id, content=line.body, source=coldkeys[line.miner_hotkey])
             for line in data.feed.test
-            if line.item_id in kept
         ),
         *(
-            LabelItem(
-                item_id=line.item_id, content=line.body, expected_violating=False, author=None
-            )
+            LabelItem(item_id=line.item_id, content=line.body, source=None)
             for line in data.feed.production
-            if line.item_id in kept
         ),
     ]
     items.sort(key=lambda item: (corpus_order_key(content_hash, item.item_id), item.item_id))
@@ -681,7 +647,7 @@ def _label_items_for(
 
 
 def _labelled_test(
-    data: DayData, kept: frozenset[str], labelled: LabelledCorpus, coldkeys: Mapping[str, str]
+    data: DayData, labelled: LabelledCorpus, coldkeys: Mapping[str, str]
 ) -> list[LabelledItem]:
     """Test items with whichever verdict the labeller gave them.
 
@@ -701,13 +667,11 @@ def _labelled_test(
             contributor_coldkey=coldkeys[line.miner_hotkey],
         )
         for line in data.feed.test
-        if line.item_id in kept and line.item_id in labelled.labels
+        if line.item_id in labelled.labels
     ]
 
 
-def _labelled_production(
-    data: DayData, kept: frozenset[str], labelled: LabelledCorpus
-) -> list[LabelledItem]:
+def _labelled_production(data: DayData, labelled: LabelledCorpus) -> list[LabelledItem]:
     return [
         LabelledItem(
             item_id=line.item_id,
@@ -716,17 +680,19 @@ def _labelled_production(
             source=ItemSource.PRODUCTION,
         )
         for line in data.feed.production
-        if line.item_id in kept and line.item_id in labelled.labels
+        if line.item_id in labelled.labels
     ]
 
 
 def _dataset_submissions(
     data: DayData,
-    kept: frozenset[str],
     labelled: LabelledCorpus,
     eligible: tuple[EpochMiner, ...],
 ) -> list[DatasetSubmission]:
-    """Per eligible miner, ``S``, ``V_pos`` and ``V_neg``, from its kept test items.
+    """Per eligible miner, ``S``, ``V_pos`` and ``V_neg``, from its accepted test items.
+
+    ``S`` is every test line of the miner's that the feed parser accepted.
+    BitFan refuses a near-copy when it is written, so nothing is removed here.
 
     Counted from the validator's own labels, so the numbers the data reward is
     computed from never come from the service that delivered the content. A
@@ -740,7 +706,7 @@ def _dataset_submissions(
     compliant: dict[str, int] = {}
 
     for line in data.feed.test:
-        if line.item_id not in kept or line.miner_hotkey not in submitted:
+        if line.miner_hotkey not in submitted:
             continue
         submitted[line.miner_hotkey] += 1
         verdict = labelled.labels.get(line.item_id)

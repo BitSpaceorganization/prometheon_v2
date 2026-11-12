@@ -47,8 +47,8 @@ from prometheon.hub.auth import CallerRole, verify_evaluation
 from prometheon.hub.epoch import epoch_content_hash
 from prometheon.hub.fake import FakeHub, serve
 from prometheon.hub.models import EvaluationSubmission
+from prometheon.hub.normalize import normalized_sha256
 from prometheon.registry.huggingface import HuggingFaceClient
-from prometheon.scoring.dedupe import normalized_sha256
 
 pytestmark = pytest.mark.integration
 
@@ -213,12 +213,9 @@ def _labeller(truth: dict[str, bool]) -> type[BaseHTTPRequestHandler]:
         def do_POST(self) -> None:
             body = json.loads(self.rfile.read(int(self.headers["content-length"])))
             user = body["messages"][-1]["content"]
-            ids = [
-                json.loads(line.rstrip(","))["id"]
-                for line in user.splitlines()
-                if line.startswith('{"id"')
-            ]
-            content = json.dumps({"labels": [{"id": i, "violates": truth[i]} for i in ids]})
+            # One post per request, on the line after the opening fence.
+            (item,) = [json.loads(line) for line in user.splitlines() if line.startswith('{"id"')]
+            content = json.dumps({"id": item["id"], "violates": truth[item["id"]]})
             payload = json.dumps(
                 {
                     "choices": [{"finish_reason": "stop", "message": {"content": content}}],

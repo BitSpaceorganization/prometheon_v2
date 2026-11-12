@@ -7,7 +7,7 @@ from typing import Any
 
 from bittensor_wallet import Keypair
 
-from prometheon.scoring.dedupe import normalized_sha256
+from prometheon.hub.normalize import normalized_sha256
 
 NETUID = 481
 DAY = dt.date(2026, 11, 5)

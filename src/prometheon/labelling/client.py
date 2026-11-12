@@ -6,15 +6,19 @@ surface is what makes the transport injectable: every test in this package
 drives the real client over an :class:`httpx.MockTransport`, so the envelope,
 headers, and retry policy that ship are the ones under test.
 
-Two failures are kept apart, because the batcher must react to them
+Two failures are kept apart, because the labeller must react to them
 differently:
 
 - :class:`LabellingError` means the endpoint is unusable: no key, rejected
-  auth, unreachable after retries. Nothing about the corpus will fix it, so it
-  aborts the cycle.
+  auth, unreachable after retries. Nothing about the next post will fix it, so
+  it aborts the cycle.
 - :class:`LabelResponseError` means the endpoint answered but the answer is not
-  a usable one. That is the batcher's cue to split and retry, which is also the
-  right response to a truncated completion.
+  a usable one. That is the labeller's cue to ask about the post once more, and
+  then to exclude it.
+
+Rate limits and server errors are retried here, with backoff, before either
+error is raised. The labeller sends several requests at once through one
+client, and ``httpx.Client`` is safe to share between threads.
 """
 
 from __future__ import annotations
@@ -72,7 +76,10 @@ class ChatResponse:
 
 
 class ChatCompletionClient(Protocol):
-    """What :mod:`prometheon.labelling.batch` needs from a labeller."""
+    """What :mod:`prometheon.labelling.labeller` needs from a labeller.
+
+    Called from several threads at once, one post per call.
+    """
 
     def complete(self, *, system_prompt: str, user_prompt: str) -> ChatResponse:
         """Return the model's reply, or raise ``LabelResponseError``/``LabellingError``."""
@@ -180,21 +187,21 @@ class OpenAICompatibleClient:
                 if not _is_retryable_status(response.status_code):
                     snippet = _snippet(response)
                     if _is_content_rejection(response.status_code, snippet):
-                        # The provider refused to read this batch's *content*,
-                        # not the request. That is a property of one item, so it
-                        # belongs to the batcher: LabelResponseError is what
-                        # makes it split, quarantine the offending item, and
-                        # exclude it -- the same path a malformed answer takes.
+                        # The provider refused to read this post's *content*,
+                        # not the request. That is a property of one post, so
+                        # it belongs to that post: LabelResponseError is what
+                        # makes the labeller ask once more and then exclude
+                        # it, the same path a malformed answer takes.
                         #
                         # Raising LabellingError here instead aborted the whole
                         # cycle. The corpus is *sourced* to contain policy
                         # violations, so tripping a provider safety filter is
-                        # expected traffic, and one such item took down the day
+                        # expected traffic, and one such post took down the day
                         # -- on every validator at once, since they all label
                         # the same corpus. A single crafted submission was a
                         # subnet-wide outage.
                         raise LabelResponseError(
-                            f"labelling endpoint refused this batch's content with HTTP "
+                            f"labelling endpoint refused this post's content with HTTP "
                             f"{response.status_code}: {snippet}"
                         )
                     raise LabellingError(
@@ -234,12 +241,12 @@ _CONTENT_REJECTION_MARKERS: Final[tuple[str, ...]] = (
 
 
 def _is_content_rejection(status_code: int, body: str) -> bool:
-    """Whether a 400 refused the batch's content rather than the request itself.
+    """Whether a 400 refused the post's content rather than the request itself.
 
     Deliberately narrow. A 400 can also mean a genuinely malformed request --
     an unsupported sampling parameter, say -- and that must stay fatal, because
-    every batch would hit it and a cycle that splits its way through the whole
-    corpus would spend the day's budget discovering one config mistake.
+    every post would hit it, and a cycle that asked twice about every post
+    would spend the day's budget discovering one config mistake.
     """
     if status_code != _CLIENT_ERROR_FLOOR:
         return False
@@ -311,9 +318,9 @@ def _parse_completion(response: httpx.Response) -> ChatResponse:
     if not isinstance(choice, dict):
         raise LabelResponseError("labelling response choice is not an object")
 
-    # Truncation gets its own error: it is the one malformed response that a
-    # smaller batch reliably fixes, and that is exactly what the caller does
-    # next.
+    # Truncation gets its own message, because the fix is an operator's: an
+    # answer is two keys long, so a model that runs out of room before
+    # finishing one is spending its output limit on something else.
     if choice.get("finish_reason") == "length":
         raise LabelResponseError("labelling response was truncated by the model's output limit")
 
@@ -337,7 +344,7 @@ def _token_count(usage: dict[Any, Any], key: str) -> int:
     """A usage counter, or zero.
 
     Usage is telemetry, not ground truth, so a provider that omits or mangles
-    it must not fail a batch that carried perfectly good verdicts.
+    it must not fail an answer that carried a perfectly good verdict.
     """
     value = usage.get(key)
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:

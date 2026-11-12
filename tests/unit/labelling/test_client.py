@@ -18,7 +18,7 @@ from .conftest import Harness, completion_envelope
 
 pytestmark = pytest.mark.unit
 
-ANSWER = '{"labels": [{"id": "a", "violates": true}]}'
+ANSWER = '{"id": "a", "violates": true}'
 
 
 def _complete(harness: Harness) -> Any:
@@ -107,10 +107,10 @@ def test_usage_is_reported_back(build_labeller: Callable[..., Harness]) -> None:
     "usage",
     [{}, {"prompt_tokens": "many"}, {"prompt_tokens": -5}, {"prompt_tokens": True}],
 )
-def test_unusable_usage_counts_as_zero_rather_than_failing_the_batch(
+def test_unusable_usage_counts_as_zero_rather_than_failing_the_answer(
     build_labeller: Callable[..., Harness], usage: dict[str, Any]
 ) -> None:
-    """Usage is telemetry; it must never cost a batch its verdicts."""
+    """Usage is telemetry; it must never cost an answer its verdict."""
     envelope = completion_envelope(ANSWER)
     envelope["usage"] = usage
 
@@ -127,7 +127,7 @@ def test_unusable_usage_counts_as_zero_rather_than_failing_the_batch(
 def test_a_rate_limited_request_is_retried(build_labeller: Callable[..., Harness]) -> None:
     replies = [httpx.Response(429, json={"error": "slow down"})]
 
-    def respond(items: list[dict[str, str]]) -> Any:
+    def respond(item: dict[str, str] | None) -> Any:
         return replies.pop(0) if replies else ANSWER
 
     harness = build_labeller(respond)
@@ -201,7 +201,7 @@ def test_the_rejection_message_quotes_the_endpoint_body(
 
 
 def test_a_timeout_is_retried_then_reported(build_labeller: Callable[..., Harness]) -> None:
-    def times_out(items: list[dict[str, str]]) -> httpx.Response:
+    def times_out(item: dict[str, str] | None) -> httpx.Response:
         raise httpx.ReadTimeout("timed out")
 
     harness = build_labeller(times_out, config=LabellingConfig(max_retries=1))
@@ -215,7 +215,7 @@ def test_a_timeout_is_retried_then_reported(build_labeller: Callable[..., Harnes
 def test_a_transport_failure_is_retried_then_reported(
     build_labeller: Callable[..., Harness],
 ) -> None:
-    def refuses(items: list[dict[str, str]]) -> httpx.Response:
+    def refuses(item: dict[str, str] | None) -> httpx.Response:
         raise httpx.ConnectError("connection refused")
 
     harness = build_labeller(refuses, config=LabellingConfig(max_retries=0))

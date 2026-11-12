@@ -2,9 +2,9 @@
 
 Every other test in this repository checks one module. This one checks that the
 modules *compose*: that the hub's signed epoch reaches eligibility, that feed
-lines reach near-duplicate removal and the labeller, that labels reach the
-corpus, that the corpus reaches the miners, that the results reach scoring, and
-that scoring reaches a weight vector the chain would accept.
+lines reach the labeller one post per request, that labels reach the corpus,
+that the corpus reaches the miners, that the results reach scoring, and that
+scoring reaches a weight vector the chain would accept.
 
 Nothing here reaches the network: the hub is the in-memory fake, signing real
 epochs; the chain is a small object with the accessors the adapter requires;
@@ -14,9 +14,9 @@ that answers a fixed fraction of each batch correctly.
 
 from __future__ import annotations
 
+import dataclasses
 import datetime as dt
 import hashlib
-import itertools
 import json
 from types import SimpleNamespace
 from typing import Any
@@ -42,9 +42,11 @@ from prometheon.hub.auth import CallerRole
 from prometheon.hub.client import HubClient
 from prometheon.hub.fake import FakeHub
 from prometheon.hub.models import ModelStatus
+from prometheon.hub.normalize import normalized_sha256
 from prometheon.labelling.client import OpenAICompatibleClient
+from prometheon.labelling.prompt import ITEMS_BEGIN_PREFIX, LabelItem
 from prometheon.registry.validation import InvalidReason, MinerValidation, ModelRegistry
-from prometheon.scoring.dedupe import normalized_sha256
+from prometheon.version import SCORING_VERSION
 
 pytestmark = pytest.mark.integration
 
@@ -182,23 +184,28 @@ class StubRegistry(ModelRegistry):
         ]
 
 
-def _labeller(truth: dict[str, bool]) -> OpenAICompatibleClient:
+def _sent_item(request: httpx.Request) -> dict[str, str]:
+    """The one post a labelling request carries: the line after the opening fence."""
+    lines = json.loads(request.content)["messages"][-1]["content"].splitlines()
+    opening = next(n for n, line in enumerate(lines) if line.startswith(ITEMS_BEGIN_PREFIX))
+    item: dict[str, str] = json.loads(lines[opening + 1])
+    return item
+
+
+def _labeller(
+    truth: dict[str, bool], seen: list[dict[str, str]] | None = None
+) -> OpenAICompatibleClient:
     """A labeller that answers from a truth table, in the requested schema."""
 
     def handler(request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content)
-        user = body["messages"][-1]["content"]
-        ids = [line.split('"')[3] for line in user.splitlines() if '"id"' in line]
-        labels = [{"id": item_id, "violates": truth.get(item_id, False)} for item_id in ids]
+        item = _sent_item(request)
+        if seen is not None:
+            seen.append(item)
+        answer = {"id": item["id"], "violates": truth.get(item["id"], False)}
         return httpx.Response(
             200,
             json={
-                "choices": [
-                    {
-                        "finish_reason": "stop",
-                        "message": {"content": json.dumps({"labels": labels})},
-                    }
-                ],
+                "choices": [{"finish_reason": "stop", "message": {"content": json.dumps(answer)}}],
                 "usage": {"prompt_tokens": 10, "completion_tokens": 5},
             },
         )
@@ -329,7 +336,7 @@ def config() -> Config:
         chain=ChainConfig(network=ChainNetwork.TEST, netuid=NETUID),
         wallet=WalletConfig(name="validator", hotkey="default"),
         hub=HubConfig(base_url="https://hub.invalid"),
-        labelling=LabellingConfig(api_key_env="PROMETHEON_TEST_KEY", batch_size=25),
+        labelling=LabellingConfig(api_key_env="PROMETHEON_TEST_KEY", max_in_flight=4),
         evaluation=EvaluationConfig(batch_size=50),
         # The corpus here is small, so the default measurement floor of 100
         # would rank nobody. Lowered rather than inflating the fixture, because
@@ -394,6 +401,7 @@ def _run(
     policy: Policy = POLICY,
     broken: frozenset[str] = frozenset(),
     check_runtime: Any = None,
+    seen: list[dict[str, str]] | None = None,
 ) -> Any:
     _install_engines(monkeypatch, accuracy, broken)
     with (
@@ -405,7 +413,7 @@ def _run(
             transport=world["hub"].transport,
             now=lambda: NOW,
         ) as hub,
-        _labeller(world["truth"]) as labeller,
+        _labeller(world["truth"], seen) as labeller,
     ):
         return run_cycle(
             config=config,
@@ -688,10 +696,15 @@ def test_a_miner_is_never_scored_on_content_from_its_own_coldkey(
     assert not any(item_id.startswith(("ta", "tc")) for item_id in a_view)
 
 
-def test_near_duplicates_are_removed_before_labelling_and_cost_the_copier(
+def test_a_copy_bitfan_let_through_is_scored_like_any_other_post(
     config: Config, world: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """B posts a copy of A's earlier item, reworded only in case and punctuation."""
+    """The validator removes nothing: BitFan refuses a near-copy when it is written.
+
+    B posts a copy of A's earlier item, reworded only in case and punctuation.
+    Had BitFan let it through, it is one of B's accepted test posts like any
+    other: labelled, and counted in B's ``S``.
+    """
     hub: FakeHub = world["hub"]
     original = world["tests"][0]
     copy = {
@@ -724,13 +737,31 @@ def test_near_duplicates_are_removed_before_labelling_and_cost_the_copier(
         monkeypatch=monkeypatch,
     )
 
-    assert dict(result.duplicates) == {"tb-copy": original["id"]}
-    assert "tb-copy" not in result.labelled.labels
+    assert "tb-copy" in result.labelled.labels
     scores = {score.hotkey: score for score in result.dataset_scores}
-    assert scores[MINER_B.ss58_address].submitted_count == 10
+    assert scores[MINER_B.ss58_address].submitted_count == 11
 
 
-def test_labelling_batches_are_deterministic_and_interleaved(
+def test_every_post_is_labelled_once_and_the_labeller_never_sees_a_claim(
+    config: Config, world: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One request per post, carrying its id and text and nothing else."""
+    seen: list[dict[str, str]] = []
+    result = _run(config, world, accuracy={}, monkeypatch=monkeypatch, seen=seen)
+
+    every_post = {line["id"] for line in (*world["tests"], *world["productions"])}
+    assert sorted(item["id"] for item in seen) == sorted(every_post)
+    assert all(set(item) == {"id", "content"} for item in seen)
+    assert set(result.labelled.labels) == every_post
+    # The type the labeller is handed has no field a claim could travel in.
+    assert {field.name for field in dataclasses.fields(LabelItem)} == {
+        "item_id",
+        "content",
+        "source",
+    }
+
+
+def test_posts_are_handed_to_the_labeller_in_one_order_with_their_source(
     config: Config, world: dict[str, Any]
 ) -> None:
     from prometheon.cli.cycle import _label_items_for
@@ -743,24 +774,22 @@ def test_labelling_batches_are_deterministic_and_interleaved(
         transport=world["hub"].transport,
         now=lambda: NOW,
     ) as hub:
-        data = hub.fetch_day(DAY, scoring_version="prometheon-scoring/3.0")
+        data = hub.fetch_day(DAY, scoring_version=SCORING_VERSION)
 
-    kept = frozenset(line.item_id for line in (*data.feed.test, *data.feed.production))
     coldkeys = {miner.hotkey: miner.coldkey for miner in data.epoch.miners}
-    first = [item.item_id for item in _label_items_for(data, kept, coldkeys)]
-    second = [item.item_id for item in _label_items_for(data, kept, coldkeys)]
+    first = [item.item_id for item in _label_items_for(data, coldkeys)]
+    second = [item.item_id for item in _label_items_for(data, coldkeys)]
     assert first == second
 
-    items = _label_items_for(data, kept, coldkeys)
-    sources = [item.author is None for item in items]
-    runs = sum(1 for a, b in itertools.pairwise(sources) if a != b)
-    assert runs > 1, "test and production are still contiguous"
-    # The tripwire's author is the coldkey, so two hotkeys of one party are one source.
-    assert {item.author for item in items if item.author} == {
+    items = _label_items_for(data, coldkeys)
+    # The source is the coldkey, so two hotkeys of one party are one source
+    # when a day's exclusions are judged.
+    assert {item.source for item in items if item.source} == {
         COLD_A.ss58_address,
         COLD_B.ss58_address,
         COLD_C.ss58_address,
     }
+    assert sum(1 for item in items if item.source is None) == len(world["productions"])
 
 
 def test_the_published_record_reproduces_the_vector(

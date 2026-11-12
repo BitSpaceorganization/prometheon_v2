@@ -1,15 +1,17 @@
 """A labelling harness that exercises the real client over a mock socket.
 
-Nothing here stubs :class:`OpenAICompatibleClient`. Every batching test drives
+Nothing here stubs :class:`OpenAICompatibleClient`. Every labelling test drives
 the shipped client, the shipped prompt, and the shipped envelope through an
 ``httpx.MockTransport``, so a handler sees the bytes a provider would see and
-the tests cannot agree with a mock that drifted from the code.
+the tests cannot agree with a mock that drifted from the code. The labeller
+calls the client from several threads, so the harness records under a lock.
 """
 
 from __future__ import annotations
 
 import json
 import re
+import threading
 from collections.abc import Callable, Iterator
 from typing import Any
 
@@ -23,14 +25,15 @@ from prometheon.labelling.prompt import ITEMS_BEGIN_PREFIX, ITEMS_END_PREFIX
 #: Greedy, because an item may contain text that looks like the closing marker
 #: and the *last* one is the real boundary. That forgery is exactly what the
 #: production nonce makes impossible to attempt.
-_ITEMS_RE = re.compile(
-    rf"{ITEMS_BEGIN_PREFIX}(?P<fence>[0-9a-f]+)\n(?P<items>.*)\n{ITEMS_END_PREFIX}(?P=fence)",
+_ITEM_RE = re.compile(
+    rf"{ITEMS_BEGIN_PREFIX}(?P<fence>[0-9a-f]+)\n(?P<item>.*)\n{ITEMS_END_PREFIX}(?P=fence)",
     re.DOTALL,
 )
 
-#: What a handler may return: the assistant's text, or a whole HTTP response
-#: when the test is about the transport rather than the answer.
-Handler = Callable[[list[dict[str, str]]], "str | httpx.Response"]
+#: What a handler is given: the item a request carried, or ``None`` when the
+#: test sent a prompt with no item block. What it may return: the assistant's
+#: text, or a whole HTTP response when the test is about the transport.
+Handler = Callable[["dict[str, str] | None"], "str | httpx.Response"]
 
 
 def completion_envelope(
@@ -61,30 +64,29 @@ def completion_envelope(
     }
 
 
-def sent_items(request: httpx.Request) -> list[dict[str, str]]:
-    """The items a request actually carried, read back out of the prompt."""
+def sent_item(request: httpx.Request) -> dict[str, str] | None:
+    """The item a request actually carried, read back out of the prompt."""
     body = json.loads(request.content)
     user_prompt = body["messages"][1]["content"]
-    match = _ITEMS_RE.search(user_prompt)
+    match = _ITEM_RE.search(user_prompt)
     if match is None:
-        return []
-    parsed: list[dict[str, str]] = json.loads(match.group("items"))
+        return None
+    parsed: dict[str, str] = json.loads(match.group("item"))
     return parsed
 
 
 def sent_fence(request: httpx.Request) -> str:
     """The nonce that fenced a request's item block."""
     body = json.loads(request.content)
-    match = _ITEMS_RE.search(body["messages"][1]["content"])
+    match = _ITEM_RE.search(body["messages"][1]["content"])
     assert match is not None, "the user prompt carried no fenced item block"
     return match.group("fence")
 
 
-def verdicts(items: list[dict[str, str]], truth: dict[str, bool]) -> str:
-    """A well-formed answer for every item, from a truth table."""
-    return json.dumps(
-        {"labels": [{"id": item["id"], "violates": truth[item["id"]]} for item in items]}
-    )
+def verdict(item: dict[str, str] | None, truth: dict[str, bool]) -> str:
+    """A well-formed answer for the item, from a truth table."""
+    assert item is not None, "the request carried no item"
+    return json.dumps({"id": item["id"], "violates": truth[item["id"]]})
 
 
 class Harness:
@@ -92,14 +94,18 @@ class Harness:
 
     def __init__(self, handler: Handler, config: LabellingConfig, **kwargs: Any) -> None:
         self.requests: list[httpx.Request] = []
-        self.batches: list[list[str]] = []
+        #: The id each request asked about, in the order requests arrived.
+        self.asked: list[str] = []
         self.sleeps: list[float] = []
+        self._lock = threading.Lock()
 
         def respond(request: httpx.Request) -> httpx.Response:
-            self.requests.append(request)
-            items = sent_items(request)
-            self.batches.append([item["id"] for item in items])
-            outcome = handler(items)
+            item = sent_item(request)
+            with self._lock:
+                self.requests.append(request)
+                if item is not None:
+                    self.asked.append(item["id"])
+            outcome = handler(item)
             if isinstance(outcome, httpx.Response):
                 return outcome
             return httpx.Response(200, json=completion_envelope(outcome))

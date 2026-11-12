@@ -128,7 +128,10 @@ class LabellingConfig(BaseModel):
     model: str = Field(default="gpt-5.6-sol", min_length=1)
     base_url: str = Field(default="https://api.openai.com/v1", min_length=1)
     api_key_env: str = Field(default="OPENAI_API_KEY", min_length=1)
-    batch_size: int = Field(default=100, ge=1, le=100)
+    #: Labelling requests open at once. Each request carries one post, so this
+    #: is what decides how fast a day is labelled. Raise it if your provider's
+    #: rate limit allows; a rate-limited request is retried with backoff.
+    max_in_flight: int = Field(default=8, ge=1, le=64)
     #: Sampling temperature for the labelling request.
     #:
     #: ``0`` is what keeps ground truth from wandering between validators, and
@@ -288,11 +291,6 @@ class ScoringConfig(BaseModel):
     #: counts come from the signed epoch; see
     #: :func:`prometheon.hub.epoch.is_eligible`.
     min_members: int = Field(default=30, ge=0)
-
-    #: Two items whose normalised text has 64-bit SimHashes within this many bits
-    #: are one item, and only the earliest counts. Bounded, because each bit
-    #: allowed narrows the band index that makes the comparison fast.
-    near_duplicate_max_hamming: int = Field(default=3, ge=0, le=7)
 
     #: The smallest number of scored items a model may hold a rank share on.
     #:

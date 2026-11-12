@@ -41,7 +41,7 @@ from prometheon.hub.models import (
     is_hex64,
     is_ss58,
 )
-from prometheon.scoring.dedupe import normalized_sha256
+from prometheon.hub.normalize import normalized_sha256
 
 #: Ceiling on one decompressed file. A day is a few hundred thousand short posts
 #: at most; the cap only stops a corrupt or hostile archive from exhausting
@@ -107,8 +107,9 @@ class DayFeed:
     production: tuple[ProductionLine, ...]
     rejected: tuple[RejectedLine, ...]
     #: Test lines whose ``normalized_sha256`` disagreed with this validator's own
-    #: recomputation. Not rejected: the validator uses its own value. Counted so
-    #: a normaliser drift between BitFan and the subnet is visible in the log.
+    #: recomputation. Not rejected, and not used for scoring: BitFan refuses
+    #: near-copies when they are written, and this count is how a drift between
+    #: its normaliser and the subnet's becomes visible in the operator's log.
     hash_mismatches: int = 0
 
 
@@ -192,9 +193,9 @@ def parse_feed(
 def parse_timestamp_micros(value: object) -> int | None:
     """RFC 3339 to integer microseconds since the epoch, or ``None``.
 
-    Integer arithmetic throughout: the result orders near-duplicates, and a
-    float could put two items in a different order on two machines. Fractions
-    beyond microseconds are truncated.
+    Integer arithmetic throughout, so the check that a post falls inside the
+    day reads the same on every machine. Fractions beyond microseconds are
+    truncated.
     """
     if not isinstance(value, str):
         return None

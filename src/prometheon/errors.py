@@ -271,11 +271,11 @@ class LabellingError(PrometheonError):
 
 
 class LabelResponseError(LabellingError):
-    """The labeller returned something that is not a usable answer set.
+    """The labeller returned something that is not a usable answer.
 
-    Raised when ids do not echo, the count is wrong, or a verdict is not a
-    boolean. Never repaired by guessing: the batch is split and retried, and
-    items that still fail are dropped from the corpus.
+    Raised when the answer does not echo the post's id, carries other keys, or
+    its verdict is not a boolean. Never repaired by guessing: the post is asked
+    once more, and dropped from the corpus if it still fails.
     """
 
     code: str = "labelling.response_invalid"

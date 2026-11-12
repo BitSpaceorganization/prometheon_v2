@@ -1,9 +1,10 @@
 """Data contribution scoring: amount times quality, balanced by construction.
 
-For one miner's verified test items in the day, after near-duplicates have been
-removed from the whole day's corpus (:mod:`prometheon.scoring.dedupe`)::
+For one miner's verified test items in the day, as the feed carried them. BitFan
+refuses a near-copy of an earlier post when it is written, so every accepted
+test line counts::
 
-    S       = items left
+    S       = the miner's accepted test items
     V_pos   = items claimed violating that the labeller confirmed violating
     V_neg   = items claimed compliant that the labeller confirmed compliant
 
@@ -39,7 +40,7 @@ class DatasetSubmission:
     """One miner's test content for the day, as this validator labelled it."""
 
     hotkey: str
-    #: ``S``: the miner's items left after near-duplicate removal.
+    #: ``S``: the miner's accepted test items.
     submitted_count: int
     #: ``V_pos``: claimed violating, confirmed violating.
     violating_confirmed: int

@@ -37,7 +37,7 @@ Built at 01:00 UTC on D+1 from the feed for day D and the chain, frozen at the f
   "netuid": 1,
   "day": "2026-11-05",
   "frozen_block": 123456,
-  "scoring_version": "prometheon-scoring/3.0",
+  "scoring_version": "prometheon-scoring/3.1",
   "policy": {"version": "2026-08-07", "sha256": "<sha256 of content_policy.md>"},
   "miners": [
     {"hotkey": "5...", "uid": 3, "coldkey": "5...",
@@ -105,7 +105,7 @@ So a credit is spent only when a model is evaluated. Anyone can recompute the sp
 - `body` must be non-empty, at most 32,000 characters.
 - Other fields are ignored.
 
-**Production line:** `{"id","body","created_at"}`, plus an optional `verified: true` and nothing else. A production line carrying `author`, `miner_hotkey` or any other field is rejected, because production content is unattributed.
+**Production line:** `{"id","body","created_at"}`, plus an optional `verified: true` and nothing else. BitFan samples about 200 public posts a day into this file. A production line carrying `author`, `miner_hotkey` or any other field is rejected, because production content is unattributed.
 
 **Both:**
 
@@ -128,7 +128,7 @@ sha256 (lowercase hex) of the UTF-8 text after, in order:
 | `h.e.l.l.o` | `hello` | `2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824` |
 | `!!!` | empty | `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855` |
 
-A missing or malformed value rejects the line. A well-formed value that disagrees with the validator's own computation doesn't reject it: the validator uses its own value and logs the count.
+A missing or malformed value rejects the line. A well-formed value that disagrees with the validator's own computation doesn't reject it: the validator logs the count. Validators no longer use the value for scoring. BitFan refuses a near-copy when it's written, and the field stays so the feed format doesn't change.
 
 ---
 
