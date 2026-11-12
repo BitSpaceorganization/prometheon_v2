@@ -199,8 +199,9 @@ class ModerationEngine:
         self._negative_ids: list[int] = []
         #: Kwarg that asks the model for the final position's logits only, if it
         #: accepts one. Resolved from the signature at load rather than assumed:
-        #: the pinned transformers range spans a rename, and guessing wrong is a
-        #: TypeError on every batch. Empty means the model takes neither, and the
+        #: a few architectures do not take it, and a 5.x forward accepts
+        #: arbitrary ``**kwargs``, so a name it does not know is silently dropped
+        #: rather than refused. Empty means the model does not take it, and the
         #: full logits tensor comes back.
         self._last_logit_only: dict[str, int] = {}
 
@@ -217,12 +218,16 @@ class ModerationEngine:
         # `trust_remote_code=False` stated rather than left to the default: a
         # miner's `config.json` can name custom code in `auto_map`, and nothing
         # a miner ships may run on a validator.
+        # `dtype=` is the name 5.x reads; `torch_dtype=` survives there only as
+        # a deprecated alias. The default changed too, to "auto", the
+        # checkpoint's own dtype: a dtype that fails to arrive no longer means
+        # float32, it means whatever the miner shipped.
         self._tokenizer = AutoTokenizer.from_pretrained(
             self._model_path, revision=self._revision, trust_remote_code=False
         )
         self._model = AutoModelForCausalLM.from_pretrained(
             self._model_path,
-            torch_dtype=dtype,
+            dtype=dtype,
             device_map=device if device != "cpu" else None,
             revision=self._revision,
             trust_remote_code=False,
@@ -273,9 +278,10 @@ class ModerationEngine:
             parameters = inspect.signature(self._model.forward).parameters
         except (TypeError, ValueError):  # pragma: no cover - exotic model wrappers
             return {}
-        for name in ("num_logits_to_keep", "logits_to_keep"):
-            if name in parameters:
-                return {name: 1}
+        # Only the current name. 4.44-4.46 called it `num_logits_to_keep`; 4.49
+        # renamed it, and no 5.x forward declares the old one.
+        if "logits_to_keep" in parameters:
+            return {"logits_to_keep": 1}
         return {}
 
     def _single_token_ids(self, candidates: tuple[str, ...]) -> list[int]:
@@ -328,12 +334,34 @@ class ModerationEngine:
 
     def _build_prefix_cache(self, policy_ids: list[int]) -> tuple[Any, int]:
         import torch
+        from transformers.cache_utils import DynamicCache, DynamicLayer, DynamicSlidingWindowLayer
 
         device = next(self._model.parameters()).device
         input_ids = torch.tensor([policy_ids], device=device)
         with torch.no_grad():
             output = self._model(input_ids=input_ids, use_cache=True)
-        return output.past_key_values, len(policy_ids)
+        # Absent rather than None on some outputs (Mamba keeps `cache_params`).
+        cache = getattr(output, "past_key_values", None)
+
+        # The prefix can be shared only by layers that never write into their
+        # own tensors. These two concatenate and rebind on every update, so the
+        # prefix behind the views `_expanded_cache` hands out is never touched.
+        # A static layer, or the convolution and recurrent state of a
+        # linear-attention or hybrid model, is updated in place, and through a
+        # one-row window that write lands in the prefix every later item reads.
+        # State kept beside `keys` and `values`, as a quantised layer keeps it,
+        # would not be expanded at all. Refused here, by name, rather than
+        # failing, or worse not failing, somewhere inside the forward.
+        shareable = (DynamicLayer, DynamicSlidingWindowLayer)
+        layers = getattr(cache, "layers", ())
+        if type(cache) is not DynamicCache or any(type(layer) not in shareable for layer in layers):
+            kinds = ", ".join(sorted({type(layer).__name__ for layer in layers}))
+            raise EngineError(
+                f"the model's cache is a {type(cache).__name__} ({kinds or 'no layers'}); the "
+                "engine shares the policy prefix only across plain and sliding-window attention "
+                "layers"
+            )
+        return cache, len(policy_ids)
 
     def _expanded_cache(self, prefix_cache: Any, size: int) -> Any:
         """The policy prefix, shared read-only across ``size`` rows.
@@ -342,16 +370,28 @@ class ModerationEngine:
         the batch dimension is a stride-0 view over one set of tensors. Copying it
         per row is what the per-item path used to do, and for a 7B checkpoint that
         was ~170 MB of pure duplication per item.
-        """
-        from transformers.cache_utils import DynamicCache
 
-        layers = prefix_cache if isinstance(prefix_cache, tuple) else prefix_cache.to_legacy_cache()
-        return DynamicCache.from_legacy_cache(
-            tuple(
-                tuple(tensor.expand(size, *tensor.shape[1:]) for tensor in layer)
-                for layer in layers
-            )
-        )
+        Each layer is a shallow copy of the prefix's own, with the views in place
+        of its tensors. 4.4x round-tripped through the legacy tuple format, which
+        5.x removed along with ``to_legacy_cache`` and ``from_legacy_cache``.
+        Rebuilding layers from bare tensors would also drop what a tensor does not
+        carry: a sliding-window layer (Gemma 3, for one) holds only the window's
+        tail of the prefix and counts the tokens it has seen, and a plain layer
+        rebuilt from that tail would size every mask as if the policy were only
+        that tail. Refilling fresh layers through ``update`` is no better: it
+        concatenates, which materialises every row and undoes the point of the
+        view.
+        """
+        import copy
+
+        rows = copy.copy(prefix_cache)
+        rows.layers = []
+        for layer in prefix_cache.layers:
+            row = copy.copy(layer)
+            row.keys = layer.keys.expand(size, *layer.keys.shape[1:])
+            row.values = layer.values.expand(size, *layer.values.shape[1:])
+            rows.layers.append(row)
+        return rows
 
     def _decide_batch(
         self, prefix_cache: Any, prefix_len: int, batch_ids: Sequence[list[int]]
@@ -369,6 +409,14 @@ class ModerationEngine:
         every row. Passing them makes each row's first real token sit at
         ``prefix_len`` regardless of how much padding precedes it, which is where
         the per-item path put it.
+
+        Sliding-window layers are the exception. Their window is counted in
+        cache slots, padding included, so a padded row reaches that many fewer
+        policy tokens back than the same item judged alone. Where the window is
+        shorter than the policy, as in Gemma 3, an item's probabilities move
+        with the length of the longest item in its window. Packing is pinned, so
+        every validator still computes the same numbers, and full-attention
+        layers are unaffected.
 
         Out of memory is not fatal and not a model failure. The window is halved
         and retried, down to a single item, because a checkpoint that fits the
@@ -450,30 +498,24 @@ class ModerationEngine:
         input_ids = torch.tensor([item_ids], device=device)
         attention_mask = torch.ones((1, prefix_len + len(item_ids)), device=device)
 
-        # The prefix arrives as whatever the pinned transformers handed back,
-        # and across 4.44-4.46 that is the *legacy tuple*: a forward called with
-        # `past_key_values=None` takes the `return_legacy_cache` path and
-        # converts the `DynamicCache` back to tuples on the way out. Feeding
-        # that tuple straight back only works when `use_cache=True`, which is
-        # the branch that converts it; with `use_cache=False` it is passed
-        # through untouched and the attention layer calls `get_seq_length()` on
-        # a tuple. Normalising here rather than at the call site keeps both
-        # shapes working if a later release stops downgrading the cache.
+        # 4.44-4.46 handed the prefix back as the *legacy tuple*: a forward
+        # called with `past_key_values=None` took the `return_legacy_cache` path
+        # and converted the `DynamicCache` to tuples on the way out. Fed back
+        # with `use_cache=False`, the one branch that did not rewrap it, the
+        # tuple reached attention, which called `get_seq_length()` on it, and
+        # every item failed for every model. 5.x has no tuple format left and
+        # `_build_prefix_cache` accepts only a `DynamicCache`, so a private deep
+        # copy is all this needs.
         past = copy.deepcopy(prefix_cache)
-        if isinstance(past, tuple):
-            from transformers.cache_utils import DynamicCache
-
-            past = DynamicCache.from_legacy_cache(past)
 
         with torch.no_grad():
             output = self._model(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
                 past_key_values=past,
-                # True because the cache object above is only accepted on this
-                # branch. Nothing is carried between items: `past` is a private
-                # copy of the policy prefix and is discarded when this returns,
-                # so one item's activations still cannot reach another's verdict.
+                # Nothing is carried between items: `past` is a private copy of
+                # the policy prefix and is discarded when this returns, so one
+                # item's activations still cannot reach another's verdict.
                 use_cache=True,
             )
 

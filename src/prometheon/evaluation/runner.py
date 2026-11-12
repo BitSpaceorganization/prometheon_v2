@@ -47,11 +47,17 @@ DEFAULT_BATCH_SIZE = 100
 #: gated or missing a file: the miner's fault, on every validator alike. Matched
 #: by name because the package is an optional extra. Anything else, a full
 #: disk, a refused connection, a rate limit, is this validator's problem.
+#:
+#: Matched by exact name, so a rename is a reclassification. From 1.0 a file
+#: missing on the Hub raises ``RemoteEntryNotFoundError``; ``EntryNotFoundError``
+#: is only its base class now. Without the new name, a miner's missing file
+#: would stop every validator's cycle instead of scoring that one model.
 _MINER_SIDE_DOWNLOAD_ERRORS = frozenset(
     {
         "RepositoryNotFoundError",
         "RevisionNotFoundError",
         "EntryNotFoundError",
+        "RemoteEntryNotFoundError",
         "GatedRepoError",
         "DisabledRepoError",
     }

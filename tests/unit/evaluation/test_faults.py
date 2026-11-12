@@ -76,8 +76,10 @@ def _fake_transformers(torch: types.ModuleType) -> types.ModuleType:
             return types.SimpleNamespace(logits=torch._logits)  # type: ignore[attr-defined]
 
     transformers.GPT2Config = lambda **kwargs: kwargs  # type: ignore[attr-defined]
+    # `dtype`, the keyword transformers 5.x reads; the old `torch_dtype` alias
+    # is refused here so the canary cannot drift back onto it.
     transformers.AutoModelForCausalLM = types.SimpleNamespace(  # type: ignore[attr-defined]
-        from_config=lambda config, torch_dtype=None: Model()
+        from_config=lambda config, dtype=None: Model()
     )
     return transformers
 
@@ -138,6 +140,22 @@ class TestDownloads:
             pass
 
         self._hub(monkeypatch, RepositoryNotFoundError("404"))
+        with pytest.raises(CheckpointUnavailableError):
+            download_checkpoint(TARGET)
+
+    def test_a_file_missing_from_the_repository_is_the_miners_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`huggingface_hub` 1.0 raises this as `RemoteEntryNotFoundError`.
+
+        Errors are matched by name, so the rename alone would have made a
+        miner's missing file a validator fault that stops the whole cycle.
+        """
+
+        class RemoteEntryNotFoundError(Exception):
+            pass
+
+        self._hub(monkeypatch, RemoteEntryNotFoundError("404"))
         with pytest.raises(CheckpointUnavailableError):
             download_checkpoint(TARGET)
 
