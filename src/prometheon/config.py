@@ -1,27 +1,32 @@
 """TOML configuration for miners and validators.
 
-Unknown keys are rejected rather than ignored. A typo in a config file should
-fail at load with the offending field named, not silently take a default and
-produce a subtly different weight vector three hours later.
+Only what is the operator's to choose: where the chain and the hub are, which
+wallet signs, which labeller to pay, which card to run on, and how the
+validator runs. The rules every validator applies are code, in
+:mod:`prometheon.rules`, so a release carries its rules with it and an update
+never needs an operator to edit this file.
 
-Every reward-affecting constant lives here with its default, so the values that
-decide emissions are visible in one place rather than scattered through the
-scoring modules.
+Unknown keys are rejected rather than ignored. A typo in a config file should
+fail at load with the offending field named, not silently take a default. The
+one exception is a setting an earlier release read and this one doesn't
+(:data:`RETIRED_SETTINGS`): it is ignored, with a note.
 """
 
 from __future__ import annotations
 
 import re
 import sys
+from collections.abc import Mapping
 from enum import Enum
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, ClassVar, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from prometheon.errors import ConfigError, OutdatedConfigError
 from prometheon.security.signatures import is_ed25519_public_key
-from prometheon.version import SCORING_VERSION, SUBMISSION_FEE_ALPHA
+from prometheon.version import SUBMISSION_FEE_ALPHA
 
 if sys.version_info >= (3, 11):
     import tomllib
@@ -168,30 +173,14 @@ class LabellingConfig(BaseModel):
 
 
 class EvaluationConfig(BaseModel):
-    """Running miners' models on this validator's own hardware."""
+    """Running miners' models on this validator's own hardware.
+
+    Only what is the operator's to choose: the card and how the disk is used.
+    The rules a model is evaluated under, the time limit, the batch size and
+    the size ceilings, are code (:mod:`prometheon.rules`).
+    """
 
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", frozen=True)
-
-    batch_size: int = Field(default=100, ge=1, le=100)
-
-    #: Ceiling on a submitted model's weights, in bytes.
-    #:
-    #: Every validator downloads and runs every eligible model, so this is not
-    #: a miner's private trade-off: it decides what validating costs. 16 GiB
-    #: holds a model at the 4-billion parameter cap in 32-bit floats, and the
-    #: validator loads it in 16-bit, so it fits one 24 GB card with room for
-    #: the cache. The hub lists only models under the same ceiling.
-    #:
-    #: Enforced from the Hugging Face API before anything is downloaded, so an
-    #: oversized model costs the subnet one request rather than an hour of
-    #: bandwidth on every validator at once.
-    max_weight_bytes: int = Field(default=16 * 1024**3, gt=0)
-
-    #: Ceiling on everything in a repository that is not weights, in bytes:
-    #: config, tokenizer, README. Every validator downloads all of it, so a
-    #: multi-gigabyte README is a way to fill every validator's disk at once.
-    #: Real tokenizers are a few megabytes.
-    max_non_weight_bytes: int = Field(default=64 * 1024**2, gt=0)
 
     #: Torch dtype the weights are loaded in, pinned rather than inferred.
     #:
@@ -199,8 +188,8 @@ class EvaluationConfig(BaseModel):
     #: is the largest avoidable source of divergence: the same checkpoint in
     #: bfloat16 and float16 puts different probability mass on YES and NO, so
     #: near-ties can flip between validators that only differ in a default.
-    #: Residual disagreement from differing GPU kernels is left to consensus,
-    #: which is what consensus is for; a silent dtype difference is not.
+    #: Keep the default on a GPU. It is a setting only because a CPU, as on a
+    #: local chain, needs float32.
     torch_dtype: Literal["float16", "bfloat16", "float32"] = "float16"
 
     #: Where to run. ``auto`` picks CUDA when present and falls back to CPU,
@@ -208,135 +197,18 @@ class EvaluationConfig(BaseModel):
     #: a machine without a GPU.
     device: str = Field(default="auto", pattern=r"^(auto|cpu|mps|cuda(:[0-9]+)?)$")
 
-    #: Seconds one model has to load and judge every item of its corpus.
-    #:
-    #: A model that has not finished within it gets no score from this
-    #: validator for the day: it is published as ``timed_out`` and is not
-    #: ranked. Its unfinished items are not counted as wrong, so a model is
-    #: never scored on how far it got.
-    #:
-    #: 30 minutes is far more than a model at the 4-billion parameter cap needs
-    #: on one 24 GB card for a day's corpus, which is minutes. The limit exists
-    #: for a model that would hold up the cycle for hours, not to separate fast
-    #: models from slow ones, and the margin keeps two validators on different
-    #: cards from disagreeing about an honest model. Every validator should run
-    #: the shipped value.
-    model_timeout_seconds: float = Field(default=1800.0, gt=0)
-
     #: Delete each model's downloaded snapshot once it has been scored.
     #:
     #: Off by default: the cache is keyed by revision, so keeping it means a
     #: miner who re-commits an unchanged model costs one HEAD request and a
     #: validator restarting mid-cycle does not re-download the day.
     #:
-    #: Turn it on when the disk is smaller than the field. One day's eligible
-    #: set is routinely over 100 GiB of weights, and nothing evicts from the
-    #: cache, so a host with less free space than that cannot finish a cycle;
-    #: the failure arrives as a disk-full error partway through scoring. With
-    #: this set, the requirement is the largest single model rather than the sum
-    #: of all of them, paid for by re-downloading each model every day.
+    #: Turn it on when the disk is smaller than the field. Nothing evicts from
+    #: the cache, so a host with less free space than the day's models fails
+    #: partway through scoring with a disk-full error. With this set, the
+    #: requirement is the largest single model rather than the sum of all of
+    #: them, paid for by re-downloading each model every day.
     discard_checkpoints: bool = Field(default=False)
-
-
-class ScoringConfig(BaseModel):
-    """Every constant that moves emissions.
-
-    Defaults are the agreed reward design. Changing one changes payouts, so
-    each carries the reasoning that produced it.
-    """
-
-    model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", frozen=True)
-
-    #: The rules this file was written for. :func:`load_config` refuses a file
-    #: that does not state the version this build implements, so a config copied
-    #: under older rules fails loudly instead of running new code on old numbers.
-    scoring_version: str = SCORING_VERSION
-
-    #: The data contribution pool, as a share of **total** emission: 70%.
-    #:
-    #: It starts high because inviting real people and getting them to write
-    #: test content costs far more today than training a text model. As user
-    #: numbers grow and model requirements get harder, the share moving to model
-    #: training is expected to reach 80 to 90%.
-    #:
-    #: Every validator must agree on this number, as on everything in this
-    #: section. It is not enforced by consensus, so one running a different
-    #: value computes a different vector from identical inputs and loses vtrust
-    #: for a configuration difference.
-    dataset_share_bp: int = Field(default=7000, ge=0, le=10000)
-
-    #: Only the top contributors are paid, proportionally to score. With fewer
-    #: than this many scoring above zero, the pool divides among those present.
-    dataset_top_n: int = Field(default=10, ge=1)
-
-    #: The model pool: a share of **total** emission per rank, 25%, 4% and 1% for
-    #: the first three models. A place nobody fills goes to the lowest-ranked
-    #: winner present: two models take 25% and 5%, one model takes all 30%. The
-    #: pool burns only when no model qualifies.
-    #:
-    #: Constrained here rather than at first use. An empty or negative-bearing
-    #: tuple used to validate cleanly and only fail at ``allocate_model_pool``,
-    #: which is the *last* step of a cycle. A typo in the TOML cost a full day
-    #: of labelling and evaluation before anything complained.
-    model_rank_shares_bp: tuple[int, ...] = Field(default=(2500, 400, 100), min_length=1)
-
-    #: The entry gate, for both pools: a miner counts only with at least this
-    #: many identity-verified active members in its group ...
-    min_verified_active_members: int = Field(default=10, ge=0)
-
-    #: ... and at least this many members in total. Every member is
-    #: phone-verified, and the total includes the verified active ones. Both
-    #: counts come from the signed epoch; see
-    #: :func:`prometheon.hub.epoch.is_eligible`.
-    min_members: int = Field(default=30, ge=0)
-
-    #: The smallest number of scored items a model may hold a rank share on.
-    #:
-    #: Accuracy over one item is 100% or 0% and means nothing either way, but
-    #: it sorts above a model that got 4999 of 5000 right, and takes twice its
-    #: emission. That is reachable rather than theoretical: a miner's own test
-    #: content is excluded from its corpus, so a miner who supplies almost all
-    #: of a day's test content is scored on almost nothing. Below this floor a
-    #: model is not ranked at all.
-    #:
-    #: The rest of the model rules, the 4-billion parameter cap, the size
-    #: penalty and the one-point ranking band, are published constants in
-    #: :mod:`prometheon.scoring.size` and :mod:`prometheon.scoring.model`,
-    #: because the hub applies the cap too.
-    model_min_scored_items: int = Field(default=100, ge=1)
-
-    @field_validator("scoring_version")
-    @classmethod
-    def _this_builds_rules(cls, value: str) -> str:
-        if value != SCORING_VERSION:
-            raise ValueError(
-                f"scoring_version is {value!r}, but this build implements {SCORING_VERSION!r}"
-            )
-        return value
-
-    @field_validator("model_rank_shares_bp")
-    @classmethod
-    def _shares_are_payable(cls, shares: tuple[int, ...]) -> tuple[int, ...]:
-        if any(share < 0 for share in shares):
-            raise ValueError(f"model rank shares must not be negative, got {shares}")
-        if sum(shares) == 0:
-            raise ValueError("model rank shares are all zero; no model could ever be paid")
-        return shares
-
-    @model_validator(mode="after")
-    def _shares_fit_in_the_total(self) -> ScoringConfig:
-        """The shares are slices of one total, so together they cannot pass 100%.
-
-        Less than 100% is allowed and means a standing burn: whatever no share
-        names goes to the burn hotkey every cycle.
-        """
-        allocated = self.dataset_share_bp + sum(self.model_rank_shares_bp)
-        if allocated > 10000:
-            raise ValueError(
-                f"dataset_share_bp + model_rank_shares_bp = {allocated} basis points, "
-                "over 100% of emission. They are shares of the total, not ratios"
-            )
-        return self
 
 
 class ValidatorMode(str, Enum):
@@ -400,6 +272,22 @@ class CreditsConfig(BaseModel):
     treasury_coldkey: str = ""
 
 
+class UpdateConfig(BaseModel):
+    """Updating to new releases on its own, which is off unless turned on."""
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", frozen=True)
+
+    #: Move to each new release tag on its own: ``validator schedule`` checks
+    #: every 30 minutes, and so does the shipped systemd timer. Off by default,
+    #: because an operator should choose to let code change under them.
+    auto: bool = False
+    #: systemd units to restart once a new release is current, for a process
+    #: that keeps running, such as ``validator schedule`` under its own unit.
+    #: The shipped units start a fresh process from ``<root>/current`` every
+    #: time, so they need none.
+    restart_units: tuple[str, ...] = ()
+
+
 class MinerRuntimeConfig(BaseModel):
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", frozen=True)
     hf_repo: str = Field(default="", max_length=256)
@@ -420,14 +308,34 @@ class Config(BaseModel):
     hub: HubConfig
     labelling: LabellingConfig = LabellingConfig()
     evaluation: EvaluationConfig = EvaluationConfig()
-    scoring: ScoringConfig = ScoringConfig()
     validator: ValidatorRuntimeConfig = ValidatorRuntimeConfig()
     miner: MinerRuntimeConfig = MinerRuntimeConfig()
     credits: CreditsConfig = CreditsConfig()
+    update: UpdateConfig = UpdateConfig()
 
 
-def load_config(path: Path | str) -> Config:
-    """Read and validate a TOML config, or raise :class:`ConfigError`."""
+#: Settings earlier releases read and this one doesn't, by section; ``None``
+#: retires a whole section. A file that still has them loads: each is ignored,
+#: with a note saying so, so an update never needs an operator to edit their
+#: file. A release that retires a setting adds it here.
+RETIRED_SETTINGS: Final[Mapping[str, frozenset[str] | None]] = MappingProxyType(
+    {
+        # Every rule moved into the code, in prometheon.rules.
+        "scoring": None,
+        "labelling": frozenset({"batch_size"}),
+        "evaluation": frozenset(
+            {"batch_size", "max_weight_bytes", "max_non_weight_bytes", "model_timeout_seconds"}
+        ),
+    }
+)
+
+
+def load_config(path: Path | str, *, notes: list[str] | None = None) -> Config:
+    """Read and validate a TOML config, or raise :class:`ConfigError`.
+
+    Settings an earlier release read and this one doesn't are dropped, and a
+    line saying so is appended to ``notes``.
+    """
     path = Path(path)
     try:
         raw: dict[str, Any] = tomllib.loads(path.read_text(encoding="utf-8"))
@@ -438,40 +346,53 @@ def load_config(path: Path | str) -> Config:
     except OSError as exc:
         raise ConfigError(f"config could not be read: {exc}") from exc
 
-    _require_current_rules(raw, path)
+    _refuse_v2_and_the_fee(raw, path)
+    dropped = _drop_retired(raw)
+    if dropped and notes is not None:
+        notes.append(
+            f"{path}: ignoring settings this release no longer reads ({', '.join(dropped)}). "
+            "The rules they set are part of the release now; the lines can be deleted"
+        )
     try:
         return Config.model_validate(raw)
     except ValidationError as exc:
         raise ConfigError(f"invalid config {path}: {exc}") from exc
 
 
-def _require_current_rules(raw: dict[str, Any], path: Path) -> None:
-    """Refuse a file written for other scoring rules, before anything else.
+def _drop_retired(raw: dict[str, Any]) -> list[str]:
+    """Remove every retired setting from ``raw``; return what was removed."""
+    dropped: list[str] = []
+    for section, keys in RETIRED_SETTINGS.items():
+        table = raw.get(section)
+        if not isinstance(table, dict):
+            continue
+        if keys is None:
+            del raw[section]
+            dropped.append(f"[{section}]")
+            continue
+        for key in sorted(keys & table.keys()):
+            del table[key]
+            dropped.append(f"[{section}] {key}")
+    return dropped
 
-    Operators copy an example once and keep it. Every value in ``[scoring]``
-    decides emissions, and changing a default in code does not reach a copied
-    file, so a v2 file would otherwise run v3 code with v2 numbers, or fail on
-    whichever renamed field the parser met first. The file must say which rules
-    it was written for, and they must be this build's.
+
+def _refuse_v2_and_the_fee(raw: dict[str, Any], path: Path) -> None:
+    """Refuse the two kinds of file an update cannot carry forward.
+
+    A v2 file, recognisable by its ``[db]`` section, describes a different
+    system: the hub replaced the database it points at. A file that sets the
+    submission fee expects it to change what ``credits buy`` sends, and it no
+    longer can, so dropping it quietly would send a miner's money on a
+    misunderstanding.
     """
-    scoring = raw.get("scoring")
-    stated = scoring.get("scoring_version") if isinstance(scoring, dict) else None
-    if "db" in raw or stated is None:
+    if "db" in raw:
         raise OutdatedConfigError(
-            f"{path} was written for the v2 rules (it has "
-            f"{'a [db] section' if 'db' in raw else 'no [scoring] scoring_version'}). The rules "
-            f"changed to {SCORING_VERSION}: copy configs/finney.example.toml again, fill in "
-            "[wallet] and [chain] netuid, and read docs/scoring.md"
-        )
-    if stated != SCORING_VERSION:
-        raise OutdatedConfigError(
-            f"{path} states scoring_version = {stated!r}, but this build implements "
-            f"{SCORING_VERSION!r}. Copy the example config from this release and compare"
+            f"{path} was written for v2 (it has a [db] section). Copy "
+            "configs/finney.example.toml again, fill in [wallet] and [chain] netuid, and read "
+            "docs/validator.md"
         )
     credits = raw.get("credits")
     if isinstance(credits, dict) and "submission_fee_alpha" in credits:
-        # Refused rather than ignored: whoever set it expects it to change what
-        # `credits buy` sends, and it no longer can.
         raise OutdatedConfigError(
             f"{path} sets [credits] submission_fee_alpha, which is no longer a setting. The fee "
             f"is fixed at {SUBMISSION_FEE_ALPHA} alpha per credit by the published rules, "
@@ -480,6 +401,7 @@ def _require_current_rules(raw: dict[str, Any], path: Path) -> None:
 
 
 __all__ = [
+    "RETIRED_SETTINGS",
     "ChainConfig",
     "ChainNetwork",
     "Config",
@@ -488,7 +410,7 @@ __all__ = [
     "HubConfig",
     "LabellingConfig",
     "MinerRuntimeConfig",
-    "ScoringConfig",
+    "UpdateConfig",
     "ValidatorMode",
     "ValidatorRuntimeConfig",
     "WalletConfig",

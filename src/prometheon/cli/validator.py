@@ -45,8 +45,10 @@ from prometheon.hub import auth
 from prometheon.hub.client import HubClient
 from prometheon.hub.models import EvaluationSubmission
 from prometheon.labelling.client import OpenAICompatibleClient
+from prometheon.lock import cycle_lock
 from prometheon.registry.huggingface import HuggingFaceClient
 from prometheon.registry.validation import ModelRegistry
+from prometheon.rules import RULES
 from prometheon.scoring.copied import verify_copied_record
 
 #: A cycle scores *yesterday*: today's content is still arriving.
@@ -530,12 +532,21 @@ def cmd_run(args: argparse.Namespace) -> int:
     Each step is saved before the next one starts, so a run interrupted after
     the cycle computed resumes from the step it reached instead of labelling
     and evaluating the day again. ``--force`` computes it again regardless.
+
+    The whole run holds the cycle lock, which an update takes to switch
+    releases, so an update never lands in the middle of a cycle.
     """
     config = load(args.config)
-    if config.validator.mode is ValidatorMode.COPY:
-        # `validator run` stays the one command an operator schedules, whichever
-        # mode they chose; the config decides what it does.
-        return cmd_copy(args)
+    with cycle_lock(config.validator.state_directory, say=note):
+        if config.validator.mode is ValidatorMode.COPY:
+            # `validator run` stays the one command an operator schedules,
+            # whichever mode they chose; the config decides what it does.
+            return cmd_copy(args)
+        return _score_the_day(args, config)
+
+
+@chain.closes_connections
+def _score_the_day(args: argparse.Namespace, config: Config) -> int:
     day = _target_day(args)
     policy = _policy_text(args)
     if not config.hub.epoch_keys:
@@ -585,8 +596,8 @@ def cmd_run(args: argparse.Namespace) -> int:
                     subtensor=subtensor,
                     registry=ModelRegistry(
                         huggingface=huggingface,
-                        max_weight_bytes=config.evaluation.max_weight_bytes,
-                        max_non_weight_bytes=config.evaluation.max_non_weight_bytes,
+                        max_weight_bytes=RULES.max_weight_bytes,
+                        max_non_weight_bytes=RULES.max_non_weight_bytes,
                     ),
                     labeller=labeller,
                     policy=policy,
@@ -706,6 +717,16 @@ def cmd_schedule(args: argparse.Namespace) -> int:
     if already is not None:
         note(f"last finished cycle on record: {already.isoformat()}")
 
+    update = None
+    if config.update.auto:
+        from prometheon.cli.update import scheduled_update
+
+        note("automatic updates are on: checking for a newer release every 30 minutes")
+        config_path = Path(args.config).resolve()
+
+        def update() -> None:
+            scheduled_update(config, config_path=config_path)
+
     run_forever(
         cycle=cycle,
         resubmit=resubmit,
@@ -713,6 +734,7 @@ def cmd_schedule(args: argparse.Namespace) -> int:
         say=note,
         last_finished_day=lambda: _last_completed_cycle_day(config),
         max_iterations=args.max_iterations,
+        update=update,
     )
     return EXIT_OK
 

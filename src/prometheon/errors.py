@@ -321,6 +321,21 @@ class ValidatorFaultError(PrometheonError):
 
 
 # ---------------------------------------------------------------------------
+# Updates
+# ---------------------------------------------------------------------------
+
+
+class UpdateError(PrometheonError):
+    """An update could not be checked, installed, switched to or rolled back.
+
+    The running release is never the casualty: anything that fails before the
+    switch leaves it current.
+    """
+
+    code: str = "update.failed"
+
+
+# ---------------------------------------------------------------------------
 # Scoring
 # ---------------------------------------------------------------------------
 
@@ -364,6 +379,7 @@ __all__ = [
     "SignatureFormatError",
     "SignatureVerificationError",
     "SubtensorError",
+    "UpdateError",
     "ValidatorFaultError",
     "WeightSubmissionError",
     "WeightsVersionMismatchError",

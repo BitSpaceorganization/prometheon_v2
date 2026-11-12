@@ -25,8 +25,8 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Final
 
-from prometheon.config import ScoringConfig
 from prometheon.errors import ScoringError
+from prometheon.rules import ScoringRules
 from prometheon.scoring.allocation import BASIS_POINTS
 from prometheon.scoring.dataset import DatasetScore, allocate_dataset_pool
 from prometheon.scoring.model import ModelScore, allocate_model_pool
@@ -63,7 +63,7 @@ def combine_weights(
     *,
     dataset_scores: Sequence[DatasetScore],
     model_scores: Sequence[ModelScore],
-    scoring: ScoringConfig,
+    rules: ScoringRules,
     burn_hotkey: str,
     total_units: int = DEFAULT_WEIGHT_POOL_UNITS,
 ) -> WeightSplit:
@@ -78,14 +78,14 @@ def combine_weights(
 
     dataset_units = allocate_dataset_pool(
         dataset_scores,
-        pool=total_units * scoring.dataset_share_bp // BASIS_POINTS,
-        top_n=scoring.dataset_top_n,
+        pool=total_units * rules.dataset_share_bp // BASIS_POINTS,
+        top_n=rules.dataset_top_n,
     )
     model_units = allocate_model_pool(
         model_scores,
         total_units=total_units,
-        rank_shares_bp=scoring.model_rank_shares_bp,
-        min_scored_items=scoring.model_min_scored_items,
+        rank_shares_bp=rules.model_rank_shares_bp,
+        min_scored_items=rules.model_min_scored_items,
     )
 
     earned: dict[str, int] = {}

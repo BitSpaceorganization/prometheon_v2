@@ -44,37 +44,9 @@ temperature = 1.0
 max_in_flight = 8
 
 [evaluation]
-batch_size = 10
-
-[scoring]
-# The rules this file was written for; see configs/finney.example.toml.
-scoring_version = "prometheon-scoring/3.1"
-# These decide emissions. Every share is a slice of total emission, not a ratio
-# of a pool. A pool nobody qualifies for burns to the subnet owner hotkey. Every
-# validator must run the same values: they are not enforced by consensus, so a
-# different value computes a different vector from identical inputs and costs
-# vtrust.
-#
-# Data contribution: 70% of total emission, split by score across the top 10
-# miners scoring above zero.
-dataset_share_bp = 7000
-dataset_top_n = 10
-# Models: 25%, 4% and 1% of total emission to the first, second and third model.
-# A place nobody fills goes to the lowest-ranked winner present: two models take
-# 25% and 5%, one model takes 30%. A pool burns only when nobody qualifies.
-model_rank_shares_bp = [2500, 400, 100]
-# The entry gate, for both pools: a miner counts only with at least this many
-# identity-verified active members in its group AND at least this many members
-# in total. Every member is phone-verified, and the total includes the verified
-# active ones. Both counts come from the signed epoch.
-min_verified_active_members = 10
-min_members = 30
-# A model scored on fewer items than this is not ranked at all. Accuracy over a
-# handful of items is noise, and a miner can shrink its own corpus by supplying
-# most of a day's test content; its own items are excluded from what it is
-# scored on.
-model_min_scored_items = 100
-
+# A local chain runs models on its CPU, which needs float32.
+device = "cpu"
+torch_dtype = "float32"
 
 [validator]
 # "score" does the day's work: label every post, run every eligible model, and
@@ -91,6 +63,17 @@ state_directory = ".validator-state"
 submit_weights = false
 dry_run = true
 submit_results = false
+
+[update]
+# Move to each new release tag on your own: `prometheon validator schedule`
+# checks every 30 minutes, and so does the shipped systemd timer. Only release
+# tags vX.Y.Z from your install's own origin, newer than the version running,
+# installed beside it and checked before anything switches. Off unless you turn
+# it on. See docs/validator.md.
+auto = false
+# systemd units to restart once a new release is current, for a process that
+# keeps running. The shipped units start fresh every time and need none.
+restart_units = []
 
 [credits]
 # The treasury coldkey that submission fees are paid to. REQUIRED before

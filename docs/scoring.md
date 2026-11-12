@@ -2,7 +2,7 @@
 
 How one day becomes one weight vector, under `scoring_version = "prometheon-scoring/3.1"`.
 
-Every number on this page is in `[scoring]` in your config, and the example configs set each one explicitly. They're not enforced by consensus. Two validators running the same code with different values compute different vectors from the same inputs, and the odd one out loses vtrust. A config without `scoring_version`, or with a different one, refuses to load, so a copy made under older rules fails loudly instead of running new code on old numbers.
+Every number on this page is part of the release: code in [`src/prometheon/rules.py`](../src/prometheon/rules.py), [`scoring/size.py`](../src/prometheon/scoring/size.py) and [`scoring/model.py`](../src/prometheon/scoring/model.py), not settings in your config. Two validators on the same release apply the same rules, and a release that changes one changes `scoring_version`, which the hub publishes with every epoch. A config file never needs editing for new rules: a setting from an earlier release is ignored, with a note in the log.
 
 All arithmetic is in exact integers and fractions. No float touches a payout.
 

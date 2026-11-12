@@ -95,26 +95,52 @@ rather than trimming them.
 
 ## Changing anything that moves emissions
 
-Every reward-affecting constant lives in `ScoringConfig`
-([`src/prometheon/config.py`](src/prometheon/config.py)), or, for the model rules
-the hub applies too, in [`src/prometheon/scoring/size.py`](src/prometheon/scoring/size.py)
-(the parameter cap and the size penalty) and
-[`src/prometheon/scoring/model.py`](src/prometheon/scoring/model.py) (the ranking
-band), each with the reasoning that produced it. A change to one of them:
+Every rule lives in code, never in an operator's config:
+[`src/prometheon/rules.py`](src/prometheon/rules.py) (the pool split, the
+eligibility floors, the scored-items floor, the time limit, the evaluation
+batch, the byte ceilings),
+[`src/prometheon/scoring/size.py`](src/prometheon/scoring/size.py) (the
+parameter cap and the size penalty),
+[`src/prometheon/scoring/model.py`](src/prometheon/scoring/model.py) (the
+ranking band) and [`src/prometheon/version.py`](src/prometheon/version.py) (the
+submission fee), each with the reasoning that produced it. A change to one of
+them:
 
 1. changes the constant **and** its comment,
 2. updates [`docs/scoring.md`](docs/scoring.md), which is the published rule,
 3. adds a test pinning the new behaviour,
-4. bumps `SCORING_VERSION` in `prometheon/cli/cycle.py` if two validators on
+4. bumps `SCORING_VERSION` in `prometheon/version.py` if two validators on
    different builds would now compute different weights.
 
 Point 4 is not optional. The version is published in every signed evaluation
 record so a divergence can be attributed to a version skew rather than to a
 disagreement about the data.
 
-If you change the canonical engine or wrapper, you are invalidating every
-deployed model on the subnet. Read the migration policy in
-hash to `LEGACY_WRAPPER_HASHES` for the window.
+A change to the evaluation engine's framing, decoding or packing can move every
+model's verdicts on borderline items, so it is a scoring change too, with a new
+`SCORING_VERSION`.
+
+---
+
+## Releases
+
+1. **A release is a tag `vX.Y.Z`** on the commit being released, pushed to this
+   repository, and equal to the version in `pyproject.toml` and
+   `src/prometheon/version.py`. Validators update from release tags, never from
+   a branch. A tag is never moved once pushed: a validator that installed it
+   refuses the moved one.
+2. **A release that changes scoring is published between 00:00 and 01:00 UTC on
+   the day the hub switches `scoring_version`.** Validators that update
+   automatically check every 30 minutes, so by the 04:00 cycle every one of
+   them scores that day under the same rules, and the hub's epoch for the day
+   already names them.
+3. **An update never needs an operator to edit their config.** A release that
+   stops reading a setting adds it to `RETIRED_SETTINGS` in
+   [`src/prometheon/config.py`](src/prometheon/config.py), so a file still
+   carrying it loads, with a note. A new operator setting has a default that is
+   safe for every validator already running.
+4. **The release notes say what operators must do**, which should be nothing
+   beyond the update itself, and name any `SCORING_VERSION` change.
 
 ---
 

@@ -31,10 +31,8 @@ from prometheon.config import (
     ChainConfig,
     ChainNetwork,
     Config,
-    EvaluationConfig,
     HubConfig,
     LabellingConfig,
-    ScoringConfig,
     WalletConfig,
 )
 from prometheon.errors import ConfigError, ValidatorFaultError, WeightSubmissionError
@@ -47,6 +45,7 @@ from prometheon.hub.normalize import normalized_sha256
 from prometheon.labelling.client import OpenAICompatibleClient
 from prometheon.labelling.prompt import ITEMS_BEGIN_PREFIX, LabelItem
 from prometheon.registry.validation import InvalidReason, MinerValidation, ModelRegistry
+from prometheon.rules import ScoringRules
 from prometheon.version import SCORING_VERSION
 
 pytestmark = pytest.mark.integration
@@ -347,12 +346,13 @@ def config() -> Config:
         wallet=WalletConfig(name="validator", hotkey="default"),
         hub=HubConfig(base_url="https://hub.invalid"),
         labelling=LabellingConfig(api_key_env="PROMETHEON_TEST_KEY", max_in_flight=4),
-        evaluation=EvaluationConfig(batch_size=50),
-        # The corpus here is small, so the default measurement floor of 100
-        # would rank nobody. Lowered rather than inflating the fixture, because
-        # the composition is what is under test.
-        scoring=ScoringConfig(model_min_scored_items=1),
     )
+
+
+#: The corpus here is small, so the published floor of 100 scored items would
+#: rank nobody. Lowered rather than inflating the fixture, because the
+#: composition is what is under test.
+RULES_HERE = ScoringRules(model_min_scored_items=1, evaluation_batch_size=50)
 
 
 @pytest.fixture
@@ -413,6 +413,7 @@ def _run(
     check_runtime: Any = None,
     seen: list[dict[str, str]] | None = None,
     slow: frozenset[str] = frozenset(),
+    rules: ScoringRules = RULES_HERE,
 ) -> Any:
     _install_engines(monkeypatch, accuracy, broken, slow)
     with (
@@ -439,6 +440,7 @@ def _run(
             # needs the evaluation extra CI does not install. The tests that
             # are about it pass their own.
             check_runtime=check_runtime or (lambda: None),
+            rules=rules,
         )
 
 
@@ -1022,15 +1024,15 @@ def test_a_model_that_does_not_finish_in_time_gets_no_score(
     """B's batches take half a second against a 0.2s limit: it stops after one
     batch, is published as timed_out with no rank, and A, which finishes in
     well under the limit, takes the whole 30%."""
-    slow_config = config.model_copy(
-        update={"evaluation": EvaluationConfig(batch_size=10, model_timeout_seconds=0.2)}
-    )
     result = _run(
-        slow_config,
+        config,
         world,
         accuracy={MINER_A.ss58_address: 1.0, MINER_B.ss58_address: 1.0},
         monkeypatch=monkeypatch,
         slow=frozenset({MINER_B.ss58_address}),
+        rules=ScoringRules(
+            model_min_scored_items=1, evaluation_batch_size=10, model_timeout_seconds=0.2
+        ),
     )
     rows = {row.hotkey: row for row in build_results(result)}
     b = rows[MINER_B.ss58_address]

@@ -45,7 +45,7 @@ Fill in the config:
 | `[wallet]` | your validator's wallet name and hotkey |
 | `[hub] base_url` and `[hub.epoch_keys]` | the hub's address, and its Ed25519 public key under its key id. Both are published with the launch. Every epoch's signature is checked against this key |
 | `[labelling]` | your labelling endpoint and model. The comments in the example explain the temperature rule |
-| `[scoring]` | **leave as shipped.** These decide payouts, and every validator must run the same values |
+| `[update]` | `auto = true` to update to each new release on your own. Off by default; see [Updating](#updating) |
 
 Your hotkey must be registered and hold a validator permit. There are no API keys for the hub. Each request is signed with your hotkey and checked against the chain, so access follows registration.
 
@@ -233,12 +233,60 @@ Evaluation is your GPU time. Each eligible paid model is downloaded once per rev
 
 Disk is the other limit: the download cache keeps every revision it has seen. With `[evaluation] discard_checkpoints = true`, each model is deleted after scoring, so the disk needs to hold only the largest model rather than the whole field. Files another revision still uses, such as an unchanged tokenizer, are kept.
 
-## Upgrading
+## Updating
 
-`git pull` doesn't touch your config. If a release changes the rules, it changes `scoring_version`, and a config written for the old rules refuses to load until you update it. After pulling, compare your config with the example:
+Validators update from release tags, never from a branch. A release never needs you to edit your config: the rules every validator applies are part of the release, and a setting a release stops reading is ignored, with a note in the log, rather than refused.
+
+### Automatic updates
+
+Off unless you turn them on:
+
+```toml
+[update]
+auto = true
+```
+
+With it on, `validator schedule` checks every 30 minutes, and so does the shipped systemd timer (`prometheon-update.timer`). Each check:
+
+1. Fetches tags from your install's own `origin`, and takes the newest release tag `vX.Y.Z` that is newer than the version running. Never a branch head, and never an older version.
+2. Checks it out beside the current release, as `releases/<tag>`, and runs `uv sync --frozen` there with the extras you need: the runtime that runs models in score mode, nothing extra in copy mode.
+3. Runs the new release's own self-check: it imports, loads your config, finds a hub key pinned, and in score mode runs a model canary on the CPU.
+4. Waits until no cycle is running, then switches `current` to the new release in one atomic step, and keeps the old one as `previous`.
+5. Restarts: the schedule loop re-runs itself from the new release, and any unit named in `[update] restart_units` is restarted. The shipped units start fresh from `current` every time, so they need none.
+
+If any step fails, the release you were running stays current, and the log says why. A tag that moved after it was installed is not used.
+
+Tag signatures aren't checked. A release is trusted because it's a `vX.Y.Z` tag on the repository your install was cloned from.
+
+**The layout.** Updates need the install laid out side by side, and an absolute `[validator] state_directory`, so the saved vector outlives any one release:
 
 ```bash
-git pull
-diff <(grep -vE '^\s*(#|$)' configs/finney.example.toml) \
-     <(grep -vE '^\s*(#|$)' ~/prometheon.toml)
+sudo mkdir -p /opt/prometheon/ && cd /opt/prometheon/
+git clone https://github.com/BitSpaceorganization/prometheon_v2 repo
+git -C repo worktree add --detach ../releases/v3.1.0 v3.1.0      # the release you start on
+(cd releases/v3.1.0 && uv sync --frozen --no-dev --extra wrapper)  # no --extra wrapper in copy mode
+ln -s releases/v3.1.0 current
 ```
+
+Run everything from `/opt/prometheon/current`, as the shipped systemd units do.
+
+```bash
+uv run prometheon update status --config ~/prometheon.toml      # what runs, what is current, what is newer
+uv run prometheon update rollback --config ~/prometheon.toml    # back to the previous release
+```
+
+`rollback` also waits for a running cycle, and switches `current` back to `previous`.
+
+### Updating by hand
+
+With the same layout, `prometheon update check` says whether a newer release exists, and `prometheon update apply` installs and switches to it, with every step above, whether or not `auto` is on. It waits for a running cycle to finish.
+
+Without the layout, from a plain clone, check out the release tag and sync:
+
+```bash
+git fetch --tags origin
+git checkout v3.2.0                # a release tag, never a branch
+uv sync --frozen --extra wrapper
+```
+
+Your config carries over unchanged either way.

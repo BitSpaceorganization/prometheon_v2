@@ -15,8 +15,8 @@ from __future__ import annotations
 
 import pytest
 
-from prometheon.config import ScoringConfig
 from prometheon.errors import ScoringError
+from prometheon.rules import RULES, ScoringRules
 from prometheon.scoring.model import (
     RANK_BAND_BP,
     ModelEvaluation,
@@ -31,7 +31,7 @@ from prometheon.scoring.model import (
 pytestmark = pytest.mark.unit
 
 #: The day's corpus here is a thousand items, well above the shipped floor.
-DEFAULTS = ScoringConfig()
+DEFAULTS = RULES
 TOTAL = 1_000_000
 SHARES = (2500, 400, 100)
 SMALL = 400_000_000  # under 500M parameters: no penalty
@@ -56,8 +56,8 @@ def _evaluation(
     )
 
 
-def _ranking(*evaluations: ModelEvaluation, scoring: ScoringConfig = DEFAULTS) -> ModelRanking:
-    return score_models(list(evaluations), scoring=scoring)
+def _ranking(*evaluations: ModelEvaluation, rules: ScoringRules = DEFAULTS) -> ModelRanking:
+    return score_models(list(evaluations), rules=rules)
 
 
 def _order(ranking: ModelRanking) -> list[str]:
@@ -263,7 +263,7 @@ class TestAModelMustBeMeasuredBeforeItRanks:
     def test_the_floor_is_the_configured_one(self) -> None:
         ranking = _ranking(
             _evaluation("hk-a", 9, scored=10),
-            scoring=ScoringConfig(model_min_scored_items=10),
+            rules=ScoringRules(model_min_scored_items=10),
         )
 
         assert _order(ranking) == ["hk-a"]

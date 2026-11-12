@@ -40,6 +40,7 @@ import argparse
 import datetime as dt
 import decimal
 import json
+import math
 import os
 import secrets
 import subprocess
@@ -69,21 +70,24 @@ from prometheon.hub.auth import CallerRole
 from prometheon.hub.fake import FakeHub, serve
 from prometheon.hub.normalize import normalized_sha256
 from prometheon.registry.huggingface import HuggingFaceClient, weights_fingerprint
+from prometheon.rules import RULES
 from prometheon.version import SUBMISSION_FEE_ALPHA
 
 ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE = ROOT / "configs" / "localnet.example.toml"
 TOTAL_UNITS = 1_000_000
 
-#: The day holds a few dozen items, so the shipped floor of 100 would rank no
-#: model. The run lowers it to this, and changes nothing else in [scoring].
-MIN_SCORED_ITEMS = 10
+#: Ordinary public posts added to the hand-written ones, so each model is scored
+#: on more than the published floor of 100 items. The rules are code, so the run
+#: meets them rather than lowering them.
+EXTRA_PRODUCTION = 100
 
 #: Two models that pass the manifest: weights in LFS, a config, a tokenizer,
 #: no code. Small enough to run on a CPU.
 MODELS = {
     "miner-a": ("HuggingFaceTB/SmolLM2-135M", "93efa2f097d58c2a74874c7e644dbc9b0cee75a2"),
-    "miner-b": ("Qwen/Qwen2.5-0.5B", "060db6499f32faf8b98477b0a26969ef7d8b9987"),
+    # 751,632,384 parameters: past 500M, so it carries a size penalty, 58 bp.
+    "miner-b": ("Qwen/Qwen3-0.6B", "c1899de289a04d12100db370d81485cdf75e47ca"),
 }
 
 #: Group sizes the epoch reports: (verified active members, members). Both
@@ -171,6 +175,21 @@ def add_stake(subtensor: Any, wallet: Wallet, netuid: int, tao: int, what: str) 
         wallet, netuid, wallet.hotkey.ss58_address, Balance.from_tao(tao)
     )
     landed(response, what, lambda: stake_on(subtensor, wallet, netuid) > before)
+
+
+def top_up(subtensor: Any, source: Wallet, wallet: Wallet, tao: int, what: str) -> None:
+    """Make sure ``wallet``'s coldkey holds at least ``tao``, paid from ``source``.
+
+    The image funds //Alice, //Bob and //Charlie with a million TAO each and the
+    other dev keys with two thousand, which one run's stake nearly uses up. The
+    script runs again and again on one chain, so a short key is topped up.
+    """
+    address = wallet.coldkeypub.ss58_address
+    before = subtensor.get_balance(address)
+    if before >= Balance.from_tao(tao):
+        return
+    response = subtensor.transfer(source, address, Balance.from_tao(tao))
+    landed(response, what, lambda: subtensor.get_balance(address) > before)
 
 
 def dev_wallet(home: Path, name: str, coldkey_uri: str, hotkey_uri: str | None) -> Wallet:
@@ -333,7 +352,7 @@ def ranked_by_hand(record: dict[str, Any], commit_blocks: dict[str, int]) -> lis
         penalty = penalty_by_hand(row["model_parameters"])
         assert row["size_penalty_bp"] == penalty, f"{row['hotkey']}: penalty {row}"
         assert row["model_score_bp"] == max(0, row["raw_accuracy_bp"] - penalty), row
-        if row["model_score_bp"] > 0 and row["model_items_scored"] >= MIN_SCORED_ITEMS:
+        if row["model_score_bp"] > 0 and row["model_items_scored"] >= RULES.model_min_scored_items:
             field[row["hotkey"]] = row["model_score_bp"]
     places: list[str] = []
     while field:
@@ -422,10 +441,19 @@ def main() -> int:
         help="set the subnet's min_allowed_weights, to exercise vector shaping (S5)",
     )
     args = parser.parse_args()
+    subtensor = bittensor.Subtensor(network=args.endpoint)
+    try:
+        return run_day(args, subtensor)
+    finally:
+        # A failure's traceback keeps the connection referenced until the
+        # interpreter shuts down, and closing it that late waits forever on its
+        # receive thread: a failed run would hang instead of exiting.
+        subtensor.close()
 
+
+def run_day(args: argparse.Namespace, subtensor: Any) -> int:
     home = args.workdir / "home"
     home.mkdir(parents=True, exist_ok=True)
-    subtensor = bittensor.Subtensor(network=args.endpoint)
     log(f"chain {args.endpoint} at block {subtensor.get_current_block()}")
 
     # --- 1. a subnet, its owner (who also validates) and two miners -------
@@ -495,6 +523,7 @@ def main() -> int:
             f"burned_register {name}",
             lambda hotkey=hotkey: subtensor.is_hotkey_registered(hotkey, netuid=netuid),
         )
+    top_up(subtensor, owner, copier, 1100, "funding the copy-mode validator")
     landed(
         subtensor.burned_register(copier, netuid),
         "burned_register copier",
@@ -504,13 +533,20 @@ def main() -> int:
     add_stake(subtensor, copier, netuid, 1000, "add_stake for the copy-mode validator")
     for name, miner in miners.items():
         # Enough alpha for one credit at the published fee, with some to spare.
-        # What 100 TAO buys depends on the new subnet's pool, so stake until it is.
-        for _ in range(20):
-            if stake_on(subtensor, miner, netuid) >= (SUBMISSION_FEE_ALPHA + 5) * 10**9:
+        # A new subnet's pool starts with the TAO its owner locked, and the lock
+        # cost rises with every subnet registered on the chain, so what a TAO
+        # buys differs from run to run. Stake at the pool's price until it is
+        # enough; slippage in a small pool can take a few rounds.
+        target = (SUBMISSION_FEE_ALPHA + 5) * 10**9
+        for attempt in range(21):
+            short = target - stake_on(subtensor, miner, netuid)
+            if short <= 0:
                 break
-            add_stake(subtensor, miner, netuid, 100, f"add_stake {name}")
-        else:
-            raise SystemExit(f"{name} could not stake {SUBMISSION_FEE_ALPHA} alpha for a credit")
+            if attempt == 20:
+                raise SystemExit(f"{name} could not stake {target // 10**9} alpha for a credit")
+            price = float(subtensor.subnet(netuid=netuid).price.tao)
+            tao = max(10, math.ceil(short / 10**9 * price * 1.1))
+            add_stake(subtensor, miner, netuid, tao, f"add_stake {name}")
     log("waiting for an epoch so both validators hold a permit")
     for attempt in range(60):
         view = view_of(subtensor, netuid)
@@ -561,12 +597,8 @@ def main() -> int:
             "api_key_env": "LOCAL_LABELLER_KEY",
             "temperature": 0.0,
         },
-        # One batch per model: on a CPU the policy prefix is the expensive part,
-        # and it is computed once per batch.
-        evaluation={"device": "cpu", "torch_dtype": "float32", "batch_size": 50},
-        # The day holds a few dozen items, so the floor of 100 would rank no
-        # model. Everything else in [scoring] stays as shipped.
-        scoring={"model_min_scored_items": MIN_SCORED_ITEMS},
+        # A CPU needs float32. Every rule is the published one.
+        evaluation={"device": "cpu", "torch_dtype": "float32"},
         validator={
             "state_directory": str(args.workdir / "state"),
             "submit_weights": True,
@@ -664,13 +696,26 @@ def main() -> int:
                     }
                 )
     production_lines = []
-    for index, (body, violating) in enumerate(PRODUCTION):
+    ordinary = [
+        (f"post {index}: {topic}", False)
+        for index, topic in enumerate(
+            (
+                "the release notes are out and the changelog is short this time",
+                "anyone around for the community call later today",
+                "my node caught up overnight, all green now",
+                "nice weather for a walk before the meeting",
+                "reading through the staking guide again, it helps",
+            )
+            * (EXTRA_PRODUCTION // 5)
+        )
+    ]
+    for index, (body, violating) in enumerate([*PRODUCTION, *ordinary]):
         truth[f"p_{index}"] = violating
         production_lines.append(
             {
                 "id": f"p_{index}",
                 "body": body,
-                "created_at": f"{day.isoformat()}T08:{index:02d}:00Z",
+                "created_at": f"{day.isoformat()}T{6 + index // 60:02d}:{index % 60:02d}:00Z",
             }
         )
     Labeller.truth = truth

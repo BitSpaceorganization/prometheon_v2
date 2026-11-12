@@ -85,6 +85,7 @@ from prometheon.registry.validation import (
     MinerValidation,
     ModelRegistry,
 )
+from prometheon.rules import RULES, ScoringRules
 from prometheon.scoring.combine import WeightSplit, combine_weights
 from prometheon.scoring.dataset import DatasetScore, DatasetSubmission, score_dataset
 from prometheon.scoring.model import ModelEvaluation, ModelRanking, score_models
@@ -152,6 +153,7 @@ def run_cycle(
     now: int,
     progress: Any = None,
     check_runtime: Callable[[], None] | None = None,
+    rules: ScoringRules = RULES,
 ) -> CycleResult:
     """Run one day's cycle and return what it computed, without submitting.
 
@@ -194,8 +196,8 @@ def run_cycle(
 
     eligible = eligible_miners(
         epoch,
-        min_verified_active_members=config.scoring.min_verified_active_members,
-        min_members=config.scoring.min_members,
+        min_verified_active_members=rules.min_verified_active_members,
+        min_members=rules.min_members,
     )
     eligible_by_hotkey = {miner.hotkey: miner for miner in eligible}
     notes.extend(_eligibility_notes(epoch, eligible_by_hotkey))
@@ -253,7 +255,7 @@ def run_cycle(
             # The repository's fault, so every validator sees it: score it.
             # Any other download failure is raised as ValidatorFaultError and
             # stops the cycle instead.
-            evaluations.append(_unevaluable(target, view, reason=str(exc), config=config))
+            evaluations.append(_unevaluable(target, view, reason=str(exc), rules=rules))
             notes.append(f"{result.hotkey}: {exc}")
             continue
 
@@ -268,13 +270,13 @@ def run_cycle(
             items=view,
             policy=policy.text,
             policy_version=policy.version,
-            batch_size=config.evaluation.batch_size,
-            deadline_seconds=config.evaluation.model_timeout_seconds,
+            batch_size=rules.evaluation_batch_size,
+            deadline_seconds=rules.model_timeout_seconds,
         )
         if evaluation.timed_out:
             notes.append(
                 f"{result.hotkey}: did not finish within "
-                f"{config.evaluation.model_timeout_seconds:.0f}s ({evaluation.total} of "
+                f"{rules.model_timeout_seconds:.0f}s ({evaluation.total} of "
                 f"{evaluation.total + evaluation.unfinished_items} items); no score today"
             )
         elif evaluation.total and not evaluation.answered:
@@ -306,12 +308,12 @@ def run_cycle(
             )
             for evaluation in evaluations
         ],
-        scoring=config.scoring,
+        rules=rules,
     )
     split = combine_weights(
         dataset_scores=dataset_scores,
         model_scores=list(ranking.scores),
-        scoring=config.scoring,
+        rules=rules,
         burn_hotkey=burn_hotkey,
     )
 
@@ -738,14 +740,14 @@ def _dataset_submissions(
 
 
 def _unevaluable(
-    target: MinerTarget, items: Any, *, reason: str, config: Config
+    target: MinerTarget, items: Any, *, reason: str, rules: ScoringRules
 ) -> MinerEvaluation:
     """A model that could not be fetched, scored rather than skipped."""
     from prometheon.evaluation.corpus import iter_batches
     from prometheon.evaluation.result import MinerEvaluationBuilder
 
     builder = MinerEvaluationBuilder(target.hotkey)
-    for batch in iter_batches(items, config.evaluation.batch_size):
+    for batch in iter_batches(items, rules.evaluation_batch_size):
         builder.record_failed_batch(batch, reason=reason)
     return builder.build()
 
