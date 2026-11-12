@@ -77,7 +77,9 @@ Any open causal language model with **at most 4,000,000,000 parameters, and weig
 
 `P` counts every tensor in every `.safetensors` file you publish, read from the files' headers. If you publish the same weights twice, as one file and as shards, they're counted twice.
 
-**The evaluation runtime pins `transformers>=4.44,<4.47`, so your architecture has to be one that release recognises.** `Qwen2.5` (`model_type: qwen2`) loads. `Qwen3` doesn't, because it arrived in transformers 4.51. `model commit` and `model verify` both refuse an architecture the runtime can't load, checked against a list frozen from the runtime's own transformers.
+**The evaluation runtime pins `transformers>=5.20.2,<5.21`, so your architecture has to be one that release recognises.** Qwen3 (`model_type: qwen3`), Gemma 3 (`gemma3_text`, the 270M and 1B checkpoints), Llama 3.2 (`llama`) and Qwen2.5 (`qwen2`) all load. An architecture newer than that release doesn't: Flint (`flint`), for example, arrived in 5.21. `model commit` and `model verify` both refuse an architecture the runtime can't load, checked against a list frozen from the runtime's own transformers.
+
+The engine also needs ordinary attention layers. It computes the policy once and shares that work across every item, and a layer that keeps recurrent state, as linear-attention and state-space models do, can't be shared that way. So the list leaves out `mamba`, `jamba`, `falcon_h1`, `qwen3_next`, `qwen3_5` and the other architectures built that way: `model commit` and `model verify` refuse them, and the hub doesn't list them. A model with sliding-window attention, such as Gemma 3, is judged one item per pass, so padding beside a longer item can't shift its answer. That's slower, and still well inside the time limit at the size cap.
 
 You don't write inference code. Every model runs on the **same engine, on the validator's machine**, so a score difference is a weights difference:
 

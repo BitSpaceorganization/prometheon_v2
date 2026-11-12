@@ -57,10 +57,20 @@ def check_evaluation_runtime(*, device: str, dtype: str) -> None:
 def _canary(torch: Any, transformers: Any, *, device: str, dtype: Any) -> None:
     """One forward pass of a random two-layer model, built locally, no download."""
     try:
+        # Special token ids inside the 64-token vocabulary: GPT-2's default of
+        # 50256 makes 5.x log an "unexpected behavior" warning on every run.
         config = transformers.GPT2Config(
-            n_layer=2, n_head=2, n_embd=16, n_positions=32, vocab_size=64
+            n_layer=2,
+            n_head=2,
+            n_embd=16,
+            n_positions=32,
+            vocab_size=64,
+            bos_token_id=0,
+            eos_token_id=0,
         )
-        model = transformers.AutoModelForCausalLM.from_config(config, torch_dtype=dtype)
+        # `dtype=`, the name 5.x reads, as in `ModerationEngine.load`; the
+        # canary has to load the way a miner's model will.
+        model = transformers.AutoModelForCausalLM.from_config(config, dtype=dtype)
         model = model.to(device)
         model.eval()
         with torch.no_grad():

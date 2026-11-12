@@ -267,11 +267,12 @@ class TestTheModelHasToBeRunnableByEveryValidator:
     """
 
     def test_an_architecture_the_runtime_cannot_load_is_refused(self) -> None:
-        world = World(repos={(REPO_A, REV_A): Repo(model_type="qwen3")})
+        """`flint` arrived in transformers 5.21, after the release the runtime pins."""
+        world = World(repos={(REPO_A, REV_A): Repo(model_type="flint")})
         result = only(world, entry())
 
         assert result.reason is InvalidReason.ARCHITECTURE_UNSUPPORTED
-        assert "qwen3" in result.detail
+        assert "flint" in result.detail
 
     def test_a_checkpoint_declaring_no_architecture_is_not_guessed_at(self) -> None:
         """Silence is not evidence of a bad model."""

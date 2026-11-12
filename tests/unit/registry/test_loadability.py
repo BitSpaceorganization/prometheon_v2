@@ -54,11 +54,13 @@ class TestReadingTheDeclaredArchitecture:
 
 @pytest.fixture
 def pinned_transformers(monkeypatch: Any) -> None:
-    """What `transformers` 4.46 knows, which is what the image pins.
+    """A small stand-in for the frozen list, shaped like the 4.46 image's.
 
-    Pinned rather than read from the installed package: `transformers` is an
-    optional extra, and a test that silently turns into "unchecked" when it is
-    absent would assert nothing at all.
+    That image did not know `qwen3`, which is the failure below. Pinned rather
+    than read from the installed package: `transformers` is an optional extra,
+    and a test that silently turns into "unchecked" when it is absent would
+    assert nothing at all. What the shipped list holds is pinned separately, in
+    `TestTheFrozenMappingIsTheImages`.
     """
     monkeypatch.setattr(
         "prometheon.registry.loadability.known_model_types",
@@ -73,10 +75,10 @@ class TestRefusingWhatTheImageCannotLoad:
 
     `Qwen3-14B` was committed and deployed. Every instance died inside the
     container at `AutoModelForCausalLM.from_pretrained` with `KeyError:
-    'qwen3'`, because the image pins `transformers<4.47` and Qwen3 landed in
-    4.51. Nothing outside the container reported a reason: eleven instances
-    were assigned and torn down over ninety minutes, which reads as missing GPU
-    capacity rather than a model that cannot load.
+    'qwen3'`, because the image then pinned `transformers<4.47` and Qwen3
+    landed in 4.51. Nothing outside the container reported a reason: eleven
+    instances were assigned and torn down over ninety minutes, which reads as
+    missing GPU capacity rather than a model that cannot load.
     """
 
     def test_an_architecture_the_pin_predates_is_refused(self) -> None:
@@ -102,31 +104,53 @@ class TestTheFrozenMappingIsTheImages:
     """The list is frozen on purpose, and that is the load-bearing decision.
 
     Reading the *installed* transformers would answer the wrong question. A
-    miner running 4.51 locally would see `qwen3` accepted and still watch every
-    instance die inside a container pinned to 4.46. The check has to describe
-    the image, so it ships with the package instead of being discovered at
-    runtime.
+    miner running 4.51 locally saw `qwen3` accepted and still watched every
+    instance die inside a container pinned to 4.46. The same holds at every
+    pin: a miner on 5.21 sees `flint` accepted, and every validator on 5.20
+    fails to load it. The check has to describe the image, so it ships with the
+    package instead of being discovered at runtime.
     """
 
     def test_it_ships_and_is_not_empty(self) -> None:
         known = known_model_types()
         assert len(known) > 100
 
-    def test_it_matches_the_pin_that_broke_us(self) -> None:
+    def test_it_matches_the_pinned_release(self) -> None:
         known = known_model_types()
         assert "qwen2" in known, "Qwen2.5 loads on the pinned image"
-        assert "qwen3" not in known, "Qwen3 arrived in transformers 4.51; the image pins <4.47"
+        assert "qwen3" in known, "Qwen3 arrived in transformers 4.51; the image pins 5.20"
+        assert {"gemma3", "gemma3_text"} <= known, "Gemma 3 arrived in 4.50"
+        assert "llama" in known, "Llama 3.2 declares `llama`"
+        assert "flint" not in known, "Flint arrived in 5.21, the first release to need Python 3.11"
+
+    def test_it_leaves_out_what_the_engine_refuses_to_run(self) -> None:
+        """Listed means runnable, not just recognised.
+
+        The engine shares one policy prefix across items, which only plain and
+        sliding-window attention layers allow. Transformers 5.20 knows
+        linear-attention and hybrid architectures whose layers write into their
+        own state; the engine refuses them at load, so listing them would let a
+        miner pay the fee for a model that scores nothing on every validator.
+        """
+        known = known_model_types()
+        refused = {"qwen3_5", "qwen3_5_text", "qwen3_next", "mamba", "mamba2", "jamba", "falcon_h1"}
+        assert not refused & known
+
+    def test_it_lists_only_what_a_causal_language_model_loader_can_load(self) -> None:
+        known = known_model_types()
+        assert "vit" not in known, "an image encoder is not a causal language model"
+        assert "EvollaModel" not in known
 
     def test_it_is_not_read_from_the_local_environment(self) -> None:
         """Whatever is installed here must not change the answer."""
         import sys
         from types import SimpleNamespace
 
-        fake = SimpleNamespace(CONFIG_MAPPING_NAMES={"qwen3": "X"})
+        fake = SimpleNamespace(CONFIG_MAPPING_NAMES={"flint": "FlintConfig"})
         saved = sys.modules.get("transformers.models.auto.configuration_auto")
         sys.modules["transformers.models.auto.configuration_auto"] = fake  # type: ignore[assignment]
         try:
-            assert "qwen3" not in known_model_types()
+            assert "flint" not in known_model_types()
         finally:
             if saved is None:
                 sys.modules.pop("transformers.models.auto.configuration_auto", None)

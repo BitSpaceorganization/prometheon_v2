@@ -37,9 +37,16 @@ dependencies = [
 # miner who only commits, and anyone reading a published record, can install
 # without a torch build.
 wrapper = [
-    "transformers>=4.44,<4.47",
-    # Raised from `<2.6`, which could not run the hardware `docs/validator.md`
-    # mandates. 2.5.1 builds kernels up to sm_90; an RTX 5090 is sm_120, and the
+    # One minor series, the newest that still installs on Python 3.10 (5.21
+    # requires 3.11). One series because the architectures a checkpoint may
+    # declare are frozen from it, in
+    # src/prometheon/registry/assets/transformers_model_types.txt, and because
+    # validators on different releases can land a near-tie differently. Moving
+    # it means regenerating that list and checking the engine's prefix cache,
+    # which leans on 5.x cache internals that a minor release can change.
+    "transformers>=5.20.2,<5.21",
+    # Raised from `<2.6`, which could not run an RTX 5090, a card many
+    # validators will use. 2.5.1 builds kernels up to sm_90; an RTX 5090 is sm_120, and the
     # failure is silent in the worst way: `torch.cuda.is_available()` still
     # returns True, so `resolve_device("auto")` picks cuda and every forward
     # then dies with "no kernel image is available for execution on the device".
@@ -52,7 +59,13 @@ wrapper = [
     # raised ImportError and scored the model zero, on a validator that had
     # followed the install instructions exactly.
     "accelerate>=0.26.0",
-    "huggingface-hub>=0.25.0",
+    # Below 1.32, which moved downloaded Xet files out of each repository into
+    # a cache-wide shared store. `discard_checkpoint` deletes only blobs inside
+    # the repository's own directory, so with the store it removes the snapshot
+    # and reclaims almost nothing: 3.4 MB of SmolLM2-135M's 272 MB. A validator
+    # running with `discard_checkpoints` to fit a small disk then fills it.
+    # 1.31 is also the floor transformers 5.20 accepts.
+    "huggingface-hub>=1.31.0,<1.32",
 ]
 
 [project.scripts]

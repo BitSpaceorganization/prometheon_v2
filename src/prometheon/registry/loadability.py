@@ -4,7 +4,7 @@
 checkpoint whose architecture that release does not know cannot be loaded at
 all -- however good the model is. The failure happens at
 `AutoModelForCausalLM.from_pretrained`, long after everything a miner can see
-has succeeded::
+has succeeded. Under the old 4.46 pin, a Qwen3 checkpoint failed like this::
 
     KeyError: 'qwen3'
     ValueError: The checkpoint you are trying to load has model type `qwen3`
