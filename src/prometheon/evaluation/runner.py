@@ -5,12 +5,18 @@ model now arrives as weights: the validator resolves the committed revision,
 downloads it, loads it into :class:`~prometheon.evaluation.engine.ModerationEngine`,
 and runs the corpus through it locally.
 
-The scoring contract is unchanged, and deliberately so. A batch that cannot be
-completed is **scored incorrect, not skipped** -- a model that fails to answer
-must not come out level with one that answered well, and must not take the
-whole cycle down either. What used to fail as a timeout or a malformed response
-now fails as an out-of-memory or a checkpoint that will not load, and both land
-in the same place: that batch counts, and counts wrong.
+A batch that fails is **scored incorrect, not skipped**: a model that fails to
+answer must not come out level with one that answered well, and must not take
+the whole cycle down either. An out-of-memory or a checkpoint that will not
+load lands there: that batch counts, and counts wrong.
+
+**Running out of time is different.** Each model has one fixed limit,
+``[evaluation] model_timeout_seconds``, for loading and judging its whole
+corpus. A model that has not finished within it gets no score from this
+validator that day, and the items it never reached count for nothing. v3.0
+counted them wrong, so the same model scored lower on a slower validator, which
+then disagreed with the rest for a reason that had nothing to do with the model
+(B28).
 
 One thing did get simpler. There is no longer any question of *whose* model
 answered, or whether the thing that answered is the thing that was committed.
@@ -18,14 +24,14 @@ The validator resolved the SHA, fetched those bytes, and ran them itself.
 
 Batching is retained even though there is no request to batch into. It bounds
 how much work is lost when a model fails partway -- a checkpoint that OOMs on
-item 4,000 of 9,000 still scores the 3,999 it answered -- and it keeps the
-token accounting per batch, which is what feeds the efficiency term.
+item 4,000 of 9,000 still scores the 3,999 it answered -- and the clock is
+checked between batches.
 """
 
 from __future__ import annotations
 
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -225,6 +231,7 @@ def evaluate_miner(
     policy_version: str,
     batch_size: int = DEFAULT_BATCH_SIZE,
     deadline_seconds: float | None = None,
+    clock: Callable[[], float] = time.monotonic,
 ) -> MinerEvaluation:
     """Run ``items`` through ``engine`` and return the result.
 
@@ -234,10 +241,11 @@ def evaluate_miner(
     so an exception escaping here would take down the whole subnet's submission
     at once.
 
-    ``deadline_seconds`` bounds one model rather than one batch. A model slow
-    enough to threaten the cycle is scored on what it completed, and the
-    remainder counts against it -- being unable to finish the corpus is a
-    property of the model, not an accident to be forgiven.
+    ``deadline_seconds`` bounds one model, load included, rather than one batch.
+    It is checked after the load and after every batch, so a batch already
+    running is never cut short. A model still short of its last item when the
+    time is up is marked ``timed_out``, and its unfinished items are not
+    recorded: it gets no score, so they count neither way.
     """
     if not policy:
         raise EvaluationError("policy text must not be empty")
@@ -245,7 +253,12 @@ def evaluate_miner(
         raise EvaluationError("policy_version must not be empty")
 
     builder = MinerEvaluationBuilder(target.hotkey)
-    started = time.monotonic()
+    started = clock()
+
+    def out_of_time() -> bool:
+        return deadline_seconds is not None and clock() - started > deadline_seconds
+
+    budget = f"{deadline_seconds:.0f}s" if deadline_seconds is not None else ""
 
     try:
         engine.load()
@@ -274,24 +287,27 @@ def evaluate_miner(
         return builder.build()
 
     try:
+        done = 0
+        if out_of_time():
+            builder.record_timeout(
+                unfinished=len(items), reason=f"the model took over {budget} to load"
+            )
+            return builder.build()
         for batch in iter_batches(items, batch_size):
-            if deadline_seconds is not None and time.monotonic() - started > deadline_seconds:
-                builder.record_failed_batch(
-                    batch,
-                    reason=(f"model exceeded its {deadline_seconds:.0f}s budget before this batch"),
-                )
-                continue
             try:
                 result = engine.moderate(policy, [(item.item_id, item.content) for item in batch])
             except Exception as exc:
                 builder.record_failed_batch(batch, reason=f"{type(exc).__name__}: {exc}")
             else:
                 predicted = {verdict.item_id: verdict.violates for verdict in result.verdicts}
-                builder.record_batch(
-                    batch,
-                    predicted,
-                    total_tokens=result.prompt_tokens + result.completion_tokens,
+                builder.record_batch(batch, predicted)
+            done += len(batch)
+            if out_of_time():
+                builder.record_timeout(
+                    unfinished=len(items) - done,
+                    reason=f"the model had judged {done} of {len(items)} items after {budget}",
                 )
+                break
     finally:
         # One GPU runs every eligible model in turn, so a model left resident is
         # a model the next one cannot fit beside.

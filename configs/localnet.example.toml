@@ -74,8 +74,6 @@ min_members = 30
 # most of a day's test content; its own items are excluded from what it is
 # scored on.
 model_min_scored_items = 100
-efficiency_lambda_bp = 1500
-efficiency_min_cv_bp = 1000
 # Where this validator's weight vector comes from.
 #
 #   "local"    score the day yourself: label the corpus, run every eligible

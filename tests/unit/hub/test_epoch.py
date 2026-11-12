@@ -186,6 +186,31 @@ class TestTheSchema:
             verify_epoch(raw, keys=hub.epoch_keys)
 
 
+class TestTheParameterCount:
+    """3.1: a model row may carry the hub's own count of its parameters."""
+
+    def test_a_row_may_carry_the_hubs_count(self, hub: FakeHub) -> None:
+        raw = hub.publish_day(
+            DAY,
+            miners=standard_miners(),
+            models=[{**_model(MINER_A.ss58_address), "parameters": 494_032_768}],
+        )
+        assert verify_epoch(raw, keys=hub.epoch_keys).models[0].parameters == 494_032_768
+
+    def test_it_is_not_required(self, signed: dict[str, Any], hub: FakeHub) -> None:
+        assert verify_epoch(signed, keys=hub.epoch_keys).models[0].parameters is None
+
+    @pytest.mark.parametrize("count", [-1, "494032768", True])
+    def test_a_count_that_is_not_a_count_is_refused(self, hub: FakeHub, count: object) -> None:
+        raw = hub.publish_day(
+            DAY,
+            miners=standard_miners(),
+            models=[{**_model(MINER_A.ss58_address), "parameters": count}],
+        )
+        with pytest.raises(EpochVerificationError, match="not one this client accepts"):
+            verify_epoch(raw, keys=hub.epoch_keys)
+
+
 class TestWhichDay:
     def test_the_right_epoch_passes(self, hub: FakeHub, signed: dict[str, Any]) -> None:
         epoch = verify_epoch(signed, keys=hub.epoch_keys)

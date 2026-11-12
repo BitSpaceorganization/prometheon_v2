@@ -59,8 +59,6 @@ def miner(hotkey: str, uid: int, weight: int) -> MinerResult:
         model_items_scored=1,
         model_correct_count=1,
         raw_accuracy_bp=10_000,
-        mean_total_tokens_milli=0,
-        efficiency_penalty_bp=0,
         model_score_bp=0,
         model_rank=1,
     )

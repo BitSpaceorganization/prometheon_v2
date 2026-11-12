@@ -75,39 +75,51 @@ A model is evaluated only if all of these hold:
 
 - it's in the epoch's frozen `models` list with `payment = "paid"`
 - its hotkey is eligible
-- it passes the registry checks against Hugging Face: manifest, architecture, size, and the weights fingerprint must equal the one the hub froze
+- it passes the registry checks against Hugging Face: manifest, architecture, the byte ceilings (16 GiB of weights), and the weights fingerprint must equal the one the hub froze
+- it has at most **4,000,000,000 parameters**
 - no earlier model has the same fingerprint, where earlier means first commit block, then hotkey
 
-The others are published with a status: `unpaid`, `duplicate`, `ineligible`, `invalid` or `unreachable`.
+The others are published with a status: `unpaid`, `duplicate`, `ineligible`, `invalid` or `unreachable`. A model over the parameter cap is `invalid`, as too large.
 
-### Accuracy
+### The parameter count
+
+`P` is the sum of the element counts of every tensor in every `*.safetensors` file of the repository at the frozen revision. A tensor's element count is the product of its shape, and a scalar counts 1. The validator reads `P` from the files' safetensors headers with HTTP range requests: the first 8 bytes give the header's length, and the JSON header gives each tensor's shape. No weights are downloaded to count them, so an oversized model is refused before it costs anyone a download. The hub counts the same way and lists only models with `P` ≤ 4,000,000,000.
+
+### The score
 
 Each model runs over the day's labelled corpus: every labelled test post, from all miners, plus the production sample of about 200 public BitFan posts. **Test posts from the model's own coldkey are left out**, across every hotkey under that coldkey.
 
 ```text
-accuracy = correct / scored
+raw_accuracy_bp = correct × 10,000 / scored, rounded half up
+size_penalty_bp = floor(100 × log2(P / 500,000,000))    when P > 500,000,000, else 0
+model_score_bp  = max(0, raw_accuracy_bp − size_penalty_bp)
 ```
+
+The penalty is one point of accuracy for every doubling past half a billion parameters. It's computed in exact integers, so every validator gets the same number:
+
+| P | Penalty |
+|---|---|
+| up to 500M | 0 |
+| 1B | 100 bp (1 point) |
+| 1.5B | 158 bp |
+| 2B | 200 bp |
+| 4B, the cap | 300 bp |
 
 A batch that fails is scored incorrect. If every batch of a model fails, the validator checks that it can still run a model at all. If it can't, the cycle stops instead of scoring the field zero.
 
-### Efficiency
+### The time limit
 
-```text
-t̄ᵢ    = total tokens ÷ items whose batch reported usage
-P₉₀   = 90th percentile of t̄ across models that reported usage
-tᵢ    = clamp(t̄ᵢ / P₉₀, 0, 1)
-score = accuracy × (1 − λ·tᵢ)                 λ = efficiency_lambda_bp = 15%
-```
-
-- **The spread guard.** If the coefficient of variation of `t̄` across the field is below `efficiency_min_cv_bp` (10%), λ is zero for the day. Forced-choice decoding makes token counts nearly uniform, so this is the usual case.
-- **A model that reported no usage isn't free.** It takes `t = 1` and stays out of `P₉₀` and the spread guard.
-- **Multiplicative, and capped at 15%.** Efficiency can't overturn a wider accuracy gap.
+Each model has one fixed limit, `[evaluation] model_timeout_seconds` (1,800 seconds), to load and judge its whole corpus. A model that hasn't finished within it gets no score from that validator for the day. It's published as `timed_out` and isn't ranked. The items it didn't reach count neither for it nor against it. A model at the size cap needs minutes on one 24 GB card, so the limit only stops a model that would hold up the cycle for hours.
 
 ### Ranks and places
 
-- A model scored on fewer than `model_min_scored_items` (100) items isn't ranked.
-- A score of zero is never paid.
-- Ranking is score descending, then accuracy descending, then hotkey ascending.
+A model ranks only with a score above zero and at least `model_min_scored_items` (100) scored items. Then, for first place:
+
+1. Take the best score among the models still unplaced.
+2. Among the models whose score is at least that best score less 100 bp, the place goes to the earliest `commit_block`: the first block at which that hotkey committed those weights, from the epoch. Ties go to the lower hotkey.
+3. Remove the winner and repeat for second and third.
+
+So an earlier model keeps its place unless a later one beats it by more than a full point. A copy that's a hair better, or a fine-tune that changes a few items, doesn't displace the model it came from.
 
 ```text
 model_rank_shares_bp = [2500, 400, 100]      shares of TOTAL emission
@@ -117,6 +129,8 @@ two winners     25%   5%           the empty third place goes to the lowest winn
 one winner      30%
 none            the 30% burns
 ```
+
+For example, A scores 9,500 and committed at block 300, B scores 9,450 at block 100, and C scores 9,300 at block 200. First place: the best is 9,500, and A and B are within a point of it, so B, committed first, takes it. Second place: the best of A and C is 9,500, and only A is within a point. C is third.
 
 ---
 
@@ -157,7 +171,7 @@ These are the numbers in `tests/integration/test_validator_run.py`, which drives
 
 - **Miners:** A, B, C and D. D has 14 verified active members but only 29 members, so it's ineligible.
 - **Data:** A has 6 violating and 4 compliant posts, all confirmed. B has 5 and 5. C has 3 confirmed violating and 7 claimed compliant, of which the labeller finds 2 violating.
-- **Models:** A misses nothing, C misses 3 items and B misses 6.
+- **Models:** each is scored on 110 items. A misses nothing, C misses 3 items and B misses 6. C has 1B parameters, so it carries a 100 bp penalty. A and B are under 500M.
 
 ```text
 data scores        A 8      B 10     C 4.8         total 22.8
@@ -165,6 +179,8 @@ exact shares       A 245,614.04   B 307,017.54   C 147,368.42
 floors             245,614 + 307,017 + 147,368 = 699,999 → 1 left, largest remainder B
 data units         A 245,614      B 307,018      C 147,368
 
+model scores       A 10,000      C 9,727 − 100 = 9,627      B 9,455
+places             A (no one within a point)   then C   then B
 models             A first 250,000    C second 40,000    B third 10,000
 
 units              A 495,614      B 317,018      C 187,368      burn 0
@@ -185,7 +201,7 @@ sent               45,875          16,384      2,621      655      (+1 to A, +1 
 After sending, each validator signs a record of the day and posts it to the hub. For every eligible miner, and every hotkey with a listed model, the record carries:
 
 - `S`, `V_pos` and `V_neg`, and the data score in millionths
-- the model status, accuracy, rank and score
+- the model status, the parameter count `P` (`model_parameters`), `raw_accuracy_bp`, `size_penalty_bp`, `model_score_bp` and the rank
 - `weight`, the units that hotkey earned
 
 `burned_weight` is everything sent to the owner hotkey. The rows plus `burned_weight` sum to exactly 1,000,000 and reproduce the vector the validator sent. The record also names the epoch it scored, by `epoch_content_hash`, so anyone holding the same epoch can recompute it.
@@ -195,6 +211,6 @@ After sending, each validator signs a record of the day and posts it to the hub.
 Given the same epoch, the same labels and the same model verdicts, every validator computes the same vector, with no clock, no randomness and no dependence on iteration order. Two inputs can legitimately differ between validators:
 
 - **Labels.** The labeller is a language model, and two validators can disagree on a borderline post.
-- **Model verdicts on near-ties.** Different GPUs can put slightly different probability on `YES` and `NO`.
+- **Model verdicts on near-ties.** Different GPUs can put slightly different probability on `YES` and `NO`. The one-point band keeps that from reordering two models that score almost the same.
 
 Chain consensus arbitrates both. That's what it's for.

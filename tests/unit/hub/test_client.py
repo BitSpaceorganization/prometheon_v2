@@ -51,9 +51,9 @@ def _record(epoch_hash: str = "e" * 64, weight: int = 600_000) -> EvaluationSubm
         model_status=ModelStatus.EVALUATED,
         model_items_scored=100,
         model_correct_count=90,
+        model_parameters=494_032_768,
         raw_accuracy_bp=9000,
-        mean_total_tokens_milli=1000,
-        efficiency_penalty_bp=0,
+        size_penalty_bp=0,
         model_score_bp=9000,
         model_rank=1,
     )

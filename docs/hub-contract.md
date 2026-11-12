@@ -45,7 +45,7 @@ Built at 01:00 UTC on D+1 from the feed for day D and the chain, frozen at the f
   ],
   "models": [
     {"hotkey": "5...", "repo": "org/name", "revision": "<40 hex>", "commit_block": 1,
-     "fingerprint": "<64 hex>", "payment": "paid"}
+     "fingerprint": "<64 hex>", "payment": "paid", "parameters": 494032768}
   ],
   "files": {"test": {"sha256": "<64 hex>", "count": 1}, "production": {"sha256": "<64 hex>", "count": 1}},
   "key_id": "hub-2026-11",
@@ -60,8 +60,9 @@ Built at 01:00 UTC on D+1 from the feed for day D and the chain, frozen at the f
   - Validators refuse an epoch where `verified_active_members > members`.
   - `eligible` is the hub's own view, for its dashboard. Validators decide from the two counts and their config.
 - **`models`:** one row per registered hotkey whose frozen commitment decodes and has a fingerprint, sorted by `(commit_block, hotkey)`.
-  - `commit_block` is the **first** block at which that hotkey committed that fingerprint.
+  - `commit_block` is the **first** block at which that hotkey committed that fingerprint. It also decides ranks: among models within a point of the best score, the earliest wins.
   - Validators evaluate `payment == "paid"` only, as published.
+  - `parameters` is optional: `P` as the hub counted it, by the definition below. Validators count for themselves and use their own count. A differing count is noted in their log.
 - **`policy`:** sha256 of the bytes of `content_policy.md`, and its `Version:` line. A validator with a different policy file stops.
 - **`files`:** sha256 over the gzip bytes, and the line count. A mismatch stops the cycle.
 
@@ -73,9 +74,15 @@ fingerprint = sha256( "\n".join( sorted( lfs_sha256 of every *.safetensors file 
 
 Lowercase hex, no trailing newline. The LFS sha256s come from `GET /api/models/{repo}/revision/{revision}?blobs=true`. File names don't count. A repository with no safetensors, or with one outside LFS, gets no fingerprint, isn't listed and isn't charged.
 
+### Parameter count
+
+`P` is the sum of the element counts of every tensor in every `*.safetensors` file at the revision. A tensor's element count is the product of its `shape`, and a scalar (`shape: []`) counts 1. `__metadata__` isn't a tensor.
+
+It's read from each file's header with two HTTP range requests on `/{repo}/resolve/{revision}/{file}`: bytes 0 to 7 give the header length `N`, little-endian, and bytes 8 to `8 + N - 1` are the JSON header. Nothing else in the header is checked. A file whose header can't be read makes the model invalid: `N` of 0, `N` over 8 MiB, `8 + N` past the file's size, a header that isn't a JSON object of tensors with lists of non-negative integer shapes, or a weight file that isn't at the top of the repository.
+
 ### Payment
 
-The hub lists a model only if it passes the hub's own copy of the registry checks: the file manifest, at most 256 weight files, `config.json` with a `model_type` the runtime knows, the 24 GiB and 64 MiB ceilings, and weights in LFS. For each fingerprint, among the hotkeys committing it in this epoch:
+The hub lists a model only if it passes the hub's own copy of the registry checks: the file manifest, at most 256 weight files, `config.json` with a `model_type` the runtime knows, the 16 GiB and 64 MiB ceilings, weights in LFS, and `P` ≤ 4,000,000,000. For each fingerprint, among the hotkeys committing it in this epoch:
 
 1. A hotkey that has already spent a credit on this fingerprint holds it: `paid`, with no new spend.
 2. Otherwise, in `(commit_block, hotkey)` order, the first hotkey whose coldkey has a free credit at `frozen_block` holds it: `paid`. **The credit is spent at this freeze only if the holder's miner is eligible**, which is the only case in which validators evaluate it. Otherwise it is set aside for this freeze and carried forward.
@@ -141,8 +148,12 @@ The body of `POST /api/v1/results` is the validator's signed `EvaluationSubmissi
 - `corpus_content_hash`, `labelled_test_count`, `labelled_production_count`
 - `results[]`, one row for every eligible miner and every hotkey with a listed model:
   - `dataset_submitted_count` (`S`), `dataset_violating_confirmed` (`V_pos`), `dataset_compliant_confirmed` (`V_neg`), `dataset_valid_count` (`V_pos + V_neg`), `dataset_score_micro`
-  - `model_status`: `not_committed`, `unpaid`, `duplicate`, `ineligible`, `invalid`, `unreachable` or `evaluated`
-  - accuracy, efficiency, `model_score_bp`, `model_rank`
+  - `model_status`: `not_committed`, `unpaid`, `duplicate`, `ineligible`, `invalid`, `unreachable`, `timed_out` or `evaluated`
+  - `model_items_scored`, `model_correct_count` and `raw_accuracy_bp`
+  - `model_parameters`: `P` as this validator read it, or `null` when the model never reached that check
+  - `size_penalty_bp`: `floor(100 × log2(P / 500,000,000))`, 0 up to 500M, for a model that passed every check, or `null`
+  - `model_score_bp`: `max(0, raw_accuracy_bp − size_penalty_bp)`, and 0 for a model with no score, such as one that timed out
+  - `model_rank`: its place, or `null` when it doesn't rank
   - `weight`: the units that hotkey earned, never including burn
 - `burned_weight`: everything sent to the owner hotkey, including units of a hotkey that deregistered before the send. Rows plus `burned_weight` sum to exactly 1,000,000 and reproduce the vector the validator sent.
 - `started_at`, `completed_at`, `signature`

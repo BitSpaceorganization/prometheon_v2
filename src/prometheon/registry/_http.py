@@ -60,6 +60,14 @@ class _RetryableStatusError(Exception):
         self.status_code = status_code
 
 
+class _IncompleteBodyError(Exception):
+    """Internal signal: the body ended before the bytes asked for arrived.
+
+    The caller checked the file's size before asking, so a short body is the
+    transfer's fault, not the file's, and is retried like a dropped connection.
+    """
+
+
 def _raise_for_status(response: httpx.Response, what: str) -> None:
     """Turn a response status into either a retry signal or a typed failure."""
     code = response.status_code
@@ -157,6 +165,44 @@ class RegistryHttpClient:
             what, lambda: self._stream_capped(url, what=what, max_bytes=max_bytes)
         )
 
+    def get_range(self, url: str, *, what: str, start: int, length: int) -> bytes:
+        """``length`` bytes of ``url`` from offset ``start``, with an HTTP range request.
+
+        The way a model's size is read without downloading it: two small reads
+        per weight file instead of gigabytes. A server that ignores ``Range``
+        and answers 200 with the whole file is read only as far as needed and
+        then closed, so the result is the same and the cost stays bounded.
+        """
+        if start < 0 or length < 1:
+            raise RegistryError(f"cannot read {length} bytes at offset {start} of {what}")
+        return self._with_retries(
+            what, lambda: self._read_range(url, what=what, start=start, length=length)
+        )
+
+    def _read_range(self, url: str, *, what: str, start: int, length: int) -> bytes:
+        headers = {"Range": f"bytes={start}-{start + length - 1}"}
+        with self._client.stream("GET", url, headers=headers) as response:
+            _raise_for_status(response, what)
+            if response.status_code == 206:
+                skip = 0
+            elif response.status_code == 200:
+                skip = start
+            else:
+                raise RegistryError(
+                    f"{what} answered a range request with HTTP {response.status_code}"
+                )
+            wanted = skip + length
+            received = bytearray()
+            for chunk in response.iter_bytes():
+                received += chunk
+                if len(received) >= wanted:
+                    break
+        if len(received) < wanted:
+            raise _IncompleteBodyError(
+                f"{what} ended after {max(0, len(received) - skip)} of {length} bytes"
+            )
+        return bytes(received[skip:wanted])
+
     def _stream_capped(self, url: str, *, what: str, max_bytes: int) -> bytes:
         """Read a response body, stopping at ``max_bytes`` rather than buffering it.
 
@@ -180,7 +226,7 @@ class RegistryHttpClient:
         for attempt in range(self._retries + 1):
             try:
                 return call()
-            except _RetryableStatusError as exc:
+            except (_RetryableStatusError, _IncompleteBodyError) as exc:
                 last_error = str(exc)
             except httpx.HTTPError as exc:
                 last_error = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__

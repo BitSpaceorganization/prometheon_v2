@@ -30,18 +30,28 @@ from prometheon.scoring.dataset import (
     score_dataset,
 )
 from prometheon.scoring.model import (
+    RANK_BAND_BP,
     ModelEvaluation,
     ModelRanking,
     ModelScore,
+    accuracy_bp,
     allocate_model_pool,
     rank_models,
     score_models,
+)
+from prometheon.scoring.size import (
+    MAX_MODEL_PARAMETERS,
+    PENALTY_FREE_PARAMETERS,
+    size_penalty_bp,
 )
 
 __all__ = [
     "BASIS_POINTS",
     "DEFAULT_WEIGHT_POOL_UNITS",
+    "MAX_MODEL_PARAMETERS",
     "MICROS_PER_UNIT",
+    "PENALTY_FREE_PARAMETERS",
+    "RANK_BAND_BP",
     "AllocationTarget",
     "DatasetScore",
     "DatasetSubmission",
@@ -49,6 +59,7 @@ __all__ = [
     "ModelRanking",
     "ModelScore",
     "WeightSplit",
+    "accuracy_bp",
     "allocate",
     "allocate_dataset_pool",
     "allocate_model_pool",
@@ -57,5 +68,6 @@ __all__ = [
     "rank_models",
     "score_dataset",
     "score_models",
+    "size_penalty_bp",
     "to_micros",
 ]

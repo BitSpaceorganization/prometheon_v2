@@ -200,6 +200,10 @@ class EpochModel(_Lenient):
     #: sha256 over the sorted Hugging Face LFS sha256s of every safetensors file.
     fingerprint: str
     payment: Payment
+    #: ``P`` as the hub counted it, by the same definition validators use. For
+    #: the hub's dashboard and for comparison: validators count for themselves
+    #: and use their own, and an epoch without it is just as valid.
+    parameters: StrictInt | None = Field(default=None, ge=0)
 
     @field_validator("hotkey")
     @classmethod
@@ -308,12 +312,16 @@ class ModelStatus(str, Enum):
     DUPLICATE = "duplicate"
     #: Listed and paid, but the hotkey is below the eligibility floor.
     INELIGIBLE = "ineligible"
-    #: Listed and paid, but the repository failed a validator's checks.
+    #: Listed and paid, but the repository failed a validator's checks, a
+    #: model over the 4-billion parameter cap among them.
     INVALID = "invalid"
     #: Evaluated.
     EVALUATED = "evaluated"
     #: Verified, but could not be downloaded or run.
     UNREACHABLE = "unreachable"
+    #: Verified and run, but it did not finish within the time limit, so it
+    #: has no score from this validator for the day.
+    TIMED_OUT = "timed_out"
 
 
 class MinerResult(_Strict):
@@ -344,9 +352,16 @@ class MinerResult(_Strict):
     model_status: ModelStatus
     model_items_scored: int = Field(ge=0)
     model_correct_count: int = Field(ge=0)
+    #: ``P``, as this validator read it from the safetensors headers, or
+    #: ``None`` when the model never reached that check.
+    model_parameters: int | None = Field(default=None, ge=0)
+    #: ``model_correct_count / model_items_scored`` in basis points.
     raw_accuracy_bp: int = Field(ge=0, le=10_000)
-    mean_total_tokens_milli: int = Field(ge=0)
-    efficiency_penalty_bp: int = Field(ge=0, le=10_000)
+    #: ``floor(100 * log2(P / 500M))``, 0 up to 500M, for a model that passed
+    #: every check, or ``None``.
+    size_penalty_bp: int | None = Field(default=None, ge=0, le=10_000)
+    #: ``max(0, raw_accuracy_bp - size_penalty_bp)``; 0 for a model with no
+    #: score, such as one that timed out.
     model_score_bp: int = Field(ge=0, le=10_000)
     model_rank: int | None = Field(default=None, ge=1)
 
@@ -414,15 +429,15 @@ def _result_payload(result: MinerResult) -> dict[str, Any]:
         "dataset_submitted_count": result.dataset_submitted_count,
         "dataset_valid_count": result.dataset_valid_count,
         "dataset_violating_confirmed": result.dataset_violating_confirmed,
-        "efficiency_penalty_bp": result.efficiency_penalty_bp,
         "hotkey": result.hotkey,
-        "mean_total_tokens_milli": result.mean_total_tokens_milli,
         "model_correct_count": result.model_correct_count,
         "model_items_scored": result.model_items_scored,
+        "model_parameters": result.model_parameters,
         "model_rank": result.model_rank,
         "model_score_bp": result.model_score_bp,
         "model_status": result.model_status.value,
         "raw_accuracy_bp": result.raw_accuracy_bp,
+        "size_penalty_bp": result.size_penalty_bp,
         "uid": result.uid,
         "weight": result.weight,
     }

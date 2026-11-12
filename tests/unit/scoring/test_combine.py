@@ -35,16 +35,17 @@ def _dataset(*rows: tuple[str, int, int, int]) -> tuple[DatasetScore, ...]:
 
 
 def _models(*pairs: tuple[str, int]) -> tuple[ModelScore, ...]:
+    """Models under 500M parameters, so no penalty, each a whole point apart or more."""
     return score_models(
         [
             ModelEvaluation(
                 hotkey=hotkey,
                 correct_count=correct,
                 scored_count=1000,
-                total_tokens=500,
-                token_reading_count=1,
+                commit_block=100 + position,
+                parameters=400_000_000,
             )
-            for hotkey, correct in pairs
+            for position, (hotkey, correct) in enumerate(pairs)
         ],
         scoring=V3,
     ).scores

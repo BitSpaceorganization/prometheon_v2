@@ -96,8 +96,11 @@ rather than trimming them.
 ## Changing anything that moves emissions
 
 Every reward-affecting constant lives in `ScoringConfig`
-([`src/prometheon/config.py`](src/prometheon/config.py)) with the reasoning that
-produced it. A change to one of them:
+([`src/prometheon/config.py`](src/prometheon/config.py)), or, for the model rules
+the hub applies too, in [`src/prometheon/scoring/size.py`](src/prometheon/scoring/size.py)
+(the parameter cap and the size penalty) and
+[`src/prometheon/scoring/model.py`](src/prometheon/scoring/model.py) (the ranking
+band), each with the reasoning that produced it. A change to one of them:
 
 1. changes the constant **and** its comment,
 2. updates [`docs/scoring.md`](docs/scoring.md), which is the published rule,

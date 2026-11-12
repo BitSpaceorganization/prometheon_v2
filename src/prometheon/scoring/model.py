@@ -1,60 +1,74 @@
-"""Model performance scoring, with an efficiency term that knows when to shut up.
+"""Model scoring: accuracy, less a size penalty, and a ranking that favours the first.
 
-Accuracy is the point: ``correct / scored``. The efficiency term exists only to
-break the tie between two models that moderate equally well but cost the network
-very different amounts of compute to run::
+For every model that finished its corpus in time::
 
-    t_i   = clamp(mean_tokens_i / P90(mean_tokens), 0, 1)
-    score = accuracy * (1 - lambda * t_i)
+    raw_accuracy_bp = correct * 10,000 / scored, rounded half up
+    size_penalty_bp = floor(100 * log2(P / 500,000,000)), 0 up to 500M parameters
+    model_score_bp  = max(0, raw_accuracy_bp - size_penalty_bp)
 
-Two guards keep it from doing damage:
+Everything is an integer, and the record publishes all three, so anyone can
+recompute a validator's ranking from its record.
 
-- **lambda is capped in config**, so efficiency can never overturn an accuracy
-  gap wider than that cap.
-- **The spread guard.** If the coefficient of variation of mean token usage
-  across the field is below ``efficiency_min_cv_bp``, every model costs about the
-  same and the differences that remain are sampling noise: batching, a longer
-  item drawn into one model's shuffle. Applying lambda there would reorder close
-  rankings at random, which is indistinguishable from a coin flip deciding
-  emission. Below the threshold the term switches off entirely.
+**Ranking.** A model ranks only with a score above zero and at least
+``model_min_scored_items`` scored items. Among the models whose score is
+within :data:`RANK_BAND_BP` (one point) of the best, the one first committed
+wins: the earliest ``commit_block``, which the epoch gives as the first block
+at which that hotkey committed those weights, then the lower hotkey. It is
+removed, and the same rule picks second, then third.
 
-The comparison is done on exact rationals. ``CV < c`` is equivalent to
-``variance * 10000^2 < c_bp^2 * mean^2`` for a positive mean, which avoids a
-square root and therefore avoids a float ever touching a ranking decision.
+So an earlier model keeps its place unless a later one beats it by more than a
+full point. A copy that is a hair better, or a fine-tune that moves a few
+items, doesn't take the place of the model it was built from, and two
+validators whose GPUs put a near-tie a hair apart still agree on the order.
+
+A model that ran out of time, or scored nothing at all, gets no score.
+
+This replaces v3.0's token-efficiency term, which measured the miner's
+tokenizer rather than the model's cost (B29). Size is a cost every validator
+pays the same way, and the parameter count is read the same way everywhere.
 """
 
 from __future__ import annotations
 
-import math
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from fractions import Fraction
 from typing import Final
 
 from prometheon.config import ScoringConfig
 from prometheon.errors import ScoringError
 from prometheon.scoring.allocation import BASIS_POINTS
+from prometheon.scoring.size import size_penalty_bp
 
-#: Where the token-cost scale is read off. The 90th percentile rather than the
-#: maximum: one pathological model must not compress everyone else's ``t`` to
-#: near zero and neutralise the term for the whole field.
-_PERCENTILE: Final[Fraction] = Fraction(9, 10)
+#: How far below the best score a model may sit and still win a place by
+#: having been committed first: one point of accuracy.
+RANK_BAND_BP: Final[int] = 100
+
+
+def accuracy_bp(correct: int, scored: int) -> int:
+    """``correct / scored`` in basis points, rounded half up; 0 when nothing was scored.
+
+    The record publishes this as ``raw_accuracy_bp``, and the score is computed
+    from the published value, so the two can never disagree.
+    """
+    if scored <= 0:
+        return 0
+    return (correct * BASIS_POINTS + scored // 2) // scored
 
 
 @dataclass(frozen=True, slots=True)
 class ModelEvaluation:
-    """What one miner's deployed model did over the day's corpus.
-
-    ``token_reading_count`` is separate from ``scored_count`` because a batch
-    that fails is scored incorrect but reports no usage.
-    Averaging its zero tokens in would make a broken model look cheap.
-    """
+    """What one miner's model did over the day's corpus."""
 
     hotkey: str
     correct_count: int
     scored_count: int
-    total_tokens: int = 0
-    token_reading_count: int = 0
+    #: The first block at which this hotkey committed these weights, from the
+    #: signed epoch. Decides ranks within :data:`RANK_BAND_BP`.
+    commit_block: int
+    #: ``P``, read from the model's safetensors headers.
+    parameters: int
+    #: The model did not finish within the time limit, so it gets no score.
+    timed_out: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,127 +76,103 @@ class ModelScore:
     hotkey: str
     correct_count: int
     scored_count: int
-    accuracy: Fraction
-    #: ``None`` when the model never reported usage, which is distinct from
-    #: zero. Publishing a zero here would read as "free inference" and make the
-    #: least reliable model in the field look like the most efficient one.
-    mean_total_tokens: Fraction | None
-    efficiency_t: Fraction
-    score: Fraction
+    commit_block: int
+    parameters: int
+    raw_accuracy_bp: int
+    size_penalty_bp: int
+    #: ``max(0, raw_accuracy_bp - size_penalty_bp)``.
+    score_bp: int
 
 
 @dataclass(frozen=True, slots=True)
 class ModelRanking:
-    """Ranked scores plus the evidence for how the efficiency term was applied.
+    """Every model's score, and the order the ranked ones were placed in."""
 
-    ``applied_lambda_bp`` is the lambda that actually ran, which is zero
-    whenever a guard fired. Publishing it means an operator can tell "efficiency
-    changed nothing" apart from "efficiency was switched off", without rerunning
-    the cycle.
-    """
-
+    #: Every model that finished and scored at least one item, by hotkey.
     scores: tuple[ModelScore, ...]
-    applied_lambda_bp: int
-    p90_mean_tokens: Fraction
-    mean_token_cv_micros: int
+    #: The models that rank, best first. Only the first places are paid.
+    ranked: tuple[ModelScore, ...]
+
+    def rank_of(self, hotkey: str) -> int | None:
+        """A model's place, from 1, or ``None`` when it does not rank."""
+        for position, score in enumerate(self.ranked, start=1):
+            if score.hotkey == hotkey:
+                return position
+        return None
 
 
 def score_models(evaluations: Iterable[ModelEvaluation], *, scoring: ScoringConfig) -> ModelRanking:
-    """Score and rank every evaluated model, best first.
+    """Score every model and rank the ones that qualify.
 
-    Models with no scored items are dropped: accuracy is undefined for them, and
-    inventing a value would pay a rank share to a model that was never measured.
+    A model that timed out, or whose corpus held no items, gets no score:
+    accuracy is undefined for it, and inventing one would pay a rank share to a
+    model that was never measured.
     """
-    measured = _validated(evaluations, min_scored_items=scoring.model_min_scored_items)
-    if not measured:
-        return ModelRanking(
-            scores=(), applied_lambda_bp=0, p90_mean_tokens=Fraction(0), mean_token_cv_micros=0
-        )
-
-    means = [_mean_tokens(evaluation) for evaluation in measured]
-
-    # The field statistics are computed over models that actually reported
-    # usage, and nothing else.
-    #
-    # This is a griefing fix. A model that never reported a reading used to
-    # contribute a mean of *zero* to the distribution. Zero there means no
-    # measurement at all, but it reads as the cheapest model in the field. One
-    # such entry drags the P90 down, so honest models clamp to t=1 and eat the
-    # full discount, and it inflates the spread so the CV guard stops firing,
-    # which switches lambda back on across a field the guard had correctly
-    # classified as noise. That is enough to swap rank 1 and rank 2 on a token
-    # difference that means nothing: 2100bp of total subnet emission moved by a
-    # miner who earns nothing and pays nothing. Register a hotkey, commit a
-    # valid model, let the deployment return 500. That is the whole attack.
-    readings = [mean for mean in means if mean is not None]
-    p90 = _percentile_90(readings) if readings else Fraction(0)
-    cv_micros = _coefficient_of_variation_micros(readings) if readings else 0
-    applied_lambda_bp = _applied_lambda_bp(readings, p90, scoring) if readings else 0
-    lambda_fraction = Fraction(applied_lambda_bp, BASIS_POINTS)
-
-    scores: list[ModelScore] = []
-    for evaluation, mean in zip(measured, means, strict=True):
-        accuracy = Fraction(evaluation.correct_count, evaluation.scored_count)
-        if mean is None:
-            # No reading is the *worst* efficiency, never the best. A model that
-            # reports no usage cannot be shown to be cheap, and treating the
-            # absence as zero would hand the maximum efficiency bonus to a
-            # deployment that answered nothing. It would also give every model
-            # an incentive to omit its usage figures.
-            efficiency_t = Fraction(1)
-        elif p90 == 0:
-            efficiency_t = Fraction(0)
-        else:
-            efficiency_t = _clamp_unit(mean / p90)
-        scores.append(
-            ModelScore(
-                hotkey=evaluation.hotkey,
-                correct_count=evaluation.correct_count,
-                scored_count=evaluation.scored_count,
-                accuracy=accuracy,
-                mean_total_tokens=mean,
-                efficiency_t=efficiency_t,
-                score=accuracy * (1 - lambda_fraction * efficiency_t),
-            )
-        )
-
+    scores = [
+        _score(evaluation)
+        for evaluation in _validated(evaluations)
+        if not evaluation.timed_out and evaluation.scored_count > 0
+    ]
+    scores.sort(key=lambda entry: entry.hotkey)
     return ModelRanking(
-        scores=rank_models(scores),
-        applied_lambda_bp=applied_lambda_bp,
-        p90_mean_tokens=p90,
-        mean_token_cv_micros=cv_micros,
+        scores=tuple(scores),
+        ranked=rank_models(scores, min_scored_items=scoring.model_min_scored_items),
     )
 
 
-def rank_models(scores: Iterable[ModelScore]) -> tuple[ModelScore, ...]:
-    """Score descending, then accuracy descending, then hotkey ascending.
+def rank_models(scores: Iterable[ModelScore], *, min_scored_items: int) -> tuple[ModelScore, ...]:
+    """Place every qualifying model: the first committed within a point of the best.
 
-    Three keys because the first two really do tie: with the efficiency term off
-    two models with identical accuracy score identically, and the difference
-    between rank 1 and rank 2 is 2100bp of subnet emission. That may not be
-    decided by whatever order a dict happened to iterate in.
+    Qualifying means a score above zero and at least ``min_scored_items``
+    scored items. Each place goes to the model with the earliest
+    ``commit_block``, then the lowest hotkey, among those scoring at least the
+    best remaining score less :data:`RANK_BAND_BP`. Every key is part of a
+    total order, so no place depends on the order the scores arrived in.
+
+    ``min_scored_items`` is an eligibility floor, not a tie-break. Accuracy over
+    a single item is 100% or 0% and carries no information, and a miner can
+    steer its own corpus size, because its own test content is excluded from
+    what it is scored on.
     """
-    return tuple(sorted(scores, key=lambda entry: (-entry.score, -entry.accuracy, entry.hotkey)))
+    field: list[ModelScore] = []
+    seen: set[str] = set()
+    for entry in scores:
+        if entry.hotkey in seen:
+            raise ScoringError(f"duplicate model score for hotkey {entry.hotkey!r}")
+        seen.add(entry.hotkey)
+        if entry.score_bp > 0 and entry.scored_count >= min_scored_items:
+            field.append(entry)
+
+    ranked: list[ModelScore] = []
+    while field:
+        best = max(entry.score_bp for entry in field)
+        contenders = [entry for entry in field if entry.score_bp >= best - RANK_BAND_BP]
+        winner = min(contenders, key=lambda entry: (entry.commit_block, entry.hotkey))
+        ranked.append(winner)
+        field = [entry for entry in field if entry.hotkey != winner.hotkey]
+    return tuple(ranked)
 
 
 def allocate_model_pool(
-    scores: Sequence[ModelScore], *, total_units: int, rank_shares_bp: Sequence[int]
+    scores: Sequence[ModelScore],
+    *,
+    total_units: int,
+    rank_shares_bp: Sequence[int],
+    min_scored_items: int,
 ) -> dict[str, int]:
-    """Pay the top ranks their shares of **total** emission.
+    """Pay the top places their shares of **total** emission.
 
-    The shares are slices of the total, not ratios of a model pool: rank 1 takes
-    ``rank_shares_bp[0]`` basis points of ``total_units``, rank 2 the next, and
-    so on. A place nobody fills goes to the lowest-ranked winner present, so the
-    whole model pool is paid whenever any model qualifies: with the shipped
-    25/4/1, two models take 25% and 5%, and one model takes all 30%. The pool
-    burns only when no model qualifies.
+    The shares are slices of the total, not ratios of a model pool: first place
+    takes ``rank_shares_bp[0]`` basis points of ``total_units``, second the
+    next, and so on. A place nobody fills goes to the lowest-placed winner
+    present, so the whole model pool is paid whenever any model qualifies:
+    with the shipped 25/4/1, two models take 25% and 5%, and one model takes
+    all 30%. The pool burns only when no model qualifies.
 
-    **A zero score is never paid.** A model that answered nothing all day scores
-    exactly zero, and without this filter it would still collect. When the whole
-    field scores zero (the validator's GPU failed every load, or every model is
-    broken), ranking falls through to the hotkey-ascending tie-break, so model
-    emission would be paid out in lexicographic hotkey order, identically on
-    every validator, where consensus could not correct it.
+    The places are worked out here from ``scores`` rather than trusted from the
+    caller's order, because this function decides money. **A zero score is
+    never paid**: :func:`rank_models` leaves it out, so a field where every
+    model scored zero pays nobody and burns, instead of paying in hotkey order.
 
     Returns an empty map when no model earned anything.
     """
@@ -193,7 +183,7 @@ def allocate_model_pool(
     if any(share < 0 for share in rank_shares_bp):
         raise ScoringError("model rank shares must not be negative")
 
-    winners = [entry for entry in rank_models(scores) if entry.score > 0][: len(rank_shares_bp)]
+    winners = rank_models(scores, min_scored_items=min_scored_items)[: len(rank_shares_bp)]
     if not winners:
         return {}
     shares = list(rank_shares_bp[: len(winners)])
@@ -207,118 +197,50 @@ def allocate_model_pool(
     return paid
 
 
-def _validated(
-    evaluations: Iterable[ModelEvaluation], *, min_scored_items: int
-) -> list[ModelEvaluation]:
-    """Evaluations worth scoring, with malformed input rejected outright.
+def _score(evaluation: ModelEvaluation) -> ModelScore:
+    raw = accuracy_bp(evaluation.correct_count, evaluation.scored_count)
+    penalty = size_penalty_bp(evaluation.parameters)
+    return ModelScore(
+        hotkey=evaluation.hotkey,
+        correct_count=evaluation.correct_count,
+        scored_count=evaluation.scored_count,
+        commit_block=evaluation.commit_block,
+        parameters=evaluation.parameters,
+        raw_accuracy_bp=raw,
+        size_penalty_bp=penalty,
+        score_bp=max(0, raw - penalty),
+    )
 
-    ``min_scored_items`` is an eligibility floor, not a tie-break. Accuracy over
-    a single item is 1 or 0 and carries no information, yet it sorts above a
-    model that answered 4999 of 5000 correctly and takes twice its emission.
-    A miner can steer its own corpus size too, because its own test content is
-    excluded from what it is scored on, so a miner supplying most of a day's
-    test content is measured on very little. Dropping the under-measured model
-    makes the rank shares renormalise across those that were actually measured.
-    """
-    measured: list[ModelEvaluation] = []
+
+def _validated(evaluations: Iterable[ModelEvaluation]) -> list[ModelEvaluation]:
+    """Evaluations worth scoring, with malformed input refused outright."""
+    checked: list[ModelEvaluation] = []
     seen: set[str] = set()
     for evaluation in evaluations:
         if evaluation.hotkey in seen:
             raise ScoringError(f"duplicate model evaluation for hotkey {evaluation.hotkey!r}")
         seen.add(evaluation.hotkey)
-        if (
-            evaluation.correct_count < 0
-            or evaluation.scored_count < 0
-            or evaluation.total_tokens < 0
-            or evaluation.token_reading_count < 0
-        ):
+        if evaluation.correct_count < 0 or evaluation.scored_count < 0:
             raise ScoringError(f"negative evaluation counts for {evaluation.hotkey!r}")
         if evaluation.correct_count > evaluation.scored_count:
             raise ScoringError(
                 f"{evaluation.hotkey!r} has more correct items than scored "
                 f"({evaluation.correct_count} > {evaluation.scored_count})"
             )
-        if evaluation.scored_count >= min_scored_items:
-            measured.append(evaluation)
-    return measured
-
-
-def _mean_tokens(evaluation: ModelEvaluation) -> Fraction | None:
-    """Mean tokens per item, or ``None`` when nothing was ever measured.
-
-    ``None`` rather than zero. "No reading" and "zero tokens" are different
-    facts, and collapsing them makes a model that answered nothing the cheapest
-    in the field.
-    """
-    if evaluation.token_reading_count == 0:
-        return None
-    return Fraction(evaluation.total_tokens, evaluation.token_reading_count)
-
-
-def _percentile_90(values: Sequence[Fraction]) -> Fraction:
-    """Linear-interpolated 90th percentile over exact rationals."""
-    ordered = sorted(values)
-    if len(ordered) == 1:
-        return ordered[0]
-    position = _PERCENTILE * (len(ordered) - 1)
-    lower = math.floor(position)
-    upper = min(lower + 1, len(ordered) - 1)
-    return ordered[lower] + (position - lower) * (ordered[upper] - ordered[lower])
-
-
-def _coefficient_of_variation_micros(values: Sequence[Fraction]) -> int:
-    """CV as millionths, for the record only. Never for the guard comparison.
-
-    Reported rather than compared because a standard deviation is irrational and
-    this is a lossy view of it. The guard below compares squares instead.
-    """
-    mean = _mean(values)
-    if mean <= 0:
-        return 0
-    variance = _variance(values, mean)
-    # isqrt over a scaled integer keeps this exact enough to report and free of
-    # any float, at the cost of truncating the last millionth.
-    scaled = variance * (1_000_000**2) / (mean * mean)
-    return math.isqrt(scaled.numerator // scaled.denominator)
-
-
-def _applied_lambda_bp(means: Sequence[Fraction], p90: Fraction, scoring: ScoringConfig) -> int:
-    if p90 <= 0:
-        # No token scale at all: every reading is zero, so there is nothing to
-        # be efficient relative to.
-        return 0
-    mean = _mean(means)
-    if mean <= 0:
-        return 0
-    variance = _variance(means, mean)
-    threshold = Fraction(scoring.efficiency_min_cv_bp)
-    # CV < threshold/10000  <=>  variance * 10000^2 < threshold^2 * mean^2.
-    if variance * (BASIS_POINTS**2) < threshold * threshold * mean * mean:
-        return 0
-    return scoring.efficiency_lambda_bp
-
-
-def _mean(values: Sequence[Fraction]) -> Fraction:
-    return sum(values, Fraction(0)) / len(values)
-
-
-def _variance(values: Sequence[Fraction], mean: Fraction) -> Fraction:
-    """Population variance: this is the whole field of models, not a sample."""
-    return sum(((value - mean) * (value - mean) for value in values), Fraction(0)) / len(values)
-
-
-def _clamp_unit(value: Fraction) -> Fraction:
-    if value < 0:
-        return Fraction(0)
-    if value > 1:
-        return Fraction(1)
-    return value
+        if evaluation.commit_block < 0:
+            raise ScoringError(f"{evaluation.hotkey!r} has a negative commit block")
+        if evaluation.parameters < 0:
+            raise ScoringError(f"{evaluation.hotkey!r} has a negative parameter count")
+        checked.append(evaluation)
+    return checked
 
 
 __all__ = [
+    "RANK_BAND_BP",
     "ModelEvaluation",
     "ModelRanking",
     "ModelScore",
+    "accuracy_bp",
     "allocate_model_pool",
     "rank_models",
     "score_models",

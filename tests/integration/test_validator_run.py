@@ -16,7 +16,8 @@ run in ``tools/localnet/cycle.py`` replaces all three with the real thing.
 
 Every expected number below is derived in the comments from spec section 2:
 70% to data in proportion to ``2 * min(V_pos, V_neg) * (V_pos + V_neg) / S``,
-25% / 4% / 1% to the first three models, largest remainder throughout.
+25% / 4% / 1% to the first three models, each model scored as its accuracy
+less ``floor(100 * log2(P / 500M))``, largest remainder throughout.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ import datetime as dt
 import hashlib
 import importlib
 import json
+import re
 import sys
 import threading
 from collections.abc import Iterator
@@ -68,6 +70,15 @@ MINERS = {
 UIDS = {"A": 2, "B": 3, "C": 4, "D": 5}
 #: (verified active members, members). D is one member short of 30.
 GROUPS = {"A": (14, 40), "B": (12, 31), "C": (10, 30), "D": (14, 29)}
+
+#: Each model's parameter count, split evenly over its two shards. C is the
+#: one past 500M: floor(100 * log2(1B / 500M)) = 100 bp off its accuracy.
+PARAMETERS = {
+    "org-a/guard": 400_000_000,
+    "org-b/guard": 494_000_000,
+    "org-c/guard": 1_000_000_000,
+    "org-d/guard": 400_000_000,
+}
 
 _WORDS = (
     "harbour lantern copper meadow violet engine signal orchard basalt cedar "
@@ -182,6 +193,18 @@ def _huggingface(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"id": repo, "sha": revision, "siblings": siblings})
     if path.endswith("/config.json"):
         return httpx.Response(200, json={"model_type": "qwen2"})
+    if path.endswith(".safetensors"):
+        # The registry reads only the header, by range: an 8-byte length, then
+        # JSON giving each tensor's shape. Half the model's parameters per shard.
+        repo = path.lstrip("/").partition("/resolve/")[0]
+        rows = PARAMETERS[repo] // 2 // 1000
+        header = json.dumps(
+            {"embed": {"dtype": "F16", "shape": [rows, 1000], "data_offsets": [0, 0]}}
+        ).encode()
+        prefix = len(header).to_bytes(8, "little") + header
+        match = re.fullmatch(r"bytes=(\d+)-(\d+)", request.headers["range"])
+        assert match is not None, "weights are read by range, never downloaded"
+        return httpx.Response(206, content=prefix[int(match.group(1)) : int(match.group(2)) + 1])
     return httpx.Response(404, json={"error": "not found"})
 
 
@@ -199,12 +222,11 @@ class Engine:
         return None
 
     def moderate(self, policy: str, items: Any) -> ModerationResult:
-        verdicts = tuple(
-            Verdict(item_id=item_id, violates=self.truth[item_id] != (item_id in self.misses))
-            for item_id, _content in items
-        )
         return ModerationResult(
-            verdicts=verdicts, prompt_tokens=100 * len(verdicts), completion_tokens=len(verdicts)
+            verdicts=tuple(
+                Verdict(item_id=item_id, violates=self.truth[item_id] != (item_id in self.misses))
+                for item_id, _content in items
+            )
         )
 
 
@@ -480,7 +502,13 @@ def test_a_standard_day_on_chain_matches_the_spec_by_hand(run_day: Any) -> None:
     #   total 22.8:  A 245,614.04  B 307,017.54  C 147,368.42
     #   floors sum to 699,999; the one left over goes to the largest
     #   remainder, B: A 245,614, B 307,018, C 147,368.
-    # Models: A misses nothing, C misses 3, B misses 6, D is not evaluated.
+    # Models, each scored on 80 production + 30 other miners' items = 110:
+    #   A misses nothing: 110/110 = 10,000 bp, 400M parameters, no penalty.
+    #   C misses 3: 107/110 = 9,727.3 -> 9,727 bp, less 100 for 1B = 9,627.
+    #   B misses 6: 104/110 = 9,454.5 -> 9,455 bp (half up), 494M, no penalty.
+    #   D is not evaluated.
+    # First place: best 10,000, band >= 9,900 holds only A. Second: best of
+    # B and C is 9,627, band >= 9,527 holds only C. Third: B.
     #   A first 250,000; C second 40,000; B third 10,000. Nothing burns.
     expected = {
         _hotkey("A"): 245_614 + 250_000,
@@ -509,7 +537,21 @@ def test_a_standard_day_on_chain_matches_the_spec_by_hand(run_day: Any) -> None:
         4_800_000,
     ]
     assert [rows[_hotkey(n)].model_rank for n in "ACB"] == [1, 2, 3]
+    assert [
+        (
+            rows[_hotkey(n)].model_parameters,
+            rows[_hotkey(n)].raw_accuracy_bp,
+            rows[_hotkey(n)].size_penalty_bp,
+            rows[_hotkey(n)].model_score_bp,
+        )
+        for n in "ACB"
+    ] == [
+        (400_000_000, 10_000, 0, 10_000),
+        (1_000_000_000, 9_727, 100, 9_627),
+        (494_000_000, 9_455, 0, 9_455),
+    ]
     assert rows[_hotkey("D")].model_status.value == "ineligible"
+    assert rows[_hotkey("D")].model_parameters is None
     assert rows[_hotkey("D")].weight == 0
 
 

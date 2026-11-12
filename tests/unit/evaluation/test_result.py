@@ -53,7 +53,6 @@ def test_every_cell_is_filled_from_the_labels_and_the_answers() -> None:
             "in0": False,  # true negative
             "in1": True,  # false positive
         },
-        total_tokens=44,
     )
     result = builder.build()
 
@@ -66,7 +65,7 @@ def test_every_cell_is_filled_from_the_labels_and_the_answers() -> None:
 def test_the_matrix_always_sums_to_the_corpus() -> None:
     items = batch(30, 70)
     builder = MinerEvaluationBuilder(HOTKEY)
-    builder.record_batch(items, all_correct(items), total_tokens=1100)
+    builder.record_batch(items, all_correct(items))
     builder.record_failed_batch(batch(10, 10, prefix="j"), reason="unreachable")
     result = builder.build()
 
@@ -107,15 +106,15 @@ def test_a_failed_batch_reports_no_verdict_rather_than_a_guess() -> None:
     assert all(verdict.batch_failed for verdict in result.verdicts)
 
 
-def test_a_failed_batch_does_not_dilute_the_token_mean() -> None:
+def test_answered_items_count_only_batches_the_model_answered() -> None:
     good = batch(5, 5)
     builder = MinerEvaluationBuilder(HOTKEY)
-    builder.record_batch(good, all_correct(good), total_tokens=200)
+    builder.record_batch(good, all_correct(good))
     builder.record_failed_batch(batch(5, 5, prefix="j"), reason="unreachable")
     result = builder.build()
 
-    assert result.scored_token_items == 10
-    assert result.mean_total_tokens == pytest.approx(20.0)
+    assert result.answered_items == 10
+    assert result.answered is True
     assert result.total == 20
 
 
@@ -123,9 +122,9 @@ def test_batch_indexes_are_sequential_across_successes_and_failures() -> None:
     first = batch(1, 1, prefix="a")
     third = batch(1, 1, prefix="c")
     builder = MinerEvaluationBuilder(HOTKEY)
-    builder.record_batch(first, all_correct(first), total_tokens=10)
+    builder.record_batch(first, all_correct(first))
     builder.record_failed_batch(batch(1, 1, prefix="b"), reason="boom")
-    builder.record_batch(third, all_correct(third), total_tokens=10)
+    builder.record_batch(third, all_correct(third))
     result = builder.build()
 
     assert result.batches == 3
@@ -149,32 +148,52 @@ def test_an_empty_evaluation_divides_by_nothing() -> None:
     assert result.total == 0
     assert result.raw_accuracy == 0.0
     assert result.accuracy_bp == 0
-    # None rather than 0.0, because "never measured" is not "free". Publishing
-    # zero here made a model that served nothing the most efficient in the
-    # field.
-    assert result.mean_total_tokens is None
-    assert result.mean_total_tokens_milli is None
-    assert result.has_token_reading is False
+    assert result.answered is False
+    assert result.timed_out is False
 
 
 def test_accuracy_basis_points_round_half_up() -> None:
     items = batch(1, 2)
     builder = MinerEvaluationBuilder(HOTKEY)
-    builder.record_batch(items, {"ip0": True, "in0": False, "in1": True}, total_tokens=3)
+    builder.record_batch(items, {"ip0": True, "in0": False, "in1": True})
     result = builder.build()
 
     assert result.raw_accuracy == pytest.approx(2 / 3)
     assert result.accuracy_bp == 6667
 
 
-def test_the_token_mean_keeps_three_decimal_places_as_an_integer() -> None:
-    items = batch(1, 2)
+def test_a_model_that_never_answered_is_not_answered() -> None:
     builder = MinerEvaluationBuilder(HOTKEY)
-    builder.record_batch(items, all_correct(items), total_tokens=10)
+    builder.record_failed_batch(batch(2, 2), reason="the checkpoint is corrupt")
     result = builder.build()
 
-    assert result.mean_total_tokens == pytest.approx(10 / 3)
-    assert result.mean_total_tokens_milli == 3333
+    assert result.answered is False
+    assert result.total == 4
+
+
+# --- running out of time ------------------------------------------------------
+
+
+def test_a_timeout_leaves_the_unfinished_items_unrecorded() -> None:
+    """They count neither for the model nor against it: it gets no score."""
+    done = batch(3, 3)
+    builder = MinerEvaluationBuilder(HOTKEY)
+    builder.record_batch(done, all_correct(done))
+    builder.record_timeout(unfinished=94, reason="judged 6 of 100 items after 1800s")
+    result = builder.build()
+
+    assert result.timed_out is True
+    assert result.unfinished_items == 94
+    assert result.total == 6
+    assert result.correct == 6
+    assert len(result.verdicts) == 6
+    assert result.failed_items == 0
+    assert result.failure_reasons == ("judged 6 of 100 items after 1800s",)
+
+
+def test_a_negative_unfinished_count_is_refused() -> None:
+    with pytest.raises(EvaluationError, match="negative"):
+        MinerEvaluationBuilder(HOTKEY).record_timeout(unfinished=-1, reason="x")
 
 
 # --- builder invariants -----------------------------------------------------
@@ -184,14 +203,7 @@ def test_a_missing_verdict_is_a_programming_error_not_a_silent_zero() -> None:
     items = batch(2, 0)
     builder = MinerEvaluationBuilder(HOTKEY)
     with pytest.raises(EvaluationError, match="no verdict for"):
-        builder.record_batch(items, {"ip0": True}, total_tokens=10)
-
-
-def test_negative_usage_is_refused() -> None:
-    items = batch(1, 0)
-    builder = MinerEvaluationBuilder(HOTKEY)
-    with pytest.raises(EvaluationError, match="negative"):
-        builder.record_batch(items, all_correct(items), total_tokens=-1)
+        builder.record_batch(items, {"ip0": True})
 
 
 def test_an_evaluation_must_name_a_hotkey() -> None:
@@ -205,7 +217,7 @@ def test_an_evaluation_must_name_a_hotkey() -> None:
 def built() -> MinerEvaluation:
     good = batch(3, 3)
     builder = MinerEvaluationBuilder(HOTKEY)
-    builder.record_batch(good, all_correct(good), total_tokens=70)
+    builder.record_batch(good, all_correct(good))
     builder.record_failed_batch(batch(1, 1, prefix="j"), reason="HTTP 500")
     return builder.build()
 
@@ -229,7 +241,7 @@ def test_the_payload_carries_no_floats_and_can_be_signed() -> None:
 def test_a_float_in_the_record_would_be_caught_by_the_encoder() -> None:
     """Guards the test above: prove the encoder is what is doing the work."""
     payload = built().to_payload()
-    payload["mean_total_tokens"] = 11.5
+    payload["accuracy"] = 0.75
     with pytest.raises(CanonicalEncodingError):
         domain_prefixed_bytes(DOMAIN_EVALUATION, payload)
 
@@ -243,7 +255,8 @@ def test_the_payload_reports_the_counts_a_dashboard_needs() -> None:
     assert payload["failed_batches"] == 1
     assert payload["failed_items"] == 2
     assert payload["batches"] == 2
-    assert payload["mean_total_tokens_milli"] == 11667
+    assert payload["answered_items"] == 6
+    assert payload["timed_out"] is False
     assert payload["accuracy_bp"] == 7500
     assert len(payload["verdicts"]) == 8
 

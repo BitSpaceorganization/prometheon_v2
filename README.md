@@ -47,6 +47,9 @@ These match the code under `scoring_version = "prometheon-scoring/3.1"`. [`docs/
 | Data pool | 70% of emission, split among the top 10 eligible miners in proportion to their data score |
 | Data score | `2 × min(V_pos, V_neg) × (V_pos + V_neg) / S` |
 | Model pool | 25%, 4% and 1% of emission to the top three models |
+| Model size | At most 4,000,000,000 parameters and 16 GiB of weights. Past 500 million parameters, accuracy is reduced by one point per doubling: `floor(100 × log2(P / 500M))` basis points |
+| Model ranking | Score is accuracy less the size penalty. Each place goes to the model committed first among those within one point of the best score |
+| Time limit | 30 minutes per model on each validator. A model that hasn't finished gets no score from that validator that day |
 | Unfilled places | An unfilled model place goes to the lowest-ranked winner present: two models get 25% and 5%, and one model gets 30%. A pool burns only when nobody qualifies for it |
 | Eligible miner | At least **10** identity-verified active members **and** at least **30** members in total, as counted in the signed epoch. Both pools. Every member is phone-verified, and the 30 includes the 10 |
 | Whose content counts | Only identity-verified people on BitFan (Stripe Identity). See below |
@@ -113,7 +116,7 @@ export OPENAI_API_KEY="..."     # you pay for ground-truth labelling
 uv run prometheon validator run --config ~/prometheon.toml    # one day; dry_run = true first
 ```
 
-A validator scores yesterday once a day at 04:00 UTC, and re-posts its weights every 30 minutes. Local mode needs serious GPUs. Endpoint mode needs none, but it copies another validator's opinion. Read [`docs/validator.md`](./docs/validator.md) before choosing.
+A validator scores yesterday once a day at 04:00 UTC, and re-posts its weights every 30 minutes. Scoring the day needs one GPU with 24 GB, for example an RTX 4090. Endpoint mode needs none, but it copies another validator's opinion. Read [`docs/validator.md`](./docs/validator.md) before choosing.
 
 ---
 
@@ -122,10 +125,10 @@ A validator scores yesterday once a day at 04:00 UTC, and re-posts its weights e
 ```text
 src/prometheon/hub/         the hub client: signed epochs, feed files, results, credits; a fake hub
 src/prometheon/chain/       metagraph, commitments, weight submission, stake transfers
-src/prometheon/registry/    model checks against Hugging Face: manifest, size, fingerprint, duplicates
+src/prometheon/registry/    model checks against Hugging Face: manifest, size, fingerprint, parameters, duplicates
 src/prometheon/labelling/   ground-truth labelling, one post per request
 src/prometheon/evaluation/  corpus assembly and the forced-choice model engine
-src/prometheon/scoring/     data and model scores, the split, burn
+src/prometheon/scoring/     data and model scores, the size penalty, the split, burn
 src/prometheon/security/    canonical JSON and signatures
 src/prometheon/cli/         the miner and validator commands
 tools/localnet/             a whole cycle on a local chain, with real extrinsics
@@ -144,7 +147,7 @@ docs/                       guides, the scoring rules and the hub contract
 | [`docs/validator.md`](./docs/validator.md) | Running the daily cycle |
 | [`docs/hub-contract.md`](./docs/hub-contract.md) | The signed epoch, the feed lines, and the hub's routes |
 | [`docs/localnet.md`](./docs/localnet.md) | Running the whole cycle on a local chain |
-| [`docs/open-design-issues.md`](./docs/open-design-issues.md) | Two design questions left for the team: the time budget and the efficiency term |
+| [`docs/open-design-issues.md`](./docs/open-design-issues.md) | The two design questions from the v2 review, the time budget and the efficiency term, and how 3.1 settled them |
 
 ## License
 

@@ -2,7 +2,7 @@
 
 A validator scores **yesterday, once a day**, at 04:00 UTC by default, and **re-posts the same weights every 30 minutes** until the next cycle.
 
-You pay for two things: ground-truth labelling (an OpenAI-compatible key) and **the GPUs that run every eligible model**. Miners publish weights and pay nothing at evaluation time.
+You pay for two things: ground-truth labelling (an OpenAI-compatible key) and **the GPU that runs every eligible model**. Miners publish weights and pay nothing at evaluation time.
 
 The owner team runs a validator too, with this same CLI.
 
@@ -12,14 +12,13 @@ The owner team runs a validator too, with this same CLI.
 
 **This applies to `score_source = "local"`, the default, where the validator measures the field itself.** `score_source = "endpoint"` submits a record another validator published and needs no GPU at all. See [Two ways to run a validator](#two-ways-to-run-a-validator), and read what mirroring costs consensus before choosing it.
 
-**Validating locally needs GPUs. The floor is 8 × RTX 5090 (32 GB each, 256 GB in total) or better.** Every eligible paid model is downloaded and run over the whole corpus every day. A machine that can't finish scores the field on whatever it completed, which pays miners for your hardware, not for their models.
+**Scoring the day yourself needs one GPU with 24 GB, for example an RTX 4090, and an OpenAI key for labelling.** Every eligible paid model is downloaded and run over the day's corpus, one model at a time.
 
-- **32 GB per card** is what one model needs. Weights are capped at 24 GiB, and the rest is KV cache and activations.
-- **Eight cards** is what a field needs. One card evaluates one model; it doesn't get through a day.
+- Models are capped at 4 billion parameters and 16 GiB of weights, and the validator loads them in 16-bit, so a model at the cap takes about 8 GB of the card. The rest is cache and activations.
+- A model at the cap judges a day's corpus in minutes.
+- Each model has 30 minutes (`[evaluation] model_timeout_seconds`) to load and judge its corpus. One that doesn't finish gets no score from you for the day (`timed_out`), and its unfinished items count for nothing, so a slow card can't count an honest model's items as wrong. The floor and the margin keep that from happening.
 
-**A known limit:** the runtime evaluates models one at a time on one device. `device` picks it (`auto`, `cuda:0`, `cpu`, `mps`). It doesn't shard a model across cards or run several at once yet, so the eight cards are headroom for a growing field, not something this version already exploits.
-
-`device = "auto"` falls back to CPU when there's no CUDA device. That's enough for a dry run on a laptop, or a two-model local chain, and far too slow for a real day.
+`device` picks the card (`auto`, `cuda:0`, `cpu`, `mps`). `device = "auto"` falls back to CPU when there's no CUDA device. That's enough for a dry run on a laptop, or a two-model local chain, and far too slow for a real day.
 
 ---
 
@@ -72,7 +71,7 @@ uv run prometheon validator run --config ~/prometheon.toml
 2. fetch the signed epoch           verify the hub's signature against your pinned key
 3. download the day's two files     check sha256 and line count; reject malformed lines
 4. decide who is eligible           ≥10 verified active members and ≥30 members
-5. verify the paid models           Hugging Face: manifest, architecture, size, fingerprint
+5. verify the paid models           Hugging Face: manifest, architecture, size, fingerprint, parameters
 6. check you can run a model        a tiny canary on your device and dtype
 7. label every post                 one request per post, never showing the author's claim
 8. run every eligible model         each on its own view of the corpus
@@ -107,7 +106,7 @@ These fail loudly rather than produce a plausible-looking result:
 
 **What doesn't stop a cycle: any single submitter's content.** A post the provider refuses, or that doesn't label cleanly on a second ask, is excluded and costs its submitter, who keeps it in `S` with neither `V`. Each post is labelled in a request of its own, so no post can reach another's verdict. Rate limits and server errors are retried with backoff before a post is judged.
 
-**Nor does any single miner's model.** A model that won't download, won't load, runs out of memory or times out is scored on what it completed, and one that never produced a verdict is published as `unreachable`. A repository that was deleted or made private is `invalid` for the day. The rest of the field is scored as normal.
+**Nor does any single miner's model.** A model that won't download, won't load or runs out of memory is scored on what it completed, and one that never produced a verdict is published as `unreachable`. One that runs out of time is published as `timed_out`, with no score. A repository that was deleted or made private is `invalid` for the day, and so is a model over 4 billion parameters. The rest of the field is scored as normal.
 
 ## Reading the summary
 
@@ -121,8 +120,8 @@ corpus items       1240
 labelling calls    1243
 models verified    6/7
 models evaluated   6
-efficiency lambda  0bp         ← the spread guard fired; usual under forced choice
-token spread       4.10%
+models timed out   0
+models ranked      5
 weighted hotkeys   10
 burn               0 units to 5Owner…
 published rows     11
@@ -191,7 +190,7 @@ The choice is `score_source` under `[scoring]`.
 | | `local` (default) | `endpoint` |
 |---|---|---|
 | Labelling bill | yours | none |
-| GPU | 8 × RTX 5090 or better | none |
+| GPU | one with 24 GB, for example an RTX 4090 | none |
 | Cycle time | hours | seconds |
 | What you submit | what you measured | what another validator measured |
 | Contribution to consensus | an independent opinion | a copy of one |
@@ -233,7 +232,7 @@ You still need a registered hotkey with a validator permit, and you still need t
 
 Labelling is the bill you control. Each post is one request, and every request carries the policy, so a day costs about one policy's worth of input tokens per post. Providers that cache a repeated prompt prefix bill most of that at their cached rate. `[labelling] max_in_flight` (8) sets how many requests are open at once.
 
-Evaluation is your GPU time. Each eligible paid model is downloaded once per revision, loaded, run over the corpus and freed before the next. Only paid models of eligible miners are run, and the submission fee keeps the field to models someone paid to enter.
+Evaluation is your GPU time. Each eligible paid model is downloaded once per revision, loaded, run over the corpus and freed before the next. A model at the 4-billion parameter cap takes minutes. Only paid models of eligible miners are run, and the submission fee keeps the field to models someone paid to enter.
 
 Disk is the other limit: the download cache keeps every revision it has seen. With `[evaluation] discard_checkpoints = true`, each model is deleted after scoring, so the disk needs to hold only the largest model rather than the whole field. Files another revision still uses, such as an unchanged tokenizer, are kept.
 

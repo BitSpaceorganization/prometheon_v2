@@ -88,9 +88,8 @@ from prometheon.registry.validation import (
 from prometheon.scoring.combine import WeightSplit, combine_weights
 from prometheon.scoring.dataset import DatasetScore, DatasetSubmission, score_dataset
 from prometheon.scoring.model import ModelEvaluation, ModelRanking, score_models
+from prometheon.scoring.size import size_penalty_bp
 from prometheon.version import SCORING_VERSION
-
-_BASIS_POINTS = 10_000
 
 
 @dataclass(frozen=True)
@@ -208,6 +207,7 @@ def run_cycle(
     _stop_on_upstream_outage(validations)
     valid = [result for result in validations if result.valid]
     say(f"{len(valid)} of {len(validations)} models can be evaluated")
+    notes.extend(_parameter_notes(epoch, validations))
     if valid:
         # Before anything is paid for: a validator that cannot run a model
         # would label the day and then score every miner zero (B10).
@@ -271,7 +271,13 @@ def run_cycle(
             batch_size=config.evaluation.batch_size,
             deadline_seconds=config.evaluation.model_timeout_seconds,
         )
-        if evaluation.total and not evaluation.has_token_reading:
+        if evaluation.timed_out:
+            notes.append(
+                f"{result.hotkey}: did not finish within "
+                f"{config.evaluation.model_timeout_seconds:.0f}s ({evaluation.total} of "
+                f"{evaluation.total + evaluation.unfinished_items} items); no score today"
+            )
+        elif evaluation.total and not evaluation.answered:
             # Every batch failed. Either the model is broken, which is the
             # miner's, or this validator stopped being able to run anything,
             # which must not be scored. The canary tells them apart.
@@ -287,14 +293,16 @@ def run_cycle(
     # --- 5. score both pools and reduce to one vector ----------------------
     say("scoring")
     dataset_scores = score_dataset(_dataset_submissions(data, labelled, eligible))
+    verified = {result.hotkey: result for result in valid}
     ranking = score_models(
         [
             ModelEvaluation(
                 hotkey=evaluation.hotkey,
                 correct_count=evaluation.correct,
                 scored_count=evaluation.total,
-                total_tokens=evaluation.total_tokens,
-                token_reading_count=evaluation.scored_token_items,
+                commit_block=verified[evaluation.hotkey].commit_block,
+                parameters=_parameters(verified[evaluation.hotkey]),
+                timed_out=evaluation.timed_out,
             )
             for evaluation in evaluations
         ],
@@ -452,9 +460,6 @@ def build_results(result: CycleResult) -> tuple[MinerResult, ...]:
     dataset_by_hotkey = {score.hotkey: score for score in result.dataset_scores}
     evaluation_by_hotkey = {item.hotkey: item for item in result.evaluations}
     score_by_hotkey = {score.hotkey: score for score in result.ranking.scores}
-    rank_by_hotkey = {
-        score.hotkey: position for position, score in enumerate(result.ranking.scores, start=1)
-    }
     validation_by_hotkey = {item.hotkey: item for item in result.validations}
     listed = {model.hotkey for model in result.epoch.models}
     eligible = {miner.hotkey for miner in result.eligible}
@@ -467,6 +472,8 @@ def build_results(result: CycleResult) -> tuple[MinerResult, ...]:
         dataset = dataset_by_hotkey.get(hotkey)
         evaluation = evaluation_by_hotkey.get(hotkey)
         model_score = score_by_hotkey.get(hotkey)
+        validation = validation_by_hotkey.get(hotkey)
+        parameters = validation.parameters if validation is not None else None
         rows.append(
             MinerResult(
                 hotkey=hotkey,
@@ -481,18 +488,22 @@ def build_results(result: CycleResult) -> tuple[MinerResult, ...]:
                     hotkey,
                     listed=hotkey in listed,
                     statuses=result.model_statuses,
-                    validation=validation_by_hotkey.get(hotkey),
+                    validation=validation,
                     evaluation=evaluation,
                 ),
                 model_items_scored=evaluation.total if evaluation else 0,
                 model_correct_count=evaluation.correct if evaluation else 0,
+                model_parameters=parameters,
                 raw_accuracy_bp=evaluation.accuracy_bp if evaluation else 0,
-                mean_total_tokens_milli=(
-                    evaluation.mean_total_tokens_milli or 0 if evaluation else 0
+                # Published for every model that passed its checks, so a miner
+                # sees the penalty even on a day its model did not finish.
+                size_penalty_bp=(
+                    size_penalty_bp(parameters)
+                    if validation is not None and validation.valid and parameters is not None
+                    else None
                 ),
-                efficiency_penalty_bp=_penalty_bp(model_score, result.ranking),
-                model_score_bp=_bp(model_score.score) if model_score else 0,
-                model_rank=rank_by_hotkey.get(hotkey),
+                model_score_bp=model_score.score_bp if model_score else 0,
+                model_rank=result.ranking.rank_of(hotkey),
             )
         )
     return tuple(rows)
@@ -776,20 +787,47 @@ def _model_status(
         return statuses[hotkey]
     if validation is None or not validation.valid:
         return ModelStatus.INVALID
-    if evaluation is None or not evaluation.has_token_reading:
+    if evaluation is not None and evaluation.timed_out:
+        return ModelStatus.TIMED_OUT
+    if evaluation is None or not evaluation.answered:
         return ModelStatus.UNREACHABLE
     return ModelStatus.EVALUATED
 
 
-def _penalty_bp(model_score: Any, ranking: ModelRanking) -> int:
-    """``lambda * t`` in basis points, or zero when the guard switched it off."""
-    if model_score is None:
-        return 0
-    return int(Fraction(ranking.applied_lambda_bp) * model_score.efficiency_t)
+def _parameters(validation: MinerValidation) -> int:
+    """The parameter count a verified model always has.
+
+    Check 7 reads it before a model can be valid, so a valid model without one
+    is a registry that skipped a check, and scoring it as 0 would hand it the
+    smallest penalty there is.
+    """
+    if validation.parameters is None:
+        raise ValidatorFaultError(
+            f"{validation.hotkey}'s model passed verification without a parameter count"
+        )
+    return validation.parameters
 
 
-def _bp(value: Fraction) -> int:
-    return max(0, min(_BASIS_POINTS, int(value * _BASIS_POINTS)))
+def _parameter_notes(epoch: Epoch, validations: tuple[MinerValidation, ...]) -> list[str]:
+    """Where the hub's published count differs from this validator's own.
+
+    The validator's count is the one used. The note is there so a disagreement
+    about the definition shows up in the log before it shows up in a dispute.
+    """
+    published = {model.hotkey: model.parameters for model in epoch.models}
+    notes: list[str] = []
+    for validation in validations:
+        hub_count = published.get(validation.hotkey)
+        if (
+            hub_count is not None
+            and validation.parameters is not None
+            and hub_count != validation.parameters
+        ):
+            notes.append(
+                f"{validation.hotkey}: the hub counted {hub_count:,} parameters, this "
+                f"validator counted {validation.parameters:,} and uses its own"
+            )
+    return notes
 
 
 def _micro(value: Fraction) -> int:
