@@ -6,13 +6,13 @@ Wants=network-online.target
 
 [Service]
 Type=oneshot
-WorkingDirectory=/opt/prometheon_v2
+WorkingDirectory=/opt/prometheon/current
 # OPENAI_API_KEY, one KEY=value per line, mode 0600. Optional (the leading -),
 # because copy mode needs no key.
 EnvironmentFile=-/etc/prometheon/validator.env
 # --extra wrapper keeps torch and transformers installed: a score-mode cycle
 # runs every eligible model. Drop it for copy mode, which runs none.
-ExecStart=/usr/local/bin/uv run --extra wrapper prometheon validator run --config /etc/prometheon/prometheon.toml
+ExecStart=/usr/local/bin/uv run --frozen --extra wrapper prometheon validator run --config /etc/prometheon/prometheon.toml
 # A cycle is hours of labelling and evaluation. Do not let systemd kill it.
 TimeoutStartSec=infinity
 # The day's snapshot can lag 04:00 UTC. Retry rather than losing the day.

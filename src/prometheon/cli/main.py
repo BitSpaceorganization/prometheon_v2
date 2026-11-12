@@ -20,7 +20,7 @@ import os
 import sys
 from collections.abc import Sequence
 
-from prometheon.cli import credits, miner, validator
+from prometheon.cli import credits, miner, update, validator
 from prometheon.cli._common import EXIT_FAILED, EXIT_USAGE, fail, note
 from prometheon.errors import PrometheonError
 from prometheon.version import SUBMISSION_FEE_ALPHA, __version__
@@ -192,6 +192,49 @@ def build_parser() -> argparse.ArgumentParser:
         help=argparse.SUPPRESS,
     )
     schedule.set_defaults(handler=validator.cmd_schedule)
+
+    # -- update -----------------------------------------------------------
+    update_commands = commands.add_parser(
+        "update", help="move this install to a newer release tag, or back"
+    ).add_subparsers(dest="subcommand", required=True)
+    with_config(
+        update_commands.add_parser(
+            "status", help="the running release, the current and previous ones, what is newer"
+        )
+    ).set_defaults(handler=update.cmd_status)
+    with_config(
+        update_commands.add_parser(
+            "check", help="fetch release tags from origin and say whether one is newer"
+        )
+    ).set_defaults(handler=update.cmd_check)
+    apply = with_config(
+        update_commands.add_parser(
+            "apply",
+            help="install the newest release tag beside this one, check it, switch to it",
+            description=(
+                "Only release tags vX.Y.Z from this install's own origin, newer than the "
+                "running version: never a branch, never an older version. The new release "
+                "is installed beside this one and checks itself before anything switches; "
+                "if any step fails, this release stays current. Waits for a running cycle."
+            ),
+        )
+    )
+    apply.add_argument(
+        "--scheduled",
+        action="store_true",
+        help=(
+            "as the timer runs it: do nothing unless [update] auto is on, and skip rather "
+            "than wait while a cycle runs"
+        ),
+    )
+    apply.set_defaults(handler=update.cmd_apply)
+    with_config(
+        update_commands.add_parser("rollback", help="switch back to the previous release")
+    ).set_defaults(handler=update.cmd_rollback)
+    with_config(
+        # Run by `update apply`, from inside the release it is about to switch to.
+        update_commands.add_parser("self-check", help=argparse.SUPPRESS)
+    ).set_defaults(handler=update.cmd_self_check)
 
     return parser
 

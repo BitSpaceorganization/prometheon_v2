@@ -7,8 +7,8 @@ The team doesn't test on testnet. Every end-to-end run happens on a **local subt
 1. A subnet is registered, and two miners and two validators join it.
 2. Each miner buys a credit with `prometheon credits buy`, a real `transfer_stake` to a local treasury coldkey. The script checks the treasury's stake afterwards.
 3. Each miner commits a real Hugging Face model with `prometheon model commit`, and checks it with `model verify`:
-   - `HuggingFaceTB/SmolLM2-135M`
-   - `Qwen/Qwen2.5-0.5B`
+   - `HuggingFaceTB/SmolLM2-135M`, 134,515,008 parameters, no size penalty
+   - `Qwen/Qwen3-0.6B`, 751,632,384 parameters, a size penalty of 58 bp
 4. A local hub (the in-repo `FakeHub`, served over HTTP) freezes the day into a signed epoch from what the chain says: neurons, coldkeys, commitment blocks and weights fingerprints. A local labeller answers from a fixed truth table.
 5. `prometheon validator run` does the rest:
    - fetches and verifies the epoch, and downloads the files
@@ -66,8 +66,8 @@ It's a development chain, but it may be shared, so here is everything the run wr
 - **The chain-wide admin freeze window.** The image's tempo is shorter than its admin freeze window, so no hyperparameter can change while the window is in force. The script reads the window, sets it to 0 for the three changes above, and puts the original value back straight afterwards.
 - **Registrations and stake:**
   - `//Bob` and `//Charlie` register a miner hotkey each, and `//Dave` registers a second validator hotkey, the one in copy mode.
-  - `//Alice` and `//Dave` stake 1,000 TAO each on their validator hotkeys.
-  - Each miner stakes in 100 TAO steps until its hotkey holds 55 alpha.
+  - `//Alice` and `//Dave` stake 1,000 TAO each on their validator hotkeys. The image gives `//Dave` only 2,000 TAO, so when it holds less than 1,100 the script first sends it 1,100 from `//Alice`.
+  - Each miner stakes at the pool's price until its hotkey holds 55 alpha. Every subnet registered on the chain raises the lock cost, and a new subnet's pool starts with that lock, so later runs on one chain pay more TAO for the same alpha.
   - Each miner then pays one credit to `//Eve`: the published fee of 50 alpha. The fee isn't a setting, so the run pays the real amount.
 
 The dev accounts' keys are public by design, and none of this exists anywhere but the local chain. The script never stops the container.
@@ -75,7 +75,7 @@ The dev accounts' keys are public by design, and none of this exists anywhere bu
 ## Things the localnet does differently
 
 - **Short forks are routine.** The image runs two block authors with fast blocks. The SDK reads state again after a write, at a block hash it took before the write, and that read occasionally fails with `State already discarded` although the extrinsic is in. The script checks each setup write by its effect, such as the stake or the registration, rather than by the SDK's report. `prometheon credits buy` does the same for the payment itself: if the SDK reports a failure, the command reads the treasury's stake and reports what actually happened.
-- **The scoring floor is lowered for the run.** `model_min_scored_items` is set to 10, because the day holds a few dozen items rather than thousands. Every other `[scoring]` value is the shipped one.
+- **The day meets the published rules.** The rules are code, so the run can't lower them. It adds 100 ordinary public posts, so each model is scored on more than the 100-item floor.
 - **CPU, float32.** Fine for two small models. It isn't a measure of what a real day costs; see [`validator.md`](./validator.md#hardware).
 
 ## Doing it by hand

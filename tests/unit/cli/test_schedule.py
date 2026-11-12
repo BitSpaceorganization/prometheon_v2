@@ -239,6 +239,74 @@ class TestRepostsContinueWhileACycleRuns:
         assert len(reposts) == 4, "re-posts kept their schedule while the cycle ran"
 
 
+class TestTheUpdateCheck:
+    """With [update] auto on, the loop looks for a release on every boundary."""
+
+    def test_it_runs_on_every_boundary_while_no_cycle_runs(self) -> None:
+        now, sleep = _clock(_at(1, 0))
+        checks: list[dt.datetime] = []
+        run_forever(
+            cycle=lambda _day: None,
+            resubmit=lambda: None,
+            cycle_hour=4,
+            now=now,
+            sleep=sleep,
+            spawn=_inline,
+            max_iterations=3,
+            update=lambda: checks.append(now()),
+        )
+        assert len(checks) == 3
+
+    def test_it_never_runs_while_a_cycle_runs_here(self) -> None:
+        """An update must not land in the middle of a cycle."""
+
+        @dataclass
+        class Running:
+            day: dt.date
+
+            def finished(self) -> bool:
+                return False
+
+            def error(self) -> BaseException | None:
+                return None
+
+        now, sleep = _clock(_at(4, 0))
+        checks: list[int] = []
+        run_forever(
+            cycle=lambda _day: None,
+            resubmit=lambda: None,
+            cycle_hour=4,
+            now=now,
+            sleep=sleep,
+            spawn=lambda _cycle, day: Running(day),
+            max_iterations=3,
+            update=lambda: checks.append(1),
+        )
+        assert checks == []
+
+    def test_a_failing_check_stops_neither_the_loop_nor_the_reposts(self) -> None:
+        now, sleep = _clock(_at(1, 0))
+        reposts: list[int] = []
+        said: list[str] = []
+
+        def broken() -> None:
+            raise RuntimeError("origin unreachable")
+
+        run_forever(
+            cycle=lambda _day: None,
+            resubmit=lambda: reposts.append(1),
+            cycle_hour=4,
+            now=now,
+            sleep=sleep,
+            spawn=_inline,
+            say=said.append,
+            max_iterations=2,
+            update=broken,
+        )
+        assert len(reposts) == 2
+        assert any("update check failed" in line for line in said)
+
+
 class TestSurvivingARestart:
     def test_a_restart_does_not_rerun_a_finished_day(self) -> None:
         now, sleep = _clock(_at(9, 0))
@@ -286,6 +354,7 @@ class TestTheScheduleCommand:
                 submit_weights=True,
                 submit_results=True,
             ),
+            update=SimpleNamespace(auto=False),
         )
         seen: list[argparse.Namespace] = []
         monkeypatch.setattr(cli, "load", lambda _path: config)

@@ -91,7 +91,7 @@ The hub lists a model only if it passes the hub's own copy of the registry check
 
 So a credit is spent only when a model is evaluated. Anyone can recompute the spends from the published epochs alone: a spend happens when a row is `paid`, its miner's row is eligible, and the pair has no earlier spend. An unpaid commit doesn't claim a fingerprint. Deposits count toward a freeze only with `block <= frozen_block`.
 
-**Validators and the hub must agree on the model limits.** If a validator ran different size ceilings or a different `model_type` list from the hub, a model could be charged but not evaluated there, or the reverse. Keep `[evaluation]` at the shipped values.
+**Validators and the hub must agree on the model limits.** If a validator ran different size ceilings or a different `model_type` list from the hub, a model could be charged but not evaluated there, or the reverse. The limits are code, in `src/prometheon/rules.py` and `src/prometheon/scoring/size.py`, and the `model_type` list is `src/prometheon/registry/assets/transformers_model_types.txt`, so the hub takes its copies from the release.
 
 ---
 

@@ -1,0 +1,13 @@
+[Unit]
+Description=Check for a newer Prometheon release every 30 minutes
+# Does nothing unless [update] auto = true in the config. On :15 and :45, away
+# from the re-posts on :00 and :30, so the two never start together.
+
+[Timer]
+OnCalendar=*-*-* *:15,45:00 UTC
+AccuracySec=1min
+Persistent=true
+Unit=prometheon-update.service
+
+[Install]
+WantedBy=timers.target

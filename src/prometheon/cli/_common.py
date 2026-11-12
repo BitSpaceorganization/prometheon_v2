@@ -31,7 +31,10 @@ EXIT_USAGE: Final[int] = 2
 
 
 def load(path: str | Path) -> Config:
-    """Load a config file, or raise :class:`ConfigError` naming the file."""
+    """Load a config file, or raise :class:`ConfigError` naming the file.
+
+    Settings this release no longer reads are ignored, and said so on stderr.
+    """
     resolved = Path(path).expanduser()
     if not resolved.is_file():
         raise ConfigError(
@@ -39,7 +42,11 @@ def load(path: str | Path) -> Config:
             "configs/localnet.example.toml for a local chain) and fill in [wallet] and "
             "[chain] netuid"
         )
-    return load_config(resolved)
+    notes: list[str] = []
+    config = load_config(resolved, notes=notes)
+    for message in notes:
+        note(f"note: {message}")
+    return config
 
 
 def open_wallet(config: Config) -> Any:

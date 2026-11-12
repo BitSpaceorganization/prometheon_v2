@@ -3,8 +3,9 @@
 # Copy this to a local file, then fill in [wallet], [chain] netuid and
 # [hub.epoch_keys]. The subnet's netuid is announced with the release that
 # launches it; until then this file carries 0, which the loader refuses, so a
-# copy cannot point anywhere by accident. Everything under [scoring] is the
-# published rule set and must not be edited alone: see docs/scoring.md.
+# copy cannot point anywhere by accident. This file holds only your own
+# settings. The rules every validator applies are part of the release, so an
+# update never needs you to edit this file: see docs/scoring.md.
 #
 #   cp configs/finney.example.toml ~/prometheon.toml
 #
@@ -76,63 +77,19 @@ temperature = 1.0
 max_in_flight = 8
 
 [evaluation]
-# Running miners' models on this validator's own hardware.
-batch_size = 100
-# Ceiling on a submitted model's weights: 16 GiB, which holds a model at the
-# 4-billion parameter cap in 32-bit floats. The validator loads it in 16-bit,
-# so it fits one 24 GB card. The hub lists only models under the same ceiling,
-# so keep the shipped value. Enforced from the Hugging Face API before anything
-# is downloaded.
-max_weight_bytes = 17179869184
-# Ceiling on everything that is not weights (config, tokenizer, README).
-# Every validator downloads the whole repository, so this keeps one miner from
-# filling every validator's disk.
-max_non_weight_bytes = 67108864
+# Running miners' models on this validator's own hardware. The rules a model is
+# evaluated under, the time limit and the size ceilings, are part of the
+# release, not settings: see docs/scoring.md.
+#
 # Pinned, not inferred. The same checkpoint in float16 and bfloat16 puts
 # different mass on YES and NO, so a near-tie can flip between two validators
-# that differ only in a default.
+# that differ only in a default. Keep float16 on a GPU.
 torch_dtype = "float16"
 # "auto" takes CUDA when present and falls back to CPU, which is fine for a dry
 # run and unusable for a real cycle. Validating needs one GPU with 24 GB, for
 # example an RTX 4090: every eligible model is downloaded and run over the
 # day's corpus, one at a time.
 device = "auto"
-# Seconds one model has to load and judge its whole corpus. A model that hasn't
-# finished gets no score from this validator for the day ("timed_out"), and its
-# unfinished items count for nothing. A model at the size cap needs minutes;
-# keep the shipped value so validators agree.
-model_timeout_seconds = 1800.0
-
-[scoring]
-# The rules this file was written for. A file stating other rules is refused at
-# load, so an old copy fails loudly instead of running new code on old numbers.
-scoring_version = "prometheon-scoring/3.1"
-# These decide emissions. Every share is a slice of total emission, not a ratio
-# of a pool. A pool nobody qualifies for burns to the subnet owner hotkey. Every
-# validator must run the same values: they are not enforced by consensus, so a
-# different value computes a different vector from identical inputs and costs
-# vtrust.
-#
-# Data contribution: 70% of total emission, split by score across the top 10
-# miners scoring above zero.
-dataset_share_bp = 7000
-dataset_top_n = 10
-# Models: 25%, 4% and 1% of total emission to the first, second and third model.
-# A place nobody fills goes to the lowest-ranked winner present: two models take
-# 25% and 5%, one model takes 30%. A pool burns only when nobody qualifies.
-model_rank_shares_bp = [2500, 400, 100]
-# The entry gate, for both pools: a miner counts only with at least this many
-# identity-verified active members in its group AND at least this many members
-# in total. Every member is phone-verified, and the total includes the verified
-# active ones. Both counts come from the signed epoch.
-min_verified_active_members = 10
-min_members = 30
-# A model scored on fewer items than this is not ranked at all. Accuracy over a
-# handful of items is noise, and a miner can shrink its own corpus by supplying
-# most of a day's test content; its own items are excluded from what it is
-# scored on.
-model_min_scored_items = 100
-
 
 [validator]
 # "score" does the day's work: label every post, run every eligible model, and
@@ -145,10 +102,24 @@ mode = "score"
 # published with the launch; until then this is a placeholder that copy mode
 # refuses. Score mode ignores it.
 copy_from = "<owner validator hotkey, published with the launch>"
+# Where the saved vector and the signed record live. Use an absolute path, such
+# as /var/lib/prometheon, if you turn on updates: each release has its own
+# directory, and a relative path would leave the state behind on an update.
 state_directory = ".validator-state"
 submit_weights = true
 dry_run = false
 submit_results = true
+
+[update]
+# Move to each new release tag on your own: `prometheon validator schedule`
+# checks every 30 minutes, and so does the shipped systemd timer. Only release
+# tags vX.Y.Z from your install's own origin, newer than the version running,
+# installed beside it and checked before anything switches. Off unless you turn
+# it on. See docs/validator.md.
+auto = false
+# systemd units to restart once a new release is current, for a process that
+# keeps running. The shipped units start fresh every time and need none.
+restart_units = []
 
 [credits]
 # The treasury coldkey that submission fees are paid to. REQUIRED before

@@ -31,6 +31,7 @@ from prometheon.errors import CommitmentError, ConfigError
 from prometheon.registry.huggingface import HuggingFaceClient
 from prometheon.registry.validation import MinerEntry, ModelRegistry
 from prometheon.revision import require_valid_revision
+from prometheon.rules import RULES
 from prometheon.scoring.size import MAX_MODEL_PARAMETERS, exceeds_size_cap, size_penalty_bp
 
 
@@ -190,8 +191,8 @@ def cmd_verify(args: argparse.Namespace) -> int:
     ):
         registry = ModelRegistry(
             huggingface=huggingface,
-            max_weight_bytes=config.evaluation.max_weight_bytes,
-            max_non_weight_bytes=config.evaluation.max_non_weight_bytes,
+            max_weight_bytes=RULES.max_weight_bytes,
+            max_non_weight_bytes=RULES.max_non_weight_bytes,
         )
         result = registry.validate([MinerEntry(uid=uid, hotkey=hotkey, commitment=commitment)])[0]
 

@@ -8,15 +8,22 @@ is individually correct.
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import pytest
 
+if sys.version_info >= (3, 11):
+    import tomllib
+else:  # pragma: no cover - Python 3.10
+    import tomli as tomllib
+
 from prometheon.cli.main import build_parser
 from prometheon.cli.validator import _policy_version
-from prometheon.config import Config, ScoringConfig, load_config
+from prometheon.config import RETIRED_SETTINGS, Config, load_config
 from prometheon.errors import ConfigError, OutdatedConfigError
-from prometheon.version import SCORING_VERSION, SUBMISSION_FEE_ALPHA
+from prometheon.rules import RULES
+from prometheon.version import SUBMISSION_FEE_ALPHA
 
 pytestmark = pytest.mark.contract
 
@@ -59,8 +66,16 @@ class TestTheShippedConfigsLoad:
         assert isinstance(load_config(_filled_in(path, tmp_path)), Config)
 
     @pytest.mark.parametrize("path", _configs(), ids=lambda p: p.name)
-    def test_the_example_names_the_rules_it_was_written_for(self, path: Path) -> None:
-        assert f'scoring_version = "{SCORING_VERSION}"' in path.read_text(encoding="utf-8")
+    def test_no_example_sets_a_rule(self, path: Path) -> None:
+        """The rules are code. An example that set one would put a copy of it in
+        every operator's file, and the next release that changed it would need
+        every operator to edit theirs."""
+        raw = tomllib.loads(path.read_text(encoding="utf-8"))
+        for section, keys in RETIRED_SETTINGS.items():
+            if keys is None:
+                assert section not in raw, f"{path.name} still has a [{section}] section"
+            else:
+                assert not keys & raw.get(section, {}).keys(), f"{path.name} sets {section}"
 
     def test_no_example_names_a_netuid_as_prometheons(self) -> None:
         """Mainnet 108 belongs to another project; testnet is not used."""
@@ -69,18 +84,6 @@ class TestTheShippedConfigsLoad:
         for path in _configs():
             text = path.read_text(encoding="utf-8")
             assert not re.search(r"\b(108|481)\b", text), path.name
-
-    @pytest.mark.parametrize("path", _configs(), ids=lambda p: p.name)
-    def test_every_emission_affecting_field_is_visible(self, path: Path) -> None:
-        """`[scoring]` decides payouts, so none of it may be invisible.
-
-        A field that exists only as a default is a number nobody reviewing a
-        config can see, and this is the section where an unseen number is a
-        change in what miners get paid.
-        """
-        text = path.read_text(encoding="utf-8")
-        missing = [name for name in ScoringConfig.model_fields if name not in text]
-        assert not missing, f"{path.name} does not mention {missing}"
 
     @pytest.mark.parametrize("path", _configs(), ids=lambda p: p.name)
     def test_the_labelling_temperature_suits_the_model_it_ships_with(
@@ -109,22 +112,18 @@ class TestTheShippedConfigsLoad:
             "which that model rejects with HTTP 400"
         )
 
-    @pytest.mark.parametrize("path", _configs(), ids=lambda p: p.name)
-    def test_the_shipped_split_is_the_agreed_one(self, path: Path, tmp_path: Path) -> None:
+    def test_the_published_split_is_the_agreed_one(self) -> None:
         """70% data to the top 10, then 25%, 4% and 1% of total to three models.
 
-        These numbers are the subnet's economics, and they are *config*, not
-        code: two validators running identical code but different values
-        compute different weight vectors and disagree on chain. Pinning them
-        here means a change has to be deliberate and has to land in every
-        shipped example at once. Together they cover 100%, so nothing burns
-        unless a share goes unclaimed.
+        These numbers are the subnet's economics. They are code, so every
+        validator on a release computes the same vector, and a change has to be
+        deliberate. Together they cover 100%, so nothing burns unless a share
+        goes unclaimed.
         """
-        scoring = load_config(_filled_in(path, tmp_path)).scoring
-        assert scoring.dataset_share_bp == 7000, path.name
-        assert scoring.dataset_top_n == 10, path.name
-        assert scoring.model_rank_shares_bp == (2500, 400, 100), path.name
-        assert scoring.dataset_share_bp + sum(scoring.model_rank_shares_bp) == 10_000
+        assert RULES.dataset_share_bp == 7000
+        assert RULES.dataset_top_n == 10
+        assert RULES.model_rank_shares_bp == (2500, 400, 100)
+        assert RULES.dataset_share_bp + sum(RULES.model_rank_shares_bp) == 10_000
 
     @pytest.mark.parametrize("path", _configs(), ids=lambda p: p.name)
     def test_copy_mode_refuses_the_shipped_placeholder(self, path: Path, tmp_path: Path) -> None:
@@ -220,12 +219,13 @@ class TestTheDocumentationLinksResolve:
         assert not broken, f"broken links: {broken}"
 
 
-class TestAnOldConfigFailsLoudly:
-    """Operators copy an example once and keep it, so an old copy must not run.
+class TestAnOldConfigStillLoads:
+    """An update never needs the operator to edit their config.
 
-    A changed default in code never reaches a copied file. Without this, a v2
-    file would run v3 code on v2 numbers, or fail on whichever renamed field
-    the parser met first.
+    Operators copy an example once and keep it. A file from an earlier v3
+    release loads under this one: the settings it no longer reads are ignored,
+    and a note says which. Only a v2 file, from a different system, and a file
+    that still sets the fee are refused.
     """
 
     def _write(self, tmp_path: Path, text: str) -> Path:
@@ -240,16 +240,41 @@ class TestAnOldConfigFailsLoudly:
             '[db]\nbase_url = "https://audit.bitfan.ai"\n'
             "[scoring]\nminer_burn_share_bp = 0\ndataset_share_bp = 5000\n"
         )
-        with pytest.raises(OutdatedConfigError, match="v2 rules"):
+        with pytest.raises(OutdatedConfigError, match="v2"):
             load_config(self._write(tmp_path, v2))
 
-    def test_a_config_for_other_rules_is_refused(self, tmp_path: Path) -> None:
-        text = (ROOT / "configs" / "finney.example.toml").read_text(encoding="utf-8")
-        older = text.replace(SCORING_VERSION, "prometheon-scoring/2.1").replace(
-            "\nnetuid = 0\n", "\nnetuid = 7\n"
+    def test_a_config_from_an_earlier_release_loads_and_says_what_it_ignored(
+        self, tmp_path: Path
+    ) -> None:
+        """A 3.1 file: rules under [scoring] and [evaluation], and a labelling batch."""
+        earlier = (
+            '[chain]\nnetwork = "finney"\nnetuid = 7\n'
+            '[wallet]\nname = "v"\nhotkey = "h"\n'
+            '[hub]\nbase_url = "https://hub.invalid"\n'
+            "[labelling]\nbatch_size = 100\nmax_in_flight = 8\n"
+            "[evaluation]\nbatch_size = 100\nmax_weight_bytes = 17179869184\n"
+            'model_timeout_seconds = 1800.0\ndevice = "auto"\n'
+            '[scoring]\nscoring_version = "prometheon-scoring/3.1"\ndataset_share_bp = 7000\n'
+            "model_min_scored_items = 100\n"
         )
-        with pytest.raises(OutdatedConfigError, match=r"prometheon-scoring/2\.1"):
-            load_config(self._write(tmp_path, older))
+        notes: list[str] = []
+        config = load_config(self._write(tmp_path, earlier), notes=notes)
+
+        assert isinstance(config, Config)
+        assert config.labelling.max_in_flight == 8
+        assert len(notes) == 1
+        for setting in ("[scoring]", "[labelling] batch_size", "[evaluation] max_weight_bytes"):
+            assert setting in notes[0]
+
+    def test_a_typo_in_an_operator_setting_is_still_refused(self, tmp_path: Path) -> None:
+        typo = (
+            '[chain]\nnetwork = "finney"\nnetuid = 7\n'
+            '[wallet]\nname = "v"\nhotkey = "h"\n'
+            '[hub]\nbase_url = "https://hub.invalid"\n'
+            "[labelling]\nmax_in_fligth = 8\n"
+        )
+        with pytest.raises(ConfigError, match="max_in_fligth"):
+            load_config(self._write(tmp_path, typo))
 
     @pytest.mark.parametrize("value", [1, 50])
     def test_a_config_that_still_sets_the_fee_is_refused_not_ignored(

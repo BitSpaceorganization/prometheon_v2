@@ -34,8 +34,8 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from typing import Final
 
-from prometheon.config import ScoringConfig
 from prometheon.errors import ScoringError
+from prometheon.rules import ScoringRules
 from prometheon.scoring.allocation import BASIS_POINTS
 from prometheon.scoring.size import size_penalty_bp
 
@@ -101,7 +101,7 @@ class ModelRanking:
         return None
 
 
-def score_models(evaluations: Iterable[ModelEvaluation], *, scoring: ScoringConfig) -> ModelRanking:
+def score_models(evaluations: Iterable[ModelEvaluation], *, rules: ScoringRules) -> ModelRanking:
     """Score every model and rank the ones that qualify.
 
     A model that timed out, or whose corpus held no items, gets no score:
@@ -116,7 +116,7 @@ def score_models(evaluations: Iterable[ModelEvaluation], *, scoring: ScoringConf
     scores.sort(key=lambda entry: entry.hotkey)
     return ModelRanking(
         scores=tuple(scores),
-        ranked=rank_models(scores, min_scored_items=scoring.model_min_scored_items),
+        ranked=rank_models(scores, min_scored_items=rules.model_min_scored_items),
     )
 
 

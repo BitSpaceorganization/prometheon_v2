@@ -40,7 +40,7 @@ BitFan and Prometheon are separate products. They share no database, no login an
 
 ## The rules, exactly
 
-These match the code under `scoring_version = "prometheon-scoring/3.1"`. [`docs/scoring.md`](./docs/scoring.md) has the arithmetic with worked examples.
+These match the code under `scoring_version = "prometheon-scoring/3.1"`. They're part of the release, not settings in your config. [`docs/scoring.md`](./docs/scoring.md) has the arithmetic with worked examples.
 
 | Rule | Value |
 |---|---|
@@ -117,6 +117,8 @@ uv run prometheon validator run --config ~/prometheon.toml    # one day; dry_run
 ```
 
 A validator scores yesterday once a day at 04:00 UTC, and re-posts its weights every 30 minutes. Scoring the day needs one GPU with 24 GB, for example an RTX 4090, and an OpenAI key. A validator that doesn't want to run the work can use copy mode instead: it submits the owner validator's weights unchanged, with no GPU and no key, so the owner validator's results decide its weights. Read [`docs/validator.md`](./docs/validator.md) before choosing.
+
+Validators update from release tags. With `[update] auto = true`, a validator moves itself to each new release: it installs the release beside the running one, checks it, and switches between cycles, and it never needs a config edit. It's off by default; see [Updating](./docs/validator.md#updating).
 
 ---
 

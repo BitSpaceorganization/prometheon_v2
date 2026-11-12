@@ -135,6 +135,7 @@ def run_forever(
     max_iterations: int | None = None,
     spawn: Callable[[Callable[[dt.date], None], dt.date], Job] = start_thread,
     max_attempts: int = MAX_CYCLE_ATTEMPTS,
+    update: Callable[[], None] | None = None,
 ) -> None:
     """Start each day's cycle when due, and re-post on every boundary, indefinitely.
 
@@ -142,6 +143,10 @@ def run_forever(
     validator's state on every wake-up, so a restart sees what the last process
     finished. ``spawn`` runs a cycle; the default is a daemon thread, and a test
     can pass one that runs it inline.
+
+    ``update``, when given, looks for a newer release on every boundary, after
+    the re-post and only while no cycle is running here: an update never lands
+    in the middle of one, and the next boundary is thirty minutes away.
     """
     job: Job | None = None
     attempts: dict[dt.date, int] = {}
@@ -183,6 +188,13 @@ def run_forever(
             # A transient chain or hub error must not end the loop; the next
             # boundary is thirty minutes away and well inside activity_cutoff.
             say(f"re-post failed: {exc}")
+
+        if update is not None and job is None:
+            try:
+                update()
+            except Exception as exc:
+                # Updating is never a reason to stop scoring or re-posting.
+                say(f"update check failed: {exc}")
 
         iterations += 1
         if max_iterations is not None and iterations >= max_iterations:

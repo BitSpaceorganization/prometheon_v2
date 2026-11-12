@@ -1,0 +1,25 @@
+[Unit]
+Description=Prometheon validator, move to a newer release tag if [update] auto is on
+Documentation=https://github.com/BitSpaceorganization/prometheon_v2
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Runs from the release that is current now. A newer one is installed beside
+# it, under /opt/prometheon/releases, and checks itself before `current` is
+# switched to it, so the next run of every unit starts the new release.
+WorkingDirectory=/opt/prometheon/current
+EnvironmentFile=-/etc/prometheon/validator.env
+# --scheduled: nothing happens unless [update] auto = true in the config, and a
+# running cycle is never waited on; the timer tries again in thirty minutes.
+ExecStart=/usr/local/bin/uv run --frozen prometheon update apply --scheduled --config /etc/prometheon/prometheon.toml
+# Installing a release can download its packages. Bounded, so a stalled
+# download frees the slot for the next attempt.
+TimeoutStartSec=1h
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=prometheon-update
+
+[Install]
+WantedBy=multi-user.target
