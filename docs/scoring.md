@@ -163,7 +163,7 @@ The chain refuses a vector that names fewer uids than `min(subnet size, min_allo
 - **A share over the cap.** It's cut to the cap. The excess is emission nobody may be paid, so it burns to the owner hotkey, up to the same cap. Only what the burn can't hold, when the burn is itself over the cap, is shared among the other entries in proportion to what they hold.
 - **Too few entries to fit the cap at all**, for example everything burning with a 50% cap and a validator that isn't the owner. The validator refuses to send rather than pay uids nobody scored.
 
-On the defaults a new subnet gets (`min_allowed_weights = 1`, `max_weight_limit = 65535`), nothing changes. **The owner should keep it that way.** The rules can burn up to 100% of a day, and a cap below 65535 makes such a day unsendable for every validator but the owner. The published record carries the vector as sent, after shaping, so a mirror reproduces it exactly.
+On the defaults a new subnet gets (`min_allowed_weights = 1`, `max_weight_limit = 65535`), nothing changes. **The owner should keep it that way.** The rules can burn up to 100% of a day, and a cap below 65535 makes such a day unsendable for every validator but the owner. The published record carries the vector as sent, after shaping, so a validator in copy mode reproduces it exactly.
 
 ## Worked example
 

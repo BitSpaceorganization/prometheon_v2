@@ -455,7 +455,7 @@ def build_results(result: CycleResult) -> tuple[MinerResult, ...]:
     ``weight`` is what the hotkey earned, never burn: the record carries burn
     separately, so its rows plus ``burned_weight`` are exactly the vector, even
     when the burn hotkey also earned (v2 folded burn into the owner's row, and
-    a mirror then counted it twice: bug B5).
+    a copying validator then counted it twice: bug B5).
     """
     dataset_by_hotkey = {score.hotkey: score for score in result.dataset_scores}
     evaluation_by_hotkey = {item.hotkey: item for item in result.evaluations}

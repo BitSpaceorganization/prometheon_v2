@@ -10,7 +10,7 @@ The owner team runs a validator too, with this same CLI.
 
 ## Hardware
 
-**This applies to `score_source = "local"`, the default, where the validator measures the field itself.** `score_source = "endpoint"` submits a record another validator published and needs no GPU at all. See [Two ways to run a validator](#two-ways-to-run-a-validator), and read what mirroring costs consensus before choosing it.
+**This applies to score mode, the default, where the validator does the day's work itself.** [Copy mode](#copy-mode) submits the owner validator's weights unchanged and needs no GPU and no OpenAI key. Read what it means before choosing it.
 
 **Scoring the day yourself needs one GPU with 24 GB, for example an RTX 4090, and an OpenAI key for labelling.** Every eligible paid model is downloaded and run over the day's corpus, one model at a time.
 
@@ -34,7 +34,7 @@ $EDITOR ~/prometheon.toml
 export OPENAI_API_KEY="..."      # your own key; you pay for labelling
 ```
 
-**`--extra wrapper` isn't optional in local mode.** Without it there's nothing to run models with. The cycle checks before it labels anything (whenever there's a model to run) and stops with `validator.fault`. Earlier versions scored every model zero instead and submitted that.
+**`--extra wrapper` isn't optional in score mode.** Without it there's nothing to run models with. The cycle checks before it labels anything (whenever there's a model to run) and stops with `validator.fault`. Earlier versions scored every model zero instead and submitted that.
 
 Fill in the config:
 
@@ -165,7 +165,7 @@ Or use systemd: [`deploy/systemd/`](../deploy/systemd/README.md). Or, where ther
 uv run --extra wrapper prometheon validator schedule --config /etc/prometheon/prometheon.toml
 ```
 
-One process runs both jobs: the cycle at 04:00 UTC (`--cycle-hour` moves it) and the re-post at :00 and :30.
+One process runs both jobs: the cycle at 04:00 UTC (`--cycle-hour` moves it) and the re-post at :00 and :30. In copy mode, drop `--extra wrapper` from these commands: nothing is run locally.
 
 - **It runs yesterday's cycle whenever that day isn't finished.** After a restart past 04:00 it picks up an interrupted or missed cycle straight away instead of waiting a day. Older days aren't backfilled.
 - **A failed cycle is retried, at most 3 times.** An epoch the hub hasn't built yet doesn't count as a failure.
@@ -183,48 +183,45 @@ Keep `submit_results = true`. Your signed record is what lets anyone recompute y
 
 ---
 
-## Two ways to run a validator
+## Copy mode
 
-The choice is `score_source` under `[scoring]`.
-
-| | `local` (default) | `endpoint` |
-|---|---|---|
-| Labelling bill | yours | none |
-| GPU | one with 24 GB, for example an RTX 4090 | none |
-| Cycle time | hours | seconds |
-| What you submit | what you measured | what another validator measured |
-| Contribution to consensus | an independent opinion | a copy of one |
-
-### What mirroring costs the subnet
-
-Consensus works by validators disagreeing when one of them is wrong. A field where most weight mirrors one provider **can't detect that provider being wrong**. The agreement is manufactured, and vtrust reads a captured subnet as a healthy one. The provider's signature proves which hotkey computed a vector. It never proves the vector is right.
-
-### Running in endpoint mode
+A validator that doesn't want to run the work can copy the owner validator's weights instead.
 
 ```toml
-[scoring]
-score_source = "endpoint"
-score_provider = "5..."          # the validator hotkey whose record you mirror
+[validator]
+mode = "copy"
+copy_from = "5..."       # the owner validator's hotkey, published with the launch
 ```
 
 ```bash
-uv sync                          # no --extra wrapper: nothing is run locally
+uv sync                  # no --extra wrapper: no model is run
 uv run prometheon validator run --config ~/prometheon.toml
 ```
 
-`validator run` notices the mode. It fetches `GET /api/v1/results/{day}/{score_provider}` from the hub, and refuses to submit unless all of these hold:
+**What it does.** Each day it fetches the owner validator's signed record from the hub and submits its weights unchanged. It labels nothing and runs no model, so it needs no GPU and no OpenAI key.
+
+**What that means.** A validator in copy mode has no opinion of its own. **The owner validator's results decide the weights of every validator that copies it.** If the owner validator scores a day wrongly, every copy submits the same mistake, and consensus can't catch it, because the copies agree with the owner validator by construction.
+
+| | `score` (default) | `copy` |
+|---|---|---|
+| Labelling bill | yours | none |
+| GPU | one with 24 GB, for example an RTX 4090 | none |
+| Cycle time | an hour or more, with the field | seconds |
+| What you submit | what you measured | the owner validator's weights, unchanged |
+
+`validator run` notices the mode. It fetches the record with `POST /api/v1/validator/weights`, signed with your hotkey like the epoch request, and refuses to submit unless all of these hold:
 
 | Check | Why |
 |---|---|
-| Published by the pinned `score_provider` | otherwise the hub chooses whom you trust |
-| Signature verifies against that hotkey | the hub can't mint a record for a key it doesn't hold |
+| Signed by `copy_from`, the owner validator's hotkey, and no other | copy mode copies the owner validator only, so the hub can't hand you anybody else's record, or one it made |
+| The signature verifies against that hotkey | the hub can't make a record for a key it doesn't hold |
 | Same day, netuid and scoring version | catches a stale, misrouted or old-rules record |
-| Provider is registered and holds a permit | a deregistered validator's scores aren't worth submitting |
+| The owner validator is registered and holds a permit | a deregistered validator's weights aren't worth submitting |
 | The record's epoch hash matches the signed epoch for the day | catches a record computed from a different day |
 
-The burn in the record is submitted as part of the vector. Dropping it would scale every miner up. `validator resubmit` in this mode also checks for a newer day from the provider and catches up, so a provider that published late doesn't leave you a day behind.
+The burn in the record is submitted as part of the vector. Dropping it would scale every miner up. Until the owner validator has posted the day, the hub answers "not ready", and the scheduler tries again without counting it as a failure. `validator resubmit` in copy mode also looks for a newer day and catches up, so an owner validator that posts late doesn't leave you a day behind.
 
-You still need a registered hotkey with a validator permit, and you still need the re-post. Choosing a provider is a trust decision, so no default is filled in. The hub's public pages list who has published.
+You still need a registered hotkey with a validator permit, `[hub.epoch_keys]` pinned, and the re-post.
 
 ---
 

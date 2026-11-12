@@ -280,9 +280,11 @@ class TestTheScheduleCommand:
         from prometheon.cli import validator as cli
 
         config = SimpleNamespace(
-            scoring=SimpleNamespace(score_source=SimpleNamespace(value="local")),
             validator=SimpleNamespace(
-                state_directory=tmp_path, submit_weights=True, submit_results=True
+                mode=SimpleNamespace(value="score"),
+                state_directory=tmp_path,
+                submit_weights=True,
+                submit_results=True,
             ),
         )
         seen: list[argparse.Namespace] = []

@@ -74,28 +74,19 @@ min_members = 30
 # most of a day's test content; its own items are excluded from what it is
 # scored on.
 model_min_scored_items = 100
-# Where this validator's weight vector comes from.
-#
-#   "local"    score the day yourself: label the corpus, run every eligible
-#              model, reduce it here. This is what the subnet's trust model
-#              assumes and what keeps consensus meaningful.
-#   "endpoint" submit another validator's published, signed record instead.
-#              No labelling bill, no GPU -- and no independent opinion.
-#
-# Mirroring is a real option and worth being clear-eyed about. Consensus works
-# by validators disagreeing when one of them is wrong; a field where most weight
-# mirrors one provider cannot detect that provider being wrong, because the
-# agreement is manufactured rather than earned. The signature proves who
-# computed the vector, never that it is correct.
-score_source = "local"
-# The validator hotkey whose record to mirror. Required when score_source is
-# "endpoint", ignored otherwise. Pinned here rather than left to whoever answers:
-# the record is verified against this address, so a DB layer serving somebody
-# else's record fails the check instead of being submitted.
-score_provider = ""
 
 
 [validator]
+# "score" does the day's work: label every post, run every eligible model, and
+# submit what you measured. "copy" submits the owner validator's weights
+# unchanged, with no GPU and no labelling key. A copying validator has no
+# opinion of its own: the owner validator's results decide its weights. See
+# docs/validator.md before choosing.
+mode = "score"
+# The owner validator's hotkey, which copy mode copies and no other. It is
+# published with the launch; until then this is a placeholder that copy mode
+# refuses. Score mode ignores it.
+copy_from = "<owner validator hotkey, published with the launch>"
 state_directory = ".validator-state"
 submit_weights = false
 dry_run = true

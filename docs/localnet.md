@@ -4,7 +4,7 @@ The team doesn't test on testnet. Every end-to-end run happens on a **local subt
 
 ## What the run proves
 
-1. A subnet is registered, and two miners join it.
+1. A subnet is registered, and two miners and two validators join it.
 2. Each miner buys a credit with `prometheon credits buy`, a real `transfer_stake` to a local treasury coldkey. The script checks the treasury's stake afterwards.
 3. Each miner commits a real Hugging Face model with `prometheon model commit`, and checks it with `model verify`:
    - `HuggingFaceTB/SmolLM2-135M`
@@ -12,13 +12,15 @@ The team doesn't test on testnet. Every end-to-end run happens on a **local subt
 4. A local hub (the in-repo `FakeHub`, served over HTTP) freezes the day into a signed epoch from what the chain says: neurons, coldkeys, commitment blocks and weights fingerprints. A local labeller answers from a fixed truth table.
 5. `prometheon validator run` does the rest:
    - fetches and verifies the epoch, and downloads the files
-   - labels the day, and runs both models on the CPU
+   - labels the day, one post per request, and runs both models on the CPU
+   - reads each model's parameter count from its safetensors headers
    - scores, sets weights on chain, and publishes its signed record
 6. The script reads the weights back from the chain and requires all four of these to agree:
    - the weights on chain
    - the vector the validator saved before sending
    - the record it published
-   - the spec's split worked out by hand from the record's counts and ranks
+   - the spec's split worked out by hand from the record's counts, with each model's size penalty recomputed and the places decided by the one-point rule
+7. A second validator runs `prometheon validator run` in copy mode. It fetches the owner validator's record from the hub's weights route, checks it, and sets the same weights. The script reads them back from the chain and requires them to equal the owner validator's.
 
 ## Run it
 
@@ -42,14 +44,16 @@ The script needs network access to Hugging Face. It uses ports 8600 for the hub 
 [localnet] units sent:      {...}
 [localnet] u16 vector sent: {...}
 [localnet] read from chain: {...}
+[localnet] copy-mode validator (uid 3) on chain: {...}
 [localnet] PASS: chain weights = the vector computed, saved and published = the spec by hand
+[localnet] PASS: the copy-mode validator set the owner validator's weights, unchanged
 ```
 
 The workdir keeps everything for inspection:
 
 - the wallets, under `home/.bittensor`
-- the three configs, made from `configs/localnet.example.toml` with only the run's values filled in
-- the validator's state file
+- the four configs, made from `configs/localnet.example.toml` with only the run's values filled in
+- both validators' state files
 
 ## What it changes on the chain
 
@@ -61,8 +65,8 @@ It's a development chain, but it may be shared, so here is everything the run wr
   - tempo 20
 - **The chain-wide admin freeze window.** The image's tempo is shorter than its admin freeze window, so no hyperparameter can change while the window is in force. The script reads the window, sets it to 0 for the three changes above, and puts the original value back straight afterwards.
 - **Registrations and stake:**
-  - `//Bob` and `//Charlie` register a miner hotkey each.
-  - `//Alice` stakes 1,000 TAO on the validator hotkey.
+  - `//Bob` and `//Charlie` register a miner hotkey each, and `//Dave` registers a second validator hotkey, the one in copy mode.
+  - `//Alice` and `//Dave` stake 1,000 TAO each on their validator hotkeys.
   - Each miner stakes in 100 TAO steps until its hotkey holds 55 alpha.
   - Each miner then pays one credit to `//Eve`: the published fee of 50 alpha. The fee isn't a setting, so the run pays the real amount.
 

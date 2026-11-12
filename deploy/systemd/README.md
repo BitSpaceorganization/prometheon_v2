@@ -1,6 +1,6 @@
 # systemd units for a validator
 
-**`prometheon-validator.service` assumes a local-mode GPU host: 8 × RTX 5090 (256 GB) or better.** A cycle downloads and runs every eligible paid model. A box without CUDA runs to completion and scores the field on timeouts. For endpoint mode, remove `--extra wrapper` from its `ExecStart`. See [`docs/validator.md`](../../docs/validator.md#two-ways-to-run-a-validator).
+**`prometheon-validator.service` assumes a score-mode host with one GPU of 24 GB, for example an RTX 4090.** A cycle downloads and runs every eligible paid model. A box without CUDA falls back to CPU and is far too slow: its models time out and get no score from it. For copy mode, remove `--extra wrapper` from its `ExecStart`. See [`docs/validator.md`](../../docs/validator.md#copy-mode).
 
 There are two timers, and you need both. The cycle scores a day; the re-post keeps that score counting until the next one.
 
@@ -25,7 +25,7 @@ systemctl list-timers 'prometheon-*'
 - **`WorkingDirectory`:** where you cloned this repository.
 - **`ExecStart`:** the absolute path to `uv`. `which uv` often gives `~/.local/bin/uv` rather than `/usr/local/bin/uv`, and systemd doesn't expand `~`.
 - **`--config`:** your TOML, copied from `configs/finney.example.toml` with the netuid, wallet, hub and labelling settings filled in.
-- **`EnvironmentFile`:** a `0600` file holding `OPENAI_API_KEY`, one `KEY=value` per line. No `export` and no quotes: systemd parses this file itself; it isn't a shell script.
+- **`EnvironmentFile`:** a `0600` file holding `OPENAI_API_KEY`, one `KEY=value` per line. No `export` and no quotes: systemd parses this file itself; it isn't a shell script. Copy mode needs no key.
 
 ## Checking on it
 

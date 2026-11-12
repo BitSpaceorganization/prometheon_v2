@@ -84,11 +84,11 @@ Requires Python `>=3.10,<3.15` and a `btcli`-managed Bittensor wallet.
 ```bash
 git clone https://github.com/BitSpaceorganization/prometheon_v2
 cd prometheon_v2
-uv sync                    # miners, and validators in endpoint mode
-uv sync --extra wrapper    # validators that run models (the default, local mode)
+uv sync                    # miners, and validators in copy mode
+uv sync --extra wrapper    # validators that run models (score mode, the default)
 ```
 
-`--extra wrapper` installs torch and transformers, which run the models. Without them, a local-mode validator that has a model to run stops at a pre-flight check before it labels anything.
+`--extra wrapper` installs torch and transformers, which run the models. Without them, a validator in score mode that has a model to run stops at a pre-flight check before it labels anything.
 
 ---
 
@@ -111,12 +111,12 @@ Your Hugging Face repository holds **weights, config and tokenizer only, with no
 ```bash
 cp configs/finney.example.toml ~/prometheon.toml
 # fill in: [chain] netuid, [wallet], [hub] base_url and epoch key, [labelling]
-export OPENAI_API_KEY="..."     # you pay for ground-truth labelling
+export OPENAI_API_KEY="..."     # score mode: you pay for ground-truth labelling
 
 uv run prometheon validator run --config ~/prometheon.toml    # one day; dry_run = true first
 ```
 
-A validator scores yesterday once a day at 04:00 UTC, and re-posts its weights every 30 minutes. Scoring the day needs one GPU with 24 GB, for example an RTX 4090. Endpoint mode needs none, but it copies another validator's opinion. Read [`docs/validator.md`](./docs/validator.md) before choosing.
+A validator scores yesterday once a day at 04:00 UTC, and re-posts its weights every 30 minutes. Scoring the day needs one GPU with 24 GB, for example an RTX 4090, and an OpenAI key. A validator that doesn't want to run the work can use copy mode instead: it submits the owner validator's weights unchanged, with no GPU and no key, so the owner validator's results decide its weights. Read [`docs/validator.md`](./docs/validator.md) before choosing.
 
 ---
 

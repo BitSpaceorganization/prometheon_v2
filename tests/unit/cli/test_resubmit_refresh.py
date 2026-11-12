@@ -1,17 +1,18 @@
-"""A mirror that fell behind catches up on its next re-post.
+"""A validator in copy mode that fell behind catches up on its next re-post.
 
 `cmd_resubmit` replayed whatever vector the last `validator run` wrote. If that
-run fired before the provider published -- which is what a provider retrying a
-failed cycle causes -- the mirror wrote nothing and spent the next day posting
-the *previous* day's vector. That happened on netuid 108 on 2026-09-11 to 22.5%
-of validating stake.
+run fired before the owner validator posted -- which is what an owner validator
+retrying a failed cycle causes -- the copy wrote nothing and spent the next day
+posting the *previous* day's vector. That happened on netuid 108 on 2026-09-11
+to 22.5% of validating stake.
 
-Re-reading the day already held would not help: a published record is immutable.
-Only a newer day is worth looking for, and a mirror that is already current must
+Re-reading the day already held would not help: a posted record is immutable.
+Only a newer day is worth looking for, and a copy that is already current must
 not spend a request looking.
 
-The hub here is the real client over the fake hub, so the records and epochs a
-mirror reads are signed and verified exactly as they would be in production.
+The hub here is the real client over the fake hub, on the signed, validators-only
+weights route, so the records and epochs a copy reads are signed and verified
+exactly as they would be in production.
 """
 
 from __future__ import annotations
@@ -64,13 +65,18 @@ def miner(hotkey: str, uid: int, weight: int) -> MinerResult:
     )
 
 
+#: The validator in copy mode, which signs its requests to the weights route.
+COPIER = keypair(2)
+
+
 class World:
-    """A fake hub with an epoch for every recent day, and a pinned provider."""
+    """A fake hub with an epoch for every recent day, serving one owner validator."""
 
     def __init__(self, provider: Keypair) -> None:
         self.provider = provider
-        self.hub = FakeHub(netuid=NETUID, now=lambda: NOW)
+        self.hub = FakeHub(netuid=NETUID, now=lambda: NOW, owner_validator=provider.ss58_address)
         self.hub.register(provider.ss58_address, CallerRole.VALIDATOR)
+        self.hub.register(COPIER.ss58_address, CallerRole.VALIDATOR)
         self.epoch_hash: dict[dt.date, str] = {}
         for back in range(6):
             day = DAY - dt.timedelta(days=back)
@@ -108,12 +114,12 @@ class World:
                 completed_at=2,
             ),
         )
-        # Stored under the pinned provider whoever signed it, as a hub serving a
+        # Stored under the owner validator whoever signed it, as a hub serving a
         # substituted record would.
         self.hub.results[(day, self.provider.ss58_address)] = record.model_dump_json().encode()
 
-    def results_asked(self) -> list[str]:
-        return [target for method, target in self.hub.request_log if "/results/" in target]
+    def weights_asked(self) -> int:
+        return sum(1 for _method, target in self.hub.request_log if "/validator/weights" in target)
 
 
 def install(monkeypatch: pytest.MonkeyPatch, world: World, *, down: bool = False) -> None:
@@ -131,6 +137,7 @@ def install(monkeypatch: pytest.MonkeyPatch, world: World, *, down: bool = False
             transport=httpx.MockTransport(handler),
             max_retries=0,
             sleep=lambda _seconds: None,
+            now=lambda: NOW,
         )
 
     view = MetagraphView(
@@ -148,27 +155,27 @@ def install(monkeypatch: pytest.MonkeyPatch, world: World, *, down: bool = False
 def call(world: World, *, stored: dt.date, today: dt.date) -> Any:
     config = SimpleNamespace(
         chain=SimpleNamespace(netuid=NETUID),
-        scoring=SimpleNamespace(score_provider=world.provider.ss58_address),
+        validator=SimpleNamespace(copy_from=world.provider.ss58_address),
     )
-    return cli._refresh_mirrored(
+    return cli._refresh_copied(
         config,  # type: ignore[arg-type]
         stored_day=stored,
-        wallet=SimpleNamespace(hotkey=keypair(2)),
+        wallet=SimpleNamespace(hotkey=COPIER),
         subtensor=object(),
         burn_hotkey=BURN,
         today=today,
     )
 
 
-def test_a_mirror_that_is_current_asks_for_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A mirror holding yesterday's vector is up to date: nothing newer exists."""
+def test_a_copy_that_is_current_asks_for_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A copy holding yesterday's vector is up to date: nothing newer exists."""
     world = World(keypair(1))
     install(monkeypatch, world)
     assert call(world, stored=DAY, today=DAY + dt.timedelta(days=1)) is None
     assert world.hub.request_log == []
 
 
-def test_a_mirror_a_day_behind_catches_up(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_copy_a_day_behind_catches_up(monkeypatch: pytest.MonkeyPatch) -> None:
     world = World(keypair(1))
     install(monkeypatch, world)
     world.publish(DAY, weight=4242)
@@ -186,11 +193,10 @@ def test_the_newest_day_wins_and_older_ones_are_never_requested(
     world.publish(DAY, weight=2)
     found = call(world, stored=DAY - dt.timedelta(days=3), today=DAY + dt.timedelta(days=1))
     assert found is not None and found[0] == DAY
-    assert len(world.results_asked()) == 1
-    assert DAY.isoformat() in world.results_asked()[0]
+    assert world.weights_asked() == 1
 
 
-def test_a_day_the_provider_has_not_published_yet_is_not_an_error(
+def test_a_day_the_owner_validator_has_not_posted_yet_is_not_an_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     world = World(keypair(1))
@@ -201,7 +207,7 @@ def test_a_day_the_provider_has_not_published_yet_is_not_an_error(
 def test_a_hub_that_is_down_falls_back_rather_than_raising(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Weights stop counting once activity_cutoff passes, so a mirror that refuses to
+    """Weights stop counting once activity_cutoff passes, so a copy that refuses to
     re-post because the hub is unreachable costs its miners more than a day-old vector."""
     world = World(keypair(1))
     install(monkeypatch, world, down=True)
@@ -218,8 +224,17 @@ def test_a_record_signed_by_the_wrong_hotkey_is_refused_not_raised(
 
 
 def test_the_lookback_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A mirror down for a month must not fetch a month of days every half hour."""
+    """A copy down for a month must not fetch a month of days every half hour."""
     world = World(keypair(1))
     install(monkeypatch, world)
     call(world, stored=DAY - dt.timedelta(days=400), today=DAY + dt.timedelta(days=1))
-    assert len(world.results_asked()) == cli.MIRROR_LOOKBACK_DAYS
+    assert world.weights_asked() == cli.COPY_LOOKBACK_DAYS
+
+
+def test_the_public_results_route_is_never_used(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Copy mode reads the validators-only weights route, signed by this validator."""
+    world = World(keypair(1))
+    install(monkeypatch, world)
+    world.publish(DAY, weight=7)
+    call(world, stored=DAY - dt.timedelta(days=1), today=DAY + dt.timedelta(days=1))
+    assert not any("/results/" in target for _method, target in world.hub.request_log)

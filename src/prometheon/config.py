@@ -238,19 +238,6 @@ class EvaluationConfig(BaseModel):
     discard_checkpoints: bool = Field(default=False)
 
 
-class ScoreSource(str, Enum):
-    """Where a validator's weight vector comes from."""
-
-    #: Score the day yourself: label the corpus, run every eligible model, and
-    #: reduce it here. Everything the subnet's trust model assumes.
-    LOCAL = "local"
-
-    #: Take a published, signed record from another validator and submit its
-    #: weights. Costs no labelling and no GPU, and makes this validator's
-    #: opinion a copy of somebody else's.
-    ENDPOINT = "endpoint"
-
-
 class ScoringConfig(BaseModel):
     """Every constant that moves emissions.
 
@@ -318,57 +305,6 @@ class ScoringConfig(BaseModel):
     #: because the hub applies the cap too.
     model_min_scored_items: int = Field(default=100, ge=1)
 
-    #: Where the weight vector comes from. ``local`` computes it here.
-    #:
-    #: ``endpoint`` fetches a signed record published by ``score_provider``
-    #: and submits its weights unchanged. That is a real option -- it needs no
-    #: labelling budget and no GPU -- and it is worth being blunt about what it
-    #: costs the subnet, because nothing downstream can tell the difference.
-    #:
-    #: A mirroring validator contributes no independent opinion. Consensus works
-    #: by validators disagreeing when one of them is wrong; a field where most
-    #: weight mirrors one provider cannot detect that provider being wrong,
-    #: because the agreement is manufactured rather than earned. The provider's
-    #: signature proves *who* computed the vector, never that the vector is
-    #: right.
-    #:
-    #: What it does still give you: the record is signed by the provider's
-    #: hotkey and verified here, so the hub cannot forge one, and its epoch hash
-    #: is checked against the signed epoch for the day, so a stale or
-    #: substituted record is refused rather than submitted.
-    score_source: ScoreSource = ScoreSource.LOCAL
-
-    #: The validator whose published record to mirror when ``score_source`` is
-    #: ``endpoint``. Required in that mode and ignored otherwise.
-    #:
-    #: Pinned by hotkey, not left to whoever answers: the record is verified
-    #: against *this* address, so a hub serving somebody else's record -- or
-    #: its own -- fails the signature check instead of being submitted.
-    score_provider: str = ""
-
-    @model_validator(mode="after")
-    def _endpoint_mode_names_a_provider(self) -> ScoringConfig:
-        """A mirroring validator must say whose record it mirrors.
-
-        Refused at load rather than at submission: the alternative is a cycle
-        that runs to the end and then has nothing to send.
-        """
-        if self.score_source is ScoreSource.ENDPOINT and not self.score_provider.strip():
-            raise ValueError(
-                "score_source = 'endpoint' requires score_provider to name the "
-                "validator hotkey whose published record to mirror.\n"
-                "\n"
-                "A validator's record for a day is public on the hub:\n"
-                "    GET <hub.base_url>/api/v1/results/<YYYY-MM-DD>/<validator hotkey>\n"
-                "Read a few before you pin one.\n"
-                "\n"
-                "It is not filled in for you on purpose. Mirroring submits "
-                "whatever that hotkey published, so choosing it is a trust "
-                "decision -- and if this service picked, the service would be "
-                "choosing whom you trust."
-            )
-        return self
-
     @field_validator("scoring_version")
     @classmethod
     def _this_builds_rules(cls, value: str) -> str:
@@ -403,6 +339,22 @@ class ScoringConfig(BaseModel):
         return self
 
 
+class ValidatorMode(str, Enum):
+    """What a validator does each day."""
+
+    #: Label the day, run every eligible model, score, and submit the result.
+    SCORE = "score"
+
+    #: Submit the owner validator's weights unchanged. No GPU and no labelling
+    #: key, and no opinion of its own: the owner validator's results decide
+    #: this validator's weights. See :mod:`prometheon.scoring.copied`.
+    COPY = "copy"
+
+
+#: An SS58 address, as the hub and the chain write one.
+_SS58_RE: Final[re.Pattern[str]] = re.compile(r"^[1-9A-HJ-NP-Za-km-z]{46,48}$")
+
+
 class ValidatorRuntimeConfig(BaseModel):
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", frozen=True)
 
@@ -411,6 +363,25 @@ class ValidatorRuntimeConfig(BaseModel):
     dry_run: bool = False
     #: Publishing results is what makes a cycle auditable by anyone else.
     submit_results: bool = True
+    #: ``score`` to do the day's work, ``copy`` to submit the owner validator's
+    #: weights unchanged.
+    mode: ValidatorMode = ValidatorMode.SCORE
+    #: The owner validator's hotkey, which copy mode copies and no other. It is
+    #: published with the launch; the shipped examples carry a placeholder,
+    #: refused in copy mode, so a copied file cannot copy anybody by accident.
+    #: Ignored in score mode.
+    copy_from: str = Field(default="", max_length=64)
+
+    @model_validator(mode="after")
+    def _copy_mode_names_the_owner_validator(self) -> ValidatorRuntimeConfig:
+        """Refused at load rather than at the first copy, which runs on a timer."""
+        if self.mode is ValidatorMode.COPY and not _SS58_RE.match(self.copy_from.strip()):
+            raise ValueError(
+                "mode = 'copy' needs [validator] copy_from set to the owner validator's "
+                f"hotkey, published with the launch; got {self.copy_from!r}. Copy mode "
+                "submits that validator's weights unchanged, and copies no other hotkey"
+            )
+        return self
 
 
 class CreditsConfig(BaseModel):
@@ -517,8 +488,8 @@ __all__ = [
     "HubConfig",
     "LabellingConfig",
     "MinerRuntimeConfig",
-    "ScoreSource",
     "ScoringConfig",
+    "ValidatorMode",
     "ValidatorRuntimeConfig",
     "WalletConfig",
     "load_config",
