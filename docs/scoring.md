@@ -1,6 +1,6 @@
 # Scoring
 
-How one day becomes one weight vector, under `scoring_version = "prometheon-scoring/3.0"`.
+How one day becomes one weight vector, under `scoring_version = "prometheon-scoring/3.1"`.
 
 Every number on this page is in `[scoring]` in your config, and the example configs set each one explicitly. They're not enforced by consensus. Two validators running the same code with different values compute different vectors from the same inputs, and the odd one out loses vtrust. A config without `scoring_version`, or with a different one, refuses to load, so a copy made under older rules fails loudly instead of running new code on old numbers.
 
@@ -34,24 +34,12 @@ The hub also publishes its own `eligible` flag, for its dashboard. Validators do
 
 ## Data pool, 70%
 
-### 1. Near-duplicates out
+### 1. The score
 
-Before anything is labelled, the whole day's test corpus is de-duplicated across all miners. Each post's text is normalised:
-
-1. Unicode NFKC
-2. lower case
-3. every run of whitespace becomes one space
-4. punctuation, symbols, format and control characters, and variation selectors are deleted
-5. runs of spaces collapse to one, and the ends are trimmed
-
-Two posts are the same post if their normalised texts are identical, or if their 64-bit SimHashes, over character 3-grams, are within `near_duplicate_max_hamming` bits (3). Posts are compared in `(created_at, id)` order. Each is checked only against the posts kept so far, and only the earliest of a group is kept, whoever wrote it.
-
-### 2. The score
-
-For each eligible miner's remaining posts:
+For each eligible miner's test posts in the day's feed:
 
 ```text
-S      = posts remaining after near-duplicates
+S      = the miner's accepted test posts
 V_pos  = claimed violating, and the labeller says violating
 V_neg  = claimed compliant, and the labeller says compliant
 
@@ -60,7 +48,9 @@ quality = (V_pos + V_neg) / S
 score   = amount × quality
 ```
 
-The labeller is the validator's own, prompted with [`content_policy.md`](../content_policy.md). A post it excludes as unusable counts in `S` and in neither `V`.
+The labeller is the validator's own, prompted with [`content_policy.md`](../content_policy.md). It labels each post in a request of its own and never sees the author's claim. A post it excludes as unusable counts in `S` and in neither `V`.
+
+Validators don't remove near-duplicates. BitFan refuses a post that's a near-copy of one already written, whoever wrote it, so each accepted test line is a different post.
 
 | S | V_pos | V_neg | amount | quality | score |
 |---|---|---|---|---|---|
@@ -71,7 +61,7 @@ The labeller is the validator's own, prompted with [`content_policy.md`](../cont
 | 20 | 5 | 5 | 10 | 0.5 | **5**, half the posts were wrong |
 | 0 | 0 | 0 | 0 | | **0** |
 
-### 3. The split
+### 2. The split
 
 The top `dataset_top_n` (10) miners with a score above zero split 700,000 units in proportion to score. If fewer qualify, those present share the whole pool. Ranking is score descending, then hotkey ascending. If nobody scores above zero, the pool burns.
 
@@ -92,7 +82,7 @@ The others are published with a status: `unpaid`, `duplicate`, `ineligible`, `in
 
 ### Accuracy
 
-Each model runs over the day's labelled corpus: every test post that survived de-duplication, from all miners, plus the production sample. **Test posts from the model's own coldkey are left out**, across every hotkey under that coldkey.
+Each model runs over the day's labelled corpus: every labelled test post, from all miners, plus the production sample of about 200 public BitFan posts. **Test posts from the model's own coldkey are left out**, across every hotkey under that coldkey.
 
 ```text
 accuracy = correct / scored

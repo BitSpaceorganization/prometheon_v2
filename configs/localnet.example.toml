@@ -40,14 +40,15 @@ api_key_env = "OPENAI_API_KEY"
 # cycle at labelling. Set 0 only if you switch `model` to one that allows it:
 # 0 is what keeps ground truth from wandering between validators.
 temperature = 1.0
-batch_size = 10
+# Each request carries one post. This many are open at once.
+max_in_flight = 8
 
 [evaluation]
 batch_size = 10
 
 [scoring]
 # The rules this file was written for; see configs/finney.example.toml.
-scoring_version = "prometheon-scoring/3.0"
+scoring_version = "prometheon-scoring/3.1"
 # These decide emissions. Every share is a slice of total emission, not a ratio
 # of a pool. A pool nobody qualifies for burns to the subnet owner hotkey. Every
 # validator must run the same values: they are not enforced by consensus, so a
@@ -68,9 +69,6 @@ model_rank_shares_bp = [2500, 400, 100]
 # active ones. Both counts come from the signed epoch.
 min_verified_active_members = 10
 min_members = 30
-# Items whose normalised text has 64-bit SimHashes within this many bits are one
-# item, and only the earliest counts. The same value on every validator.
-near_duplicate_max_hamming = 3
 # A model scored on fewer items than this is not ranked at all. Accuracy over a
 # handful of items is noise, and a miner can shrink its own corpus by supplying
 # most of a day's test content; its own items are excluded from what it is

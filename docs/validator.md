@@ -74,11 +74,10 @@ uv run prometheon validator run --config ~/prometheon.toml
 4. decide who is eligible           ≥10 verified active members and ≥30 members
 5. verify the paid models           Hugging Face: manifest, architecture, size, fingerprint
 6. check you can run a model        a tiny canary on your device and dtype
-7. remove near-duplicates           across the whole day's test content
-8. label the corpus                 ground truth, fixed before any model sees it
-9. run every eligible model         each on its own view of the corpus
-10. score, split and save           the vector is written to disk before anything is sent
-11. wait for the rate limit, send   then sign the record once and post it to the hub
+7. label every post                 one request per post, never showing the author's claim
+8. run every eligible model         each on its own view of the corpus
+9. score, split and save            the vector is written to disk before anything is sent
+10. wait for the rate limit, send   then sign the record once and post it to the hub
 ```
 
 - **Gates first.** Anything that would make the result unsubmittable is checked before anything is paid for.
@@ -101,12 +100,12 @@ These fail loudly rather than produce a plausible-looking result:
 | Your `content_policy.md` hashes differently from the epoch's | you'd be labelling against different rules from everyone else |
 | Hugging Face can't be reached to verify a model | marking the model invalid on this validator alone would split its vector from everyone else's |
 | The canary can't run a model on your device | `validator.fault`. Fix your install or drivers; nothing is submitted |
-| Labelling failed 3 batches in a row, each holding more than one submitter's content | an endpoint fault, not content |
-| More than 20% of the production content excluded, or most of the test content lost for at least 3 submitters and at least half of them | what's left isn't a benchmark, and no single submitter could cause it |
-| Production posts still come back violating when each is asked about alone: 10 or more in one batch, or more than 90% of at least 20 over the day | the labeller has stopped labelling |
+| The labelling endpoint refuses the request itself (a bad key, an unknown model, a malformed request), or keeps failing after its retries | an endpoint fault, not content |
+| More than 20% of the production posts excluded, or most of the test posts lost for at least 3 submitters and at least half of them | what's left isn't a benchmark, and no single submitter could cause it |
+| More than 90% of at least 20 labelled production posts come back violating | the labeller has stopped labelling |
 | The vector can't be bent to the subnet's `max_weight_limit` without paying uids nobody scored | the owner has to raise the limit; see [`scoring.md`](./scoring.md#the-subnets-weight-limits) |
 
-**What doesn't stop a cycle: any single submitter's content.** Items the provider refuses, or that never label cleanly, are excluded and cost their submitter, who keeps them in `S` with neither `V`. A batch that comes back unanimously violating against a low base rate is asked again one item at a time, where no item can reach another's verdict, and the summary counts those batches.
+**What doesn't stop a cycle: any single submitter's content.** A post the provider refuses, or that doesn't label cleanly on a second ask, is excluded and costs its submitter, who keeps it in `S` with neither `V`. Each post is labelled in a request of its own, so no post can reach another's verdict. Rate limits and server errors are retried with backoff before a post is judged.
 
 **Nor does any single miner's model.** A model that won't download, won't load, runs out of memory or times out is scored on what it completed, and one that never produced a verdict is published as `unreachable`. A repository that was deleted or made private is `invalid` for the day. The rest of the field is scored as normal.
 
@@ -117,10 +116,9 @@ day                2026-11-05
 epoch              8ca6ef49…   ← sha256 of the signed epoch bytes
 frozen block       123456
 corpus             9c81…       ← hash over what you labelled
-near-duplicates    14 removed
 eligible miners    9/31
-corpus items       10240
-labelling calls    103
+corpus items       1240
+labelling calls    1243
 models verified    6/7
 models evaluated   6
 efficiency lambda  0bp         ← the spread guard fired; usual under forced choice
@@ -233,7 +231,7 @@ You still need a registered hotkey with a validator permit, and you still need t
 
 ## Costs
 
-Labelling is the bill you control. It scales with the corpus, and the policy goes with every batch, so batches of 100 items (the maximum and the default) keep the overhead down.
+Labelling is the bill you control. Each post is one request, and every request carries the policy, so a day costs about one policy's worth of input tokens per post. Providers that cache a repeated prompt prefix bill most of that at their cached rate. `[labelling] max_in_flight` (8) sets how many requests are open at once.
 
 Evaluation is your GPU time. Each eligible paid model is downloaded once per revision, loaded, run over the corpus and freed before the next. Only paid models of eligible miners are run, and the submission fee keeps the field to models someone paid to enter.
 

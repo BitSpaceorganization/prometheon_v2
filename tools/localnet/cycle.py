@@ -63,8 +63,8 @@ from prometheon.chain.weights import resolve_allocations, to_u16_chain_vector
 from prometheon.cli.validator import _policy_text
 from prometheon.hub.auth import CallerRole
 from prometheon.hub.fake import FakeHub, serve
+from prometheon.hub.normalize import normalized_sha256
 from prometheon.registry.huggingface import HuggingFaceClient, weights_fingerprint
-from prometheon.scoring.dedupe import normalized_sha256
 from prometheon.version import SUBMISSION_FEE_ALPHA
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -197,18 +197,17 @@ class Labeller(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         body = json.loads(self.rfile.read(int(self.headers["content-length"])))
         user = body["messages"][-1]["content"]
-        ids = [
-            json.loads(line.rstrip(","))["id"]
-            for line in user.splitlines()
-            if line.startswith('{"id"')
-        ]
-        labels = [{"id": item, "violates": self.truth[item]} for item in ids]
+        # One post per request, on the line after the opening fence. The
+        # request carries its id and text only, never the author's claim.
+        (item,) = [json.loads(line) for line in user.splitlines() if line.startswith('{"id"')]
+        assert set(item) == {"id", "content"}, f"the labeller was sent {sorted(item)}"
+        answer = {"id": item["id"], "violates": self.truth[item["id"]]}
         payload = json.dumps(
             {
                 "choices": [
                     {
                         "finish_reason": "stop",
-                        "message": {"content": json.dumps({"labels": labels})},
+                        "message": {"content": json.dumps(answer)},
                     }
                 ],
                 "usage": {"prompt_tokens": 1, "completion_tokens": 1},

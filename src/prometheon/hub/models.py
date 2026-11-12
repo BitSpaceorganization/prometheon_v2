@@ -330,7 +330,7 @@ class MinerResult(_Strict):
     #: the burn reproduce the vector exactly even when the owner also earns.
     weight: int = Field(ge=0)
 
-    #: ``S``: the miner's test items left after near-duplicate removal.
+    #: ``S``: the miner's accepted test items.
     dataset_submitted_count: int = Field(ge=0)
     #: ``V_pos + V_neg``.
     dataset_valid_count: int = Field(ge=0)

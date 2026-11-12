@@ -13,7 +13,7 @@ __version__: Final[str] = "3.0.0"
 #: compute different weights from identical inputs. It is the only copy: an
 #: earlier version kept a second constant here that nothing read, while the one
 #: that was published sat unbumped through three weight-changing releases.
-SCORING_VERSION: Final[str] = "prometheon-scoring/3.0"
+SCORING_VERSION: Final[str] = "prometheon-scoring/3.1"
 
 #: The model submission fee: alpha per credit. A published rule, not a setting.
 #: The hub prices credits at exactly this, so a miner who could change it

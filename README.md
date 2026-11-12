@@ -40,12 +40,12 @@ BitFan and Prometheon are separate products. They share no database, no login an
 
 ## The rules, exactly
 
-These match the code under `scoring_version = "prometheon-scoring/3.0"`. [`docs/scoring.md`](./docs/scoring.md) has the arithmetic with worked examples.
+These match the code under `scoring_version = "prometheon-scoring/3.1"`. [`docs/scoring.md`](./docs/scoring.md) has the arithmetic with worked examples.
 
 | Rule | Value |
 |---|---|
 | Data pool | 70% of emission, split among the top 10 eligible miners in proportion to their data score |
-| Data score | `2 × min(V_pos, V_neg) × (V_pos + V_neg) / S`, after near-duplicates are removed |
+| Data score | `2 × min(V_pos, V_neg) × (V_pos + V_neg) / S` |
 | Model pool | 25%, 4% and 1% of emission to the top three models |
 | Unfilled places | An unfilled model place goes to the lowest-ranked winner present: two models get 25% and 5%, and one model gets 30%. A pool burns only when nobody qualifies for it |
 | Eligible miner | At least **10** identity-verified active members **and** at least **30** members in total, as counted in the signed epoch. Both pools. Every member is phone-verified, and the 30 includes the 10 |
@@ -53,7 +53,7 @@ These match the code under `scoring_version = "prometheon-scoring/3.0"`. [`docs/
 | Model fee | 50 alpha per new model, paid in advance as a credit. No refunds |
 | Burn | Anything nobody qualifies for is weighted to the subnet owner hotkey |
 
-`S` is a miner's test posts for the day after near-duplicates are removed. `V_pos` counts posts claimed violating that the validator's labeller confirmed violating. `V_neg` counts posts claimed compliant that it confirmed compliant. Because the score uses `min(V_pos, V_neg)`, a flood of one class earns nothing.
+`S` is a miner's test posts for the day, as the feed carries them. BitFan refuses a near-copy of an earlier post when it's written, so validators don't remove copies themselves. `V_pos` counts posts claimed violating that the validator's labeller confirmed violating. `V_neg` counts posts claimed compliant that it confirmed compliant. Because the score uses `min(V_pos, V_neg)`, a flood of one class earns nothing.
 
 ### Whose content counts
 
@@ -123,9 +123,9 @@ A validator scores yesterday once a day at 04:00 UTC, and re-posts its weights e
 src/prometheon/hub/         the hub client: signed epochs, feed files, results, credits; a fake hub
 src/prometheon/chain/       metagraph, commitments, weight submission, stake transfers
 src/prometheon/registry/    model checks against Hugging Face: manifest, size, fingerprint, duplicates
-src/prometheon/labelling/   ground-truth labelling with injection-hardened batching
+src/prometheon/labelling/   ground-truth labelling, one post per request
 src/prometheon/evaluation/  corpus assembly and the forced-choice model engine
-src/prometheon/scoring/     near-duplicates, data and model scores, the split, burn
+src/prometheon/scoring/     data and model scores, the split, burn
 src/prometheon/security/    canonical JSON and signatures
 src/prometheon/cli/         the miner and validator commands
 tools/localnet/             a whole cycle on a local chain, with real extrinsics
