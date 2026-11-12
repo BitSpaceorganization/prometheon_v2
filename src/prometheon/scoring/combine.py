@@ -5,8 +5,9 @@ of the **total**, not a ratio of what happens to be claimed:
 
 - ``dataset_share_bp`` (7000) goes to the top data contributors, split by score;
 - ``model_rank_shares_bp`` (2500, 400, 100) go to the first, second and third
-  model. A place nobody fills goes to the lowest-ranked winner present, so two
-  models take 25% and 5%, and one model takes 30%.
+  model, placed as :mod:`prometheon.scoring.model` describes. A place nobody
+  fills goes to the lowest-placed winner present, so two models take 25% and
+  5%, and one model takes 30%.
 
 A pool burns, to the subnet owner hotkey, only when nobody qualifies for it: no
 data contributor scoring above zero, or no model scoring above zero. Anything a
@@ -81,7 +82,10 @@ def combine_weights(
         top_n=scoring.dataset_top_n,
     )
     model_units = allocate_model_pool(
-        model_scores, total_units=total_units, rank_shares_bp=scoring.model_rank_shares_bp
+        model_scores,
+        total_units=total_units,
+        rank_shares_bp=scoring.model_rank_shares_bp,
+        min_scored_items=scoring.model_min_scored_items,
     )
 
     earned: dict[str, int] = {}

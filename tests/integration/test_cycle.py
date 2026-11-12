@@ -18,6 +18,7 @@ import dataclasses
 import datetime as dt
 import hashlib
 import json
+import time
 from types import SimpleNamespace
 from typing import Any
 
@@ -155,15 +156,21 @@ class FakeChain:
 
 
 class StubRegistry(ModelRegistry):
-    """Eligibility without Hugging Face: every entry it is handed is valid."""
+    """Eligibility without Hugging Face: every entry it is handed is valid.
+
+    Every model has 400M parameters, under the size penalty, unless
+    ``parameters`` says otherwise.
+    """
 
     def __init__(
         self,
         invalid: set[str] | None = None,
         reason: InvalidReason = InvalidReason.MANIFEST_VIOLATION,
+        parameters: dict[str, int] | None = None,
     ) -> None:
         self._invalid = invalid or set()
         self._reason = reason
+        self._parameters = parameters or {}
 
     def validate(self, entries: Any) -> list[MinerValidation]:
         self.seen = [entry.hotkey for entry in entries]
@@ -179,6 +186,7 @@ class StubRegistry(ModelRegistry):
                 commit_block=entry.commit_block,
                 model_type="qwen2",
                 weight_bytes=8 * 1024**3,
+                parameters=self._parameters.get(entry.hotkey, 400_000_000),
             )
             for entry in entries
         ]
@@ -220,9 +228,10 @@ def _labeller(
 class _FakeEngine:
     """A model that answers a fixed fraction of each batch correctly."""
 
-    def __init__(self, accuracy: float, *, broken: bool = False) -> None:
+    def __init__(self, accuracy: float, *, broken: bool = False, slow: bool = False) -> None:
         self.accuracy = accuracy
         self.broken = broken
+        self.slow = slow
         self.seen: list[str] = []
 
     def load(self) -> None:
@@ -233,6 +242,8 @@ class _FakeEngine:
         return None
 
     def moderate(self, policy: str, items: Any) -> Any:
+        if self.slow:
+            time.sleep(0.5)
         verdicts = []
         for index, (item_id, content) in enumerate(items):
             self.seen.append(item_id)
@@ -241,17 +252,14 @@ class _FakeEngine:
             verdicts.append(
                 Verdict(item_id=item_id, violates=truthful if correct else not truthful)
             )
-        return ModerationResult(
-            verdicts=tuple(verdicts),
-            prompt_tokens=100 * len(verdicts),
-            completion_tokens=len(verdicts),
-        )
+        return ModerationResult(verdicts=tuple(verdicts))
 
 
 def _install_engines(
     monkeypatch: pytest.MonkeyPatch,
     accuracy: dict[str, float],
     broken: frozenset[str] = frozenset(),
+    slow: frozenset[str] = frozenset(),
 ) -> dict[str, _FakeEngine]:
     built: dict[str, _FakeEngine] = {}
 
@@ -260,7 +268,9 @@ def _install_engines(
 
     def fake_build(model_path: str, **_kwargs: Any) -> _FakeEngine:
         hotkey = model_path.rsplit("/", 1)[-1]
-        built[hotkey] = _FakeEngine(accuracy.get(hotkey, 1.0), broken=hotkey in broken)
+        built[hotkey] = _FakeEngine(
+            accuracy.get(hotkey, 1.0), broken=hotkey in broken, slow=hotkey in slow
+        )
         return built[hotkey]
 
     monkeypatch.setattr("prometheon.cli.cycle.download_checkpoint", fake_download)
@@ -402,8 +412,9 @@ def _run(
     broken: frozenset[str] = frozenset(),
     check_runtime: Any = None,
     seen: list[dict[str, str]] | None = None,
+    slow: frozenset[str] = frozenset(),
 ) -> Any:
-    _install_engines(monkeypatch, accuracy, broken)
+    _install_engines(monkeypatch, accuracy, broken, slow)
     with (
         HubClient(
             base_url="https://hub.invalid",
@@ -880,7 +891,7 @@ def test_a_model_that_cannot_be_run_costs_only_its_miner(
     )
 
     by_hotkey = {item.hotkey: item for item in result.evaluations}
-    assert by_hotkey[MINER_B.ss58_address].has_token_reading is False
+    assert by_hotkey[MINER_B.ss58_address].answered is False
     assert by_hotkey[MINER_A.ss58_address].correct == by_hotkey[MINER_A.ss58_address].total
     rows = {row.hotkey: row for row in build_results(result)}
     assert rows[MINER_B.ss58_address].model_status is ModelStatus.UNREACHABLE
@@ -968,3 +979,95 @@ class TestValidatorFaultsStopTheCycle:
         assert any(
             MINER_B.ss58_address in note and "every batch failed" in note for note in result.notes
         )
+
+
+# ---------------------------------------------------------------------------
+# The model rules of 3.1: size, the time limit, the published counts
+# ---------------------------------------------------------------------------
+
+
+def test_the_size_penalty_is_published_and_comes_off_the_score(
+    config: Config, world: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B has 2B parameters: floor(100 * log2(4)) = 200 bp off its accuracy.
+
+    Both models answer every item correctly. A's view is the 30 production
+    posts plus B's 10 and C's 4 test posts, 44 items; B's is 30 + 10 + 4. Both
+    score 10,000 raw. A keeps 10,000 and ranks first; B scores 9,800.
+    """
+    registry = StubRegistry(parameters={MINER_B.ss58_address: 2_000_000_000})
+    result = _run(
+        config,
+        world,
+        accuracy={MINER_A.ss58_address: 1.0, MINER_B.ss58_address: 1.0},
+        monkeypatch=monkeypatch,
+        registry=registry,
+    )
+    rows = {row.hotkey: row for row in build_results(result)}
+    a, b = rows[MINER_A.ss58_address], rows[MINER_B.ss58_address]
+
+    assert (a.model_parameters, a.size_penalty_bp, a.model_score_bp) == (400_000_000, 0, 10_000)
+    assert (b.model_parameters, b.size_penalty_bp, b.raw_accuracy_bp) == (
+        2_000_000_000,
+        200,
+        10_000,
+    )
+    assert b.model_score_bp == 9_800
+    assert (a.model_rank, b.model_rank) == (1, 2)
+
+
+def test_a_model_that_does_not_finish_in_time_gets_no_score(
+    config: Config, world: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B's batches take half a second against a 0.2s limit: it stops after one
+    batch, is published as timed_out with no rank, and A, which finishes in
+    well under the limit, takes the whole 30%."""
+    slow_config = config.model_copy(
+        update={"evaluation": EvaluationConfig(batch_size=10, model_timeout_seconds=0.2)}
+    )
+    result = _run(
+        slow_config,
+        world,
+        accuracy={MINER_A.ss58_address: 1.0, MINER_B.ss58_address: 1.0},
+        monkeypatch=monkeypatch,
+        slow=frozenset({MINER_B.ss58_address}),
+    )
+    rows = {row.hotkey: row for row in build_results(result)}
+    b = rows[MINER_B.ss58_address]
+
+    assert b.model_status is ModelStatus.TIMED_OUT
+    assert b.model_rank is None
+    assert b.model_score_bp == 0
+    # One batch of 10 judged; the rest never reached and counted nowhere.
+    assert (b.model_items_scored, b.model_correct_count) == (10, 10)
+    assert dict(result.split.model_units) == {MINER_A.ss58_address: 300_000}
+    assert any(MINER_B.ss58_address in note and "no score today" in note for note in result.notes)
+
+
+def test_a_parameter_count_the_hub_disagrees_with_is_noted_and_ours_is_used(
+    config: Config, world: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    hub: FakeHub = world["hub"]
+    hub.publish_day(
+        DAY,
+        miners=[
+            _miner(VALIDATOR, 0, VALIDATOR, 0),
+            _miner(MINER_A, 1, COLD_A, 14),
+            _miner(MINER_B, 2, COLD_B, 14),
+        ],
+        models=[
+            {**_model(MINER_A, "a/guard", 100), "parameters": 400_000_000},
+            {**_model(MINER_B, "b/guard", 200), "parameters": 999},
+        ],
+        test_lines=world["tests"][:20],
+        production_lines=world["productions"],
+        policy_version=POLICY.version,
+        policy_sha256=POLICY.sha256,
+    )
+    result = _run(config, world, accuracy={}, monkeypatch=monkeypatch)
+
+    notes = [note for note in result.notes if "the hub counted" in note]
+    assert len(notes) == 1
+    assert MINER_B.ss58_address in notes[0]
+    rows = {row.hotkey: row for row in build_results(result)}
+    assert rows[MINER_B.ss58_address].model_parameters == 400_000_000

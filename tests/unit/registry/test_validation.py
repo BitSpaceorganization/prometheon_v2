@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 
 import httpx
@@ -34,7 +35,26 @@ HOTKEY_B = "5FA0miner_two"
 
 #: Comfortably inside the ceiling the fixtures set.
 SHARD_BYTES = 4 * 1024**3
-CEILING = 24 * 1024**3
+#: The shipped ceiling.
+CEILING = 16 * 1024**3
+
+
+def safetensors_prefix(header: dict[str, object] | bytes) -> bytes:
+    """The start of a safetensors file: an 8-byte little-endian length, then the header."""
+    raw = header if isinstance(header, bytes) else json.dumps(header).encode()
+    return len(raw).to_bytes(8, "little") + raw
+
+
+def tensors(parameters: int) -> dict[str, object]:
+    """A header holding ``parameters`` elements: a matrix, a vector and a scalar."""
+    columns = 1000
+    rows, rest = divmod(parameters - 1, columns)
+    return {
+        "__metadata__": {"format": "pt"},
+        "matrix": {"dtype": "F16", "shape": [rows, columns], "data_offsets": [0, 0]},
+        "vector": {"dtype": "F16", "shape": [rest], "data_offsets": [0, 0]},
+        "scalar": {"dtype": "F32", "shape": [], "data_offsets": [0, 0]},
+    }
 
 
 @dataclass
@@ -54,6 +74,13 @@ class Repo:
     not_in_lfs: tuple[str, ...] = ()
     #: Explicit LFS ids by file name, for tests that rename shards.
     lfs: dict[str, str] | None = None
+    #: Elements in each weight file's header. Two shards of 200M: 400M in all,
+    #: under the 500M where the size penalty starts.
+    parameters_per_shard: int = 200_000_000
+    #: A raw header to serve instead, for tests about one that cannot be read.
+    raw_header: bytes | None = None
+    #: The status a weight file's range request answers with, if not 206.
+    weights_status: int | None = None
 
 
 class World:
@@ -105,13 +132,29 @@ class World:
             return httpx.Response(200, json={"sha": revision, "siblings": siblings})
         if "/resolve/" in path:
             repo, _, tail = path.lstrip("/").partition("/resolve/")
-            revision, _, _filename = tail.partition("/")
+            revision, _, filename = tail.partition("/")
             state = self.repos.get((repo, revision))
             if state is None:
                 return httpx.Response(404, json={"error": "not found"})
+            if filename.endswith(".safetensors"):
+                return self._weights(request, state)
             body = json.dumps({"model_type": state.model_type} if state.model_type else {})
             return httpx.Response(200, content=body.encode())
         return httpx.Response(404, json={"error": "not found"})
+
+    def _weights(self, request: httpx.Request, state: Repo) -> httpx.Response:
+        """A weight file, as far as a range request reaches into it."""
+        if state.weights_status is not None:
+            return httpx.Response(state.weights_status)
+        prefix = safetensors_prefix(
+            state.raw_header
+            if state.raw_header is not None
+            else tensors(state.parameters_per_shard)
+        )
+        match = re.fullmatch(r"bytes=(\d+)-(\d+)", request.headers.get("range", ""))
+        assert match is not None, "a weight file must only ever be read by range"
+        start, end = int(match.group(1)), int(match.group(2))
+        return httpx.Response(206, content=prefix[start : end + 1])
 
 
 def commitment(*, repo: str = REPO_A, revision: str = REV_A) -> ModelCommitment:
@@ -405,3 +448,98 @@ def test_results_are_returned_in_the_order_given() -> None:
     world = World()
     results = world.registry().validate([entry(uid=7), entry(uid=3, hotkey=HOTKEY_B), entry(uid=5)])
     assert [result.uid for result in results] == [7, 3, 5]
+
+
+# -- the parameter count -----------------------------------------------------
+
+
+class TestTheParameterCountIsReadFromTheHeaders:
+    """D: P is summed from every weight file's safetensors header, by range request."""
+
+    def test_the_count_is_the_sum_over_every_weight_file(self) -> None:
+        result = only(
+            World(repos={(REPO_A, REV_A): Repo(parameters_per_shard=750_000_000)}), entry()
+        )
+
+        assert result.valid
+        assert result.parameters == 1_500_000_000
+
+    def test_only_headers_are_read_never_weights(self) -> None:
+        """Two small range requests per weight file, and nothing past the header."""
+        world = World()
+        only(world, entry())
+
+        reads = [
+            request
+            for request in world.hf_calls.requests
+            if request.url.path.endswith(".safetensors")
+        ]
+        assert len(reads) == 4
+        assert all("range" in request.headers for request in reads)
+        assert reads[0].headers["range"] == "bytes=0-7"
+
+    def test_four_billion_parameters_is_allowed(self) -> None:
+        world = World(repos={(REPO_A, REV_A): Repo(parameters_per_shard=2_000_000_000)})
+        result = only(world, entry())
+
+        assert result.valid
+        assert result.parameters == 4_000_000_000
+
+    def test_one_more_is_too_large(self) -> None:
+        world = World(
+            repos={
+                (REPO_A, REV_A): Repo(
+                    files=(".gitattributes", "config.json", "model.safetensors", "tokenizer.json"),
+                    parameters_per_shard=4_000_000_001,
+                )
+            }
+        )
+        result = only(world, entry())
+
+        assert not result.valid
+        assert result.reason is InvalidReason.MODEL_TOO_LARGE
+        assert "too large" in result.detail
+        assert result.parameters == 4_000_000_001
+
+    def test_a_model_stopped_by_an_earlier_check_has_no_count(self) -> None:
+        world = World(repos={(REPO_A, REV_A): Repo(shard_bytes=20 * 1024**3)})
+        result = only(world, entry())
+
+        assert result.reason is InvalidReason.MODEL_TOO_LARGE
+        assert result.parameters is None
+
+    @pytest.mark.parametrize(
+        "header",
+        [
+            b"not json",
+            b"[1, 2, 3]",
+            json.dumps({"w": {"dtype": "F16", "data_offsets": [0, 2]}}).encode(),
+            json.dumps({"w": {"dtype": "F16", "shape": [2, -1], "data_offsets": [0, 2]}}).encode(),
+            json.dumps(
+                {"w": {"dtype": "F16", "shape": [2, True], "data_offsets": [0, 2]}}
+            ).encode(),
+        ],
+    )
+    def test_a_header_that_cannot_be_read_is_the_miners_to_fix(self, header: bytes) -> None:
+        world = World(repos={(REPO_A, REV_A): Repo(raw_header=header)})
+        result = only(world, entry())
+
+        assert result.reason is InvalidReason.MANIFEST_VIOLATION
+
+    def test_a_weight_file_that_is_gone_is_the_miners_to_fix(self) -> None:
+        world = World(repos={(REPO_A, REV_A): Repo(weights_status=404)})
+
+        assert only(world, entry()).reason is InvalidReason.REPO_UNAVAILABLE
+
+    def test_hugging_face_failing_mid_count_is_this_validators_problem(self) -> None:
+        """B21: an outage must stop the cycle, not score a miner out."""
+        world = World(repos={(REPO_A, REV_A): Repo(weights_status=503)})
+
+        assert only(world, entry()).reason is InvalidReason.UPSTREAM_UNAVAILABLE
+
+    def test_the_same_weights_are_counted_once(self) -> None:
+        world, entries = _two_miners(Repo(), Repo(), block_a=100, block_b=200)
+        world.registry().validate(entries)
+
+        reads = [p for p in world.hf_calls.paths() if p.endswith(".safetensors")]
+        assert len(reads) == 4

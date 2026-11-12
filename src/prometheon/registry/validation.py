@@ -10,14 +10,17 @@ thing its miner can fix.
     3. the repository passes the manifest: permitted files only, weights in
        Git LFS, a config, at most a few hundred weight files
     4. the architecture is one the evaluation runtime's transformers can load
-    5. the weights, and everything else, fit the size ceilings
+    5. the weights, and everything else, fit the byte ceilings
     6. the weights fingerprint matches the one the epoch froze
-    7. no earlier commitment holds the same weights
+    7. the parameter count is within the cap: 4 billion
+    8. no earlier commitment holds the same weights
 
 Checks 3 to 6 come from one Hugging Face listing and one small config read,
-before anything is downloaded.
+and check 7 from two range requests per weight file that read only its
+safetensors header, all before anything is downloaded. An oversized model costs
+the subnet a few requests, never a download.
 
-**Duplicates are decided by file content (7).** v2 grouped on the git revision
+**Duplicates are decided by file content (8).** v2 grouped on the git revision
 SHA, so one extra commit on a copied model gave it a new SHA and it passed (B7).
 The fingerprint is the sha256 over the sorted Git LFS sha256s of the weight
 files, read from the API at the frozen revision, so renaming a shard or adding a
@@ -61,6 +64,7 @@ from prometheon.registry.huggingface import (
 )
 from prometheon.registry.loadability import ArchitectureUnsupportedError, require_loadable
 from prometheon.revision import require_valid_revision
+from prometheon.scoring.size import MAX_MODEL_PARAMETERS, exceeds_size_cap
 
 
 class InvalidReason(str, Enum):
@@ -77,7 +81,8 @@ class InvalidReason(str, Enum):
     MANIFEST_VIOLATION = ManifestViolationError.code
     #: The architecture is one the evaluation runtime cannot load at all.
     ARCHITECTURE_UNSUPPORTED = ArchitectureUnsupportedError.code
-    #: The weights exceed what every validator is expected to be able to run.
+    #: The weights exceed what every validator is expected to be able to run:
+    #: over the byte ceiling, or over the 4-billion parameter cap.
     MODEL_TOO_LARGE = ModelTooLargeError.code
     DUPLICATE_MODEL = DuplicateModelError.code
     #: The weights at the frozen revision are not the ones the epoch names.
@@ -152,6 +157,10 @@ class MinerValidation:
     non_weight_bytes: int = 0
     #: The weights fingerprint, once check 6 has computed it.
     fingerprint: str = ""
+    #: ``P``, the parameter count, once check 7 has read it. ``None`` for a
+    #: model that failed an earlier check, so a record never shows a count
+    #: nobody read.
+    parameters: int | None = None
 
 
 def _outcome(
@@ -163,6 +172,7 @@ def _outcome(
     model_type: str = "",
     snapshot: RepoSnapshot | None = None,
     fingerprint: str = "",
+    parameters: int | None = None,
 ) -> MinerValidation:
     return MinerValidation(
         uid=entry.uid,
@@ -177,6 +187,7 @@ def _outcome(
         weight_bytes=snapshot.weight_bytes if snapshot is not None else 0,
         non_weight_bytes=snapshot.non_weight_bytes if snapshot is not None else 0,
         fingerprint=fingerprint,
+        parameters=parameters,
     )
 
 
@@ -243,12 +254,19 @@ class ModelRegistry:
     def validate(self, entries: Sequence[MinerEntry]) -> list[MinerValidation]:
         """Verdicts for every entry, in the order given."""
         # A listing is deterministic for a commit SHA, so two entries on one
-        # revision share it. An outage is not cached: it may have cleared.
+        # revision share it, and a parameter count is deterministic for a
+        # fingerprint. An outage is not cached: it may have cleared.
         listings: dict[tuple[str, str], RepoSnapshot] = {}
-        return _resolve_duplicates([self._validate_one(entry, listings) for entry in entries])
+        counts: dict[str, int] = {}
+        return _resolve_duplicates(
+            [self._validate_one(entry, listings, counts) for entry in entries]
+        )
 
     def _validate_one(
-        self, entry: MinerEntry, listings: dict[tuple[str, str], RepoSnapshot]
+        self,
+        entry: MinerEntry,
+        listings: dict[tuple[str, str], RepoSnapshot],
+        counts: dict[str, int],
     ) -> MinerValidation:
         # 1 -- the commitment exists, decoded, and names usable identifiers.
         if entry.decode_error is not None:
@@ -349,6 +367,37 @@ class ModelRegistry:
                 fingerprint=fingerprint,
             )
 
+        # 7 -- the model is small enough for one card, read from its headers.
+        try:
+            parameters = counts.get(fingerprint)
+            if parameters is None:
+                parameters = self._huggingface.parameter_count(snapshot)
+                counts[fingerprint] = parameters
+        except RegistryError as exc:
+            return _outcome(
+                entry,
+                commitment,
+                reason=_registry_reason(exc),
+                detail=str(exc),
+                model_type=model_type,
+                snapshot=snapshot,
+                fingerprint=fingerprint,
+            )
+        if exceeds_size_cap(parameters):
+            return _outcome(
+                entry,
+                commitment,
+                reason=InvalidReason.MODEL_TOO_LARGE,
+                detail=(
+                    f"{commitment.hf_repo}@{commitment.hf_revision} has {parameters:,} "
+                    f"parameters, over the {MAX_MODEL_PARAMETERS:,} cap: too large"
+                ),
+                model_type=model_type,
+                snapshot=snapshot,
+                fingerprint=fingerprint,
+                parameters=parameters,
+            )
+
         return _outcome(
             entry,
             commitment,
@@ -357,6 +406,7 @@ class ModelRegistry:
             model_type=model_type,
             snapshot=snapshot,
             fingerprint=fingerprint,
+            parameters=parameters,
         )
 
     def _size_problem(self, commitment: ModelCommitment, snapshot: RepoSnapshot) -> str:

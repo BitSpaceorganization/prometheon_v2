@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import decimal
 import json
 import os
 import secrets
@@ -70,6 +71,10 @@ from prometheon.version import SUBMISSION_FEE_ALPHA
 ROOT = Path(__file__).resolve().parents[2]
 EXAMPLE = ROOT / "configs" / "localnet.example.toml"
 TOTAL_UNITS = 1_000_000
+
+#: The day holds a few dozen items, so the shipped floor of 100 would rank no
+#: model. The run lowers it to this, and changes nothing else in [scoring].
+MIN_SCORED_ITEMS = 10
 
 #: Two models that pass the manifest: weights in LFS, a config, a tokenizer,
 #: no code. Small enough to run on a CPU.
@@ -300,13 +305,54 @@ def cli(home: Path, *args: str) -> None:
 # --- the spec, by hand --------------------------------------------------------
 
 
-def expected_units(record: dict[str, Any]) -> tuple[dict[str, int], int]:
+def penalty_by_hand(parameters: int) -> int:
+    """floor(100 * log2(P / 500M)), 0 up to 500M, in 60-digit decimals."""
+    if parameters <= 500_000_000:
+        return 0
+    with decimal.localcontext() as context:
+        context.prec = 60
+        ratio = decimal.Decimal(parameters) / decimal.Decimal(500_000_000)
+        exact = 100 * ratio.ln() / decimal.Decimal(2).ln()
+        return int(exact.to_integral_value(rounding=decimal.ROUND_FLOOR))
+
+
+def ranked_by_hand(record: dict[str, Any], commit_blocks: dict[str, int]) -> list[str]:
+    """docs/scoring.md "Ranks and places", applied to the record's own numbers.
+
+    Each score is checked as accuracy less the size penalty, recomputed here.
+    Then each place goes to the earliest commit, then the lower hotkey, among
+    the models within 100 bp of the best remaining score.
+    """
+    field: dict[str, int] = {}
+    for row in record["results"]:
+        if row["model_status"] != "evaluated":
+            continue
+        penalty = penalty_by_hand(row["model_parameters"])
+        assert row["size_penalty_bp"] == penalty, f"{row['hotkey']}: penalty {row}"
+        assert row["model_score_bp"] == max(0, row["raw_accuracy_bp"] - penalty), row
+        if row["model_score_bp"] > 0 and row["model_items_scored"] >= MIN_SCORED_ITEMS:
+            field[row["hotkey"]] = row["model_score_bp"]
+    places: list[str] = []
+    while field:
+        best = max(field.values())
+        winner = min(
+            (hotkey for hotkey, score in field.items() if score >= best - 100),
+            key=lambda hotkey: (commit_blocks[hotkey], hotkey),
+        )
+        places.append(winner)
+        del field[winner]
+    return places
+
+
+def expected_units(
+    record: dict[str, Any], commit_blocks: dict[str, int]
+) -> tuple[dict[str, int], int]:
     """Spec section 2 applied to the record's published inputs.
 
     Both miners submit 5 items each way, every claim true, nothing dropped, so
     each data score is 2 * min(5, 5) * 10/10 = 10 and the 70% splits evenly.
-    Models: 25% / 4% / 1% of the total, an unfilled place going to the
-    lowest-ranked winner present. Whatever is left burns.
+    Models: placed by hand, then 25% / 4% / 1% of the total, an unfilled place
+    going to the lowest-placed winner present. Whatever is left burns.
     """
     rows = [row for row in record["results"] if row["dataset_submitted_count"]]
     for row in rows:
@@ -317,10 +363,12 @@ def expected_units(record: dict[str, Any]) -> tuple[dict[str, int], int]:
         )
         assert counts == (10, 5, 5), f"unexpected data counts for {row['hotkey']}: {counts}"
     units = {row["hotkey"]: 700_000 // len(rows) for row in rows}
-    ranked = sorted(
-        (row for row in record["results"] if row["model_rank"] is not None),
-        key=lambda row: row["model_rank"],
+    places = ranked_by_hand(record, commit_blocks)
+    published = {row["hotkey"]: row["model_rank"] for row in record["results"]}
+    assert all(published[hotkey] == place for place, hotkey in enumerate(places, start=1)), (
+        f"the record places the models {published}, by hand {places}"
     )
+    ranked = [row for hotkey in places for row in record["results"] if row["hotkey"] == hotkey]
     shares = [250_000, 40_000, 10_000][: len(ranked)]
     if shares:
         shares[-1] += 300_000 - sum(shares)
@@ -487,7 +535,7 @@ def main() -> int:
         evaluation={"device": "cpu", "torch_dtype": "float32", "batch_size": 50},
         # The day holds a few dozen items, so the floor of 100 would rank no
         # model. Everything else in [scoring] stays as shipped.
-        scoring={"model_min_scored_items": 10},
+        scoring={"model_min_scored_items": MIN_SCORED_ITEMS},
         validator={
             "state_directory": str(args.workdir / "state"),
             "submit_weights": True,
@@ -610,7 +658,9 @@ def main() -> int:
         published[owner_hotkey] = published.get(owner_hotkey, 0) + record["burned_weight"]
     assert published == sent, f"the record {published} does not reproduce the units sent {sent}"
 
-    by_hand, burned = expected_units(record)
+    by_hand, burned = expected_units(
+        record, {model["hotkey"]: model["commit_block"] for model in models}
+    )
     if burned:
         by_hand[owner_hotkey] = by_hand.get(owner_hotkey, 0) + burned
     view = view_of(subtensor, netuid)
@@ -635,7 +685,9 @@ def main() -> int:
                 f"V_pos={row['dataset_violating_confirmed']} "
                 f"V_neg={row['dataset_compliant_confirmed']} "
                 f"accuracy={row['raw_accuracy_bp'] / 100:.2f}% over {row['model_items_scored']} "
-                f"rank={row['model_rank']} status={row['model_status']} units={row['weight']}"
+                f"P={row['model_parameters']} penalty={row['size_penalty_bp']}bp "
+                f"score={row['model_score_bp']}bp rank={row['model_rank']} "
+                f"status={row['model_status']} units={row['weight']}"
             )
     log(f"burned: {record['burned_weight']}")
     log(f"units sent:      {sent}")

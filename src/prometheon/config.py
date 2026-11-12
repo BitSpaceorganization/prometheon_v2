@@ -177,14 +177,15 @@ class EvaluationConfig(BaseModel):
     #: Ceiling on a submitted model's weights, in bytes.
     #:
     #: Every validator downloads and runs every eligible model, so this is not
-    #: a miner's private trade-off: it decides what hardware validating the
-    #: subnet requires. 24 GiB leaves headroom for KV cache and activations on
-    #: a 32 GB card, which is the floor a validator is expected to own.
+    #: a miner's private trade-off: it decides what validating costs. 16 GiB
+    #: holds a model at the 4-billion parameter cap in 32-bit floats, and the
+    #: validator loads it in 16-bit, so it fits one 24 GB card with room for
+    #: the cache. The hub lists only models under the same ceiling.
     #:
     #: Enforced from the Hugging Face API before anything is downloaded, so an
     #: oversized model costs the subnet one request rather than an hour of
     #: bandwidth on every validator at once.
-    max_weight_bytes: int = Field(default=24 * 1024**3, gt=0)
+    max_weight_bytes: int = Field(default=16 * 1024**3, gt=0)
 
     #: Ceiling on everything in a repository that is not weights, in bytes:
     #: config, tokenizer, README. Every validator downloads all of it, so a
@@ -207,10 +208,20 @@ class EvaluationConfig(BaseModel):
     #: a machine without a GPU.
     device: str = Field(default="auto", pattern=r"^(auto|cpu|mps|cuda(:[0-9]+)?)$")
 
-    #: Seconds a single model's evaluation may take before it is abandoned and
-    #: scored on whatever it completed. A model that cannot finish the corpus
-    #: is not a model the subnet can serve.
-    model_timeout_seconds: float = Field(default=3600.0, gt=0)
+    #: Seconds one model has to load and judge every item of its corpus.
+    #:
+    #: A model that has not finished within it gets no score from this
+    #: validator for the day: it is published as ``timed_out`` and is not
+    #: ranked. Its unfinished items are not counted as wrong, so a model is
+    #: never scored on how far it got.
+    #:
+    #: 30 minutes is far more than a model at the 4-billion parameter cap needs
+    #: on one 24 GB card for a day's corpus, which is minutes. The limit exists
+    #: for a model that would hold up the cycle for hours, not to separate fast
+    #: models from slow ones, and the margin keeps two validators on different
+    #: cards from disagreeing about an honest model. Every validator should run
+    #: the shipped value.
+    model_timeout_seconds: float = Field(default=1800.0, gt=0)
 
     #: Delete each model's downloaded snapshot once it has been scored.
     #:
@@ -300,15 +311,12 @@ class ScoringConfig(BaseModel):
     #: content is excluded from its corpus, so a miner who supplies almost all
     #: of a day's test content is scored on almost nothing. Below this floor a
     #: model is not ranked at all.
+    #:
+    #: The rest of the model rules, the 4-billion parameter cap, the size
+    #: penalty and the one-point ranking band, are published constants in
+    #: :mod:`prometheon.scoring.size` and :mod:`prometheon.scoring.model`,
+    #: because the hub applies the cap too.
     model_min_scored_items: int = Field(default=100, ge=1)
-
-    #: Efficiency weight. Capped low: accuracy is what is being scored, so
-    #: efficiency must never overturn an accuracy gap wider than this fraction.
-    efficiency_lambda_bp: int = Field(default=1500, ge=0, le=10000)
-
-    #: Below this spread the efficiency term is noise rather than signal, so it
-    #: switches off entirely instead of randomising close rankings.
-    efficiency_min_cv_bp: int = Field(default=1000, ge=0, le=10000)
 
     #: Where the weight vector comes from. ``local`` computes it here.
     #:

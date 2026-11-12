@@ -78,11 +78,12 @@ max_in_flight = 8
 [evaluation]
 # Running miners' models on this validator's own hardware.
 batch_size = 100
-# Ceiling on a submitted model's weights. Every validator downloads and runs
-# every eligible model, so this decides what hardware validating costs: 24 GiB
-# leaves headroom on a 32 GB card, which is the floor a validator is expected
-# to own. Enforced from the Hugging Face API before anything is downloaded.
-max_weight_bytes = 25769803776
+# Ceiling on a submitted model's weights: 16 GiB, which holds a model at the
+# 4-billion parameter cap in 32-bit floats. The validator loads it in 16-bit,
+# so it fits one 24 GB card. The hub lists only models under the same ceiling,
+# so keep the shipped value. Enforced from the Hugging Face API before anything
+# is downloaded.
+max_weight_bytes = 17179869184
 # Ceiling on everything that is not weights (config, tokenizer, README).
 # Every validator downloads the whole repository, so this keeps one miner from
 # filling every validator's disk.
@@ -92,10 +93,15 @@ max_non_weight_bytes = 67108864
 # that differ only in a default.
 torch_dtype = "float16"
 # "auto" takes CUDA when present and falls back to CPU, which is fine for a dry
-# run and unusable for a real cycle. Validating needs 8 x RTX 5090 or better:
-# every eligible model is downloaded and run over the whole corpus, daily.
+# run and unusable for a real cycle. Validating needs one GPU with 24 GB, for
+# example an RTX 4090: every eligible model is downloaded and run over the
+# day's corpus, one at a time.
 device = "auto"
-model_timeout_seconds = 3600.0
+# Seconds one model has to load and judge its whole corpus. A model that hasn't
+# finished gets no score from this validator for the day ("timed_out"), and its
+# unfinished items count for nothing. A model at the size cap needs minutes;
+# keep the shipped value so validators agree.
+model_timeout_seconds = 1800.0
 
 [scoring]
 # The rules this file was written for. A file stating other rules is refused at
@@ -126,8 +132,6 @@ min_members = 30
 # most of a day's test content; its own items are excluded from what it is
 # scored on.
 model_min_scored_items = 100
-efficiency_lambda_bp = 1500
-efficiency_min_cv_bp = 1000
 # Where this validator's weight vector comes from.
 #
 #   "local"    score the day yourself: label the corpus, run every eligible

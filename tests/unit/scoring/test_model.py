@@ -1,16 +1,28 @@
-"""Model scoring: raw accuracy, the efficiency term, and the spread guard."""
+"""Model scoring: accuracy less a size penalty, and a ranking that favours the first.
+
+Every expected number is worked by hand in the test or its docstring, from the
+rules in docs/scoring.md:
+
+    raw_accuracy_bp = correct * 10,000 / scored, rounded half up
+    size_penalty_bp = floor(100 * log2(P / 500M)), 0 up to 500M
+    model_score_bp  = max(0, raw_accuracy_bp - size_penalty_bp)
+
+and each place goes to the earliest commit among the models within 100 bp of
+the best remaining score.
+"""
 
 from __future__ import annotations
-
-from fractions import Fraction
 
 import pytest
 
 from prometheon.config import ScoringConfig
 from prometheon.errors import ScoringError
 from prometheon.scoring.model import (
+    RANK_BAND_BP,
     ModelEvaluation,
+    ModelRanking,
     ModelScore,
+    accuracy_bp,
     allocate_model_pool,
     rank_models,
     score_models,
@@ -18,478 +30,400 @@ from prometheon.scoring.model import (
 
 pytestmark = pytest.mark.unit
 
+#: The day's corpus here is a thousand items, well above the shipped floor.
 DEFAULTS = ScoringConfig()
-
-#: Spread guard off, so the efficiency term always applies.
-NO_GUARD = ScoringConfig(efficiency_min_cv_bp=0)
-
-#: Efficiency off entirely.
-NO_EFFICIENCY = ScoringConfig(efficiency_lambda_bp=0)
-
-#: The weight pool and the v3 rank shares, stated rather than inherited.
 TOTAL = 1_000_000
-V3_SHARES = (2500, 400, 100)
+SHARES = (2500, 400, 100)
+SMALL = 400_000_000  # under 500M parameters: no penalty
 
 
 def _evaluation(
     hotkey: str,
     correct: int,
-    scored: int,
     *,
-    mean_tokens: int = 0,
-    readings: int = 1,
+    scored: int = 1000,
+    block: int = 100,
+    parameters: int = SMALL,
+    timed_out: bool = False,
 ) -> ModelEvaluation:
     return ModelEvaluation(
         hotkey=hotkey,
         correct_count=correct,
         scored_count=scored,
-        total_tokens=mean_tokens * readings,
-        token_reading_count=readings,
+        commit_block=block,
+        parameters=parameters,
+        timed_out=timed_out,
     )
 
 
-def _by_hotkey(ranking: tuple[ModelScore, ...]) -> dict[str, ModelScore]:
-    return {entry.hotkey: entry for entry in ranking}
+def _ranking(*evaluations: ModelEvaluation, scoring: ScoringConfig = DEFAULTS) -> ModelRanking:
+    return score_models(list(evaluations), scoring=scoring)
 
 
-def test_accuracy_is_raw_correct_over_scored() -> None:
-    ranking = score_models([_evaluation("hk-a", 803, 1000)], scoring=NO_EFFICIENCY)
-
-    assert ranking.scores[0].accuracy == Fraction(803, 1000)
-    assert ranking.scores[0].score == Fraction(803, 1000)
+def _order(ranking: ModelRanking) -> list[str]:
+    return [score.hotkey for score in ranking.ranked]
 
 
-def test_with_efficiency_off_ranking_is_accuracy_alone() -> None:
-    ranking = score_models(
-        [
-            _evaluation("hk-cheap", 800, 1000, mean_tokens=10),
-            _evaluation("hk-costly", 900, 1000, mean_tokens=100_000),
-        ],
-        scoring=NO_EFFICIENCY,
+def _score(ranking: ModelRanking, hotkey: str) -> ModelScore:
+    return next(score for score in ranking.scores if score.hotkey == hotkey)
+
+
+# --- the score ---------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("correct", "scored", "expected"),
+    [
+        (900, 1000, 9000),
+        (2, 3, 6667),  # 6666.67 rounds up
+        (1, 3, 3333),  # 3333.33 rounds down
+        (1, 8, 1250),
+        (1, 16_000, 1),  # 0.625 rounds up
+        (0, 10, 0),
+        (10, 10, 10_000),
+        (0, 0, 0),
+    ],
+)
+def test_raw_accuracy_is_basis_points_rounded_half_up(
+    correct: int, scored: int, expected: int
+) -> None:
+    assert accuracy_bp(correct, scored) == expected
+
+
+def test_the_score_is_accuracy_less_the_size_penalty() -> None:
+    """2B parameters: floor(100 * log2(4)) = 200 bp off 9,000."""
+    ranking = _ranking(_evaluation("hk-a", 900, parameters=2_000_000_000))
+    score = _score(ranking, "hk-a")
+
+    assert (score.raw_accuracy_bp, score.size_penalty_bp, score.score_bp) == (9000, 200, 8800)
+
+
+def test_a_model_at_or_under_half_a_billion_parameters_pays_nothing() -> None:
+    ranking = _ranking(_evaluation("hk-a", 900, parameters=500_000_000))
+
+    assert _score(ranking, "hk-a").score_bp == 9000
+
+
+def test_the_score_never_goes_below_zero() -> None:
+    """1% accuracy at 4B parameters: 100 - 300 would be negative; it is 0."""
+    ranking = _ranking(_evaluation("hk-a", 10, parameters=4_000_000_000))
+
+    assert _score(ranking, "hk-a").score_bp == 0
+    assert ranking.ranked == ()
+
+
+def test_a_bigger_model_must_be_more_accurate_to_rank_level_with_a_smaller_one() -> None:
+    """Big: 9,300 - floor(100 * log2(8)) = 9,000. Small: 9,250 - 0 = 9,250.
+
+    Small is best, and big is 250 bp behind, outside the band: small first.
+    """
+    ranking = _ranking(
+        _evaluation("hk-big", 930, block=100, parameters=4_000_000_000),
+        _evaluation("hk-small", 925, block=200),
     )
 
-    assert [entry.hotkey for entry in ranking.scores] == ["hk-costly", "hk-cheap"]
-    assert ranking.applied_lambda_bp == 0
+    assert _order(ranking) == ["hk-small", "hk-big"]
 
 
-def test_the_efficiency_term_discounts_the_expensive_model() -> None:
-    ranking = score_models(
-        [
-            _evaluation("hk-cheap", 800, 1000, mean_tokens=100),
-            _evaluation("hk-mid", 800, 1000, mean_tokens=200),
-            _evaluation("hk-costly", 900, 1000, mean_tokens=1000),
-        ],
-        scoring=DEFAULTS,
+def test_a_model_that_timed_out_has_no_score_and_does_not_rank() -> None:
+    ranking = _ranking(
+        _evaluation("hk-slow", 1000, timed_out=True),
+        _evaluation("hk-a", 800),
     )
 
-    assert ranking.applied_lambda_bp == 1500
-    # P90 of [100, 200, 1000] with linear interpolation: 200 + 0.8 * 800.
-    assert ranking.p90_mean_tokens == Fraction(840)
-
-    scores = _by_hotkey(ranking.scores)
-    assert scores["hk-costly"].efficiency_t == Fraction(1)  # above P90, clamped
-    assert scores["hk-cheap"].efficiency_t == Fraction(100, 840)
-    assert scores["hk-costly"].score == Fraction(9, 10) * (1 - Fraction(15, 100))
-    # A ten-point accuracy lead is not enough to survive a full 15% discount
-    # against a model that is 8x cheaper.
-    assert [entry.hotkey for entry in ranking.scores] == ["hk-cheap", "hk-mid", "hk-costly"]
-
-
-def test_efficiency_never_overturns_an_accuracy_gap_wider_than_lambda() -> None:
-    ranking = score_models(
-        [
-            _evaluation("hk-cheap", 700, 1000, mean_tokens=10),
-            _evaluation("hk-costly", 900, 1000, mean_tokens=100_000),
-        ],
-        scoring=NO_GUARD,
-    )
-
-    assert [entry.hotkey for entry in ranking.scores] == ["hk-costly", "hk-cheap"]
-
-
-def test_the_spread_guard_switches_lambda_off_when_the_field_costs_the_same() -> None:
-    # Mean tokens 1000 vs 1020: CV is about 99bp, under the 1000bp threshold.
-    evaluations = [
-        _evaluation("hk-a", 850, 1000, mean_tokens=1000),
-        _evaluation("hk-b", 851, 1000, mean_tokens=1020),
-    ]
-
-    guarded = score_models(evaluations, scoring=DEFAULTS)
-
-    assert guarded.applied_lambda_bp == 0
-    assert guarded.mean_token_cv_micros == pytest.approx(9_900, abs=100)
-    # Untouched accuracy decides it, and hk-b is one item better.
-    assert [entry.hotkey for entry in guarded.scores] == ["hk-b", "hk-a"]
-    assert guarded.scores[0].score == Fraction(851, 1000)
-
-
-def test_without_the_guard_that_same_noise_would_have_flipped_the_ranking() -> None:
-    evaluations = [
-        _evaluation("hk-a", 850, 1000, mean_tokens=1000),
-        _evaluation("hk-b", 851, 1000, mean_tokens=1020),
-    ]
-
-    unguarded = score_models(evaluations, scoring=NO_GUARD)
-
-    assert unguarded.applied_lambda_bp == 1500
-    assert [entry.hotkey for entry in unguarded.scores] == ["hk-a", "hk-b"]
-
-
-def test_the_guard_still_reports_the_efficiency_it_declined_to_apply() -> None:
-    ranking = score_models(
-        [
-            _evaluation("hk-a", 850, 1000, mean_tokens=1000),
-            _evaluation("hk-b", 851, 1000, mean_tokens=1020),
-        ],
-        scoring=DEFAULTS,
-    )
-
-    scores = _by_hotkey(ranking.scores)
-    assert scores["hk-b"].efficiency_t == Fraction(1)
-    assert scores["hk-a"].efficiency_t == Fraction(1000, 1018)
-    # ...but it left the scores alone.
-    assert scores["hk-a"].score == scores["hk-a"].accuracy
-
-
-def test_a_single_model_has_no_spread_so_efficiency_cannot_apply() -> None:
-    ranking = score_models([_evaluation("hk-a", 900, 1000, mean_tokens=50_000)], scoring=DEFAULTS)
-
-    assert ranking.applied_lambda_bp == 0
-    assert ranking.scores[0].score == Fraction(9, 10)
-
-
-def test_a_field_with_no_token_readings_at_all_disables_efficiency() -> None:
-    ranking = score_models(
-        [
-            ModelEvaluation(hotkey="hk-a", correct_count=900, scored_count=1000),
-            ModelEvaluation(hotkey="hk-b", correct_count=800, scored_count=1000),
-        ],
-        scoring=NO_GUARD,
-    )
-
-    assert ranking.p90_mean_tokens == Fraction(0)
-    assert ranking.applied_lambda_bp == 0
-    assert ranking.scores[0].score == Fraction(9, 10)
-
-
-def test_failed_batches_do_not_drag_a_models_token_average_down() -> None:
-    # 1000 items scored but only 400 produced a usage reading; the mean is over
-    # the readings, not over everything that was attempted.
-    ranking = score_models(
-        [ModelEvaluation("hk-a", 900, 1000, total_tokens=800_000, token_reading_count=400)],
-        scoring=DEFAULTS,
-    )
-
-    assert ranking.scores[0].mean_total_tokens == Fraction(2000)
+    assert [score.hotkey for score in ranking.scores] == ["hk-a"]
+    assert _order(ranking) == ["hk-a"]
+    assert ranking.rank_of("hk-slow") is None
 
 
 def test_a_model_with_nothing_scored_is_dropped_rather_than_given_an_accuracy() -> None:
-    ranking = score_models(
-        [_evaluation("hk-silent", 0, 0), _evaluation("hk-a", 500, 1000, mean_tokens=10)],
-        scoring=DEFAULTS,
+    ranking = _ranking(_evaluation("hk-empty", 0, scored=0), _evaluation("hk-a", 800))
+
+    assert [score.hotkey for score in ranking.scores] == ["hk-a"]
+
+
+# --- ranking: the first committed keeps its place within a point --------------
+
+
+def test_an_earlier_model_keeps_first_place_against_a_later_one_within_a_point() -> None:
+    """Early: 9,000. Late: 9,099, 99 bp better. 9,000 >= 9,099 - 100, so the
+    earlier commit wins first place, and the later one is second."""
+    ranking = _ranking(
+        _evaluation("hk-late", 9099, scored=10_000, block=500),
+        _evaluation("hk-early", 9000, scored=10_000, block=100),
     )
 
-    assert [entry.hotkey for entry in ranking.scores] == ["hk-a"]
+    assert _order(ranking) == ["hk-early", "hk-late"]
 
 
-def test_a_field_where_nothing_was_scored_ranks_nobody() -> None:
-    ranking = score_models([_evaluation("hk-a", 0, 0)], scoring=DEFAULTS)
+def test_exactly_one_point_better_is_not_enough() -> None:
+    """The band is inclusive: 9,000 >= 9,100 - 100."""
+    ranking = _ranking(
+        _evaluation("hk-late", 9100, scored=10_000, block=500),
+        _evaluation("hk-early", 9000, scored=10_000, block=100),
+    )
 
-    assert ranking.scores == ()
-    assert ranking.applied_lambda_bp == 0
+    assert _order(ranking) == ["hk-early", "hk-late"]
 
 
-def test_ties_break_on_accuracy_then_hotkey_never_on_input_order() -> None:
-    tied = [
-        ModelScore(
-            hotkey=hotkey,
-            correct_count=correct,
-            scored_count=1000,
-            accuracy=Fraction(correct, 1000),
-            mean_total_tokens=Fraction(0),
-            efficiency_t=Fraction(0),
-            score=Fraction(1, 2),
-        )
-        for hotkey, correct in (("hk-z", 900), ("hk-a", 500), ("hk-b", 900))
+def test_beating_it_by_more_than_a_full_point_takes_the_place() -> None:
+    """9,000 < 9,101 - 100: the earlier model is outside the band."""
+    ranking = _ranking(
+        _evaluation("hk-late", 9101, scored=10_000, block=500),
+        _evaluation("hk-early", 9000, scored=10_000, block=100),
+    )
+
+    assert _order(ranking) == ["hk-late", "hk-early"]
+
+
+def test_the_band_is_one_point() -> None:
+    assert RANK_BAND_BP == 100
+
+
+def test_each_place_is_decided_again_among_the_models_left() -> None:
+    """A 9,500 at block 300, B 9,450 at block 100, C 9,300 at block 200.
+
+    First: best 9,500, band >= 9,400 holds A and B; B committed first.
+    Second: best of A and C is 9,500, band >= 9,400 holds only A.
+    Third: C.
+    """
+    ranking = _ranking(
+        _evaluation("hk-a", 9500, scored=10_000, block=300),
+        _evaluation("hk-b", 9450, scored=10_000, block=100),
+        _evaluation("hk-c", 9300, scored=10_000, block=200),
+    )
+
+    assert _order(ranking) == ["hk-b", "hk-a", "hk-c"]
+
+
+def test_the_band_is_measured_from_the_best_not_chained_through_neighbours() -> None:
+    """A 9,000 at block 1, B 9,090 at block 2, C 9,180 at block 3.
+
+    A is within a point of B, and B of C, but A is 180 bp behind C, the best.
+    First: band >= 9,080 holds B and C; B committed first. Second: band >= 9,080
+    over A and C holds only C. Third: A.
+    """
+    ranking = _ranking(
+        _evaluation("hk-a", 9000, scored=10_000, block=1),
+        _evaluation("hk-b", 9090, scored=10_000, block=2),
+        _evaluation("hk-c", 9180, scored=10_000, block=3),
+    )
+
+    assert _order(ranking) == ["hk-b", "hk-c", "hk-a"]
+
+
+def test_the_same_commit_block_is_settled_by_hotkey() -> None:
+    ranking = _ranking(
+        _evaluation("hk-b", 900, block=100),
+        _evaluation("hk-a", 900, block=100),
+    )
+
+    assert _order(ranking) == ["hk-a", "hk-b"]
+
+
+def test_the_size_penalty_counts_before_the_band_is_drawn() -> None:
+    """Big: 9,350 raw at 2B parameters, 9,150 after the penalty, block 100.
+    Small: 9,200 raw, no penalty, block 200. Big is within a point of small's
+    9,200 and committed first, so it keeps first place."""
+    ranking = _ranking(
+        _evaluation("hk-big", 935, block=100, parameters=2_000_000_000),
+        _evaluation("hk-small", 920, block=200),
+    )
+
+    assert _order(ranking) == ["hk-big", "hk-small"]
+    assert _score(ranking, "hk-big").score_bp == 9150
+
+
+def test_the_ranking_does_not_depend_on_the_order_models_arrive_in() -> None:
+    field = [
+        _evaluation("hk-a", 9500, scored=10_000, block=300),
+        _evaluation("hk-b", 9450, scored=10_000, block=100),
+        _evaluation("hk-c", 9300, scored=10_000, block=200),
+        _evaluation("hk-d", 9300, scored=10_000, block=200),
     ]
 
-    ranked = [entry.hotkey for entry in rank_models(tied)]
+    forward = _order(_ranking(*field))
+    backward = _order(_ranking(*reversed(field)))
 
-    assert ranked == ["hk-b", "hk-z", "hk-a"]
-    assert ranked == [entry.hotkey for entry in rank_models(list(reversed(tied)))]
+    assert forward == backward == ["hk-b", "hk-a", "hk-c", "hk-d"]
+
+
+class TestAModelMustBeMeasuredBeforeItRanks:
+    """A model scored on fewer than the minimum items is not ranked."""
+
+    def test_a_one_item_measurement_cannot_outrank_a_thousand_item_one(self) -> None:
+        ranking = _ranking(
+            _evaluation("hk-lucky", 1, scored=1, block=1),
+            _evaluation("hk-honest", 999, block=2),
+        )
+
+        assert _order(ranking) == ["hk-honest"]
+        assert _score(ranking, "hk-lucky").score_bp == 10_000
+
+    def test_the_floor_is_the_configured_one(self) -> None:
+        ranking = _ranking(
+            _evaluation("hk-a", 9, scored=10),
+            scoring=ScoringConfig(model_min_scored_items=10),
+        )
+
+        assert _order(ranking) == ["hk-a"]
 
 
 def test_more_correct_than_scored_is_refused() -> None:
-    with pytest.raises(ScoringError, match="more correct items than scored"):
-        score_models([_evaluation("hk-a", 11, 10)], scoring=DEFAULTS)
+    with pytest.raises(ScoringError, match="more correct"):
+        _ranking(_evaluation("hk-a", 11, scored=10))
 
 
-def test_negative_counts_are_refused() -> None:
-    with pytest.raises(ScoringError, match="negative evaluation counts"):
-        score_models(
-            [ModelEvaluation("hk-a", 0, 10, total_tokens=-1, token_reading_count=1)],
-            scoring=DEFAULTS,
-        )
+@pytest.mark.parametrize(
+    "evaluation",
+    [
+        _evaluation("hk-a", -1),
+        _evaluation("hk-a", 1, scored=-1),
+        _evaluation("hk-a", 1, block=-1),
+        _evaluation("hk-a", 1, parameters=-1),
+    ],
+)
+def test_negative_inputs_are_refused(evaluation: ModelEvaluation) -> None:
+    with pytest.raises(ScoringError, match="negative"):
+        _ranking(evaluation)
 
 
 def test_a_repeated_hotkey_is_refused() -> None:
     with pytest.raises(ScoringError, match="duplicate"):
-        score_models([_evaluation("hk-a", 1, 10), _evaluation("hk-a", 2, 10)], scoring=DEFAULTS)
+        _ranking(_evaluation("hk-a", 1), _evaluation("hk-a", 2))
+
+
+# --- the model pool -------------------------------------------------------------
+
+
+def _pool(*evaluations: ModelEvaluation, shares: tuple[int, ...] = SHARES) -> dict[str, int]:
+    return allocate_model_pool(
+        _ranking(*evaluations).scores,
+        total_units=TOTAL,
+        rank_shares_bp=shares,
+        min_scored_items=DEFAULTS.model_min_scored_items,
+    )
 
 
 def test_three_models_take_twenty_five_four_and_one_percent_of_total() -> None:
-    ranking = score_models(
-        [
-            _evaluation("hk-1", 900, 1000, mean_tokens=10),
-            _evaluation("hk-2", 800, 1000, mean_tokens=10),
-            _evaluation("hk-3", 700, 1000, mean_tokens=10),
-        ],
-        scoring=DEFAULTS,
-    )
-
-    units = allocate_model_pool(ranking.scores, total_units=TOTAL, rank_shares_bp=V3_SHARES)
-
-    assert units == {"hk-1": 250_000, "hk-2": 40_000, "hk-3": 10_000}
+    assert _pool(
+        _evaluation("hk-a", 900, block=1),
+        _evaluation("hk-b", 800, block=2),
+        _evaluation("hk-c", 700, block=3),
+    ) == {"hk-a": 250_000, "hk-b": 40_000, "hk-c": 10_000}
 
 
 def test_two_models_take_twenty_five_and_five_percent() -> None:
-    """The empty third place rolls down to the lowest winner present."""
-    ranking = score_models(
-        [
-            _evaluation("hk-1", 900, 1000, mean_tokens=10),
-            _evaluation("hk-2", 800, 1000, mean_tokens=10),
-        ],
-        scoring=DEFAULTS,
-    )
-
-    units = allocate_model_pool(ranking.scores, total_units=TOTAL, rank_shares_bp=V3_SHARES)
-
-    assert units == {"hk-1": 250_000, "hk-2": 50_000}
+    assert _pool(_evaluation("hk-a", 900, block=1), _evaluation("hk-b", 800, block=2)) == {
+        "hk-a": 250_000,
+        "hk-b": 50_000,
+    }
 
 
 def test_one_model_takes_the_whole_thirty_percent() -> None:
-    ranking = score_models([_evaluation("hk-1", 1, 1000, mean_tokens=10)], scoring=DEFAULTS)
-
-    units = allocate_model_pool(ranking.scores, total_units=TOTAL, rank_shares_bp=V3_SHARES)
-
-    assert units == {"hk-1": 300_000}
+    assert _pool(_evaluation("hk-a", 900)) == {"hk-a": 300_000}
 
 
 def test_a_fourth_place_model_is_not_paid() -> None:
-    ranking = score_models(
-        [_evaluation(f"hk-{index}", 900 - index, 1000, mean_tokens=10) for index in range(1, 6)],
-        scoring=DEFAULTS,
+    paid = _pool(
+        _evaluation("hk-a", 900, block=1),
+        _evaluation("hk-b", 800, block=2),
+        _evaluation("hk-c", 700, block=3),
+        _evaluation("hk-d", 600, block=4),
     )
 
-    units = allocate_model_pool(ranking.scores, total_units=TOTAL, rank_shares_bp=V3_SHARES)
-
-    assert list(units) == ["hk-1", "hk-2", "hk-3"]
+    assert "hk-d" not in paid
+    assert sum(paid.values()) == 300_000
 
 
 def test_no_models_allocate_nothing_so_the_shares_can_burn() -> None:
-    assert allocate_model_pool([], total_units=TOTAL, rank_shares_bp=V3_SHARES) == {}
+    assert _pool() == {}
+
+
+def test_the_pool_follows_the_band_rule() -> None:
+    """The later model is 99 bp better and still second: 25% to the earlier."""
+    paid = _pool(
+        _evaluation("hk-late", 9099, scored=10_000, block=500),
+        _evaluation("hk-early", 9000, scored=10_000, block=100),
+    )
+
+    assert paid == {"hk-early": 250_000, "hk-late": 50_000}
 
 
 def test_model_allocation_does_not_trust_the_order_it_was_handed() -> None:
-    ranking = score_models(
-        [
-            _evaluation("hk-1", 900, 1000, mean_tokens=10),
-            _evaluation("hk-2", 800, 1000, mean_tokens=10),
-        ],
-        scoring=DEFAULTS,
+    scores = _ranking(
+        _evaluation("hk-a", 900, block=1),
+        _evaluation("hk-b", 800, block=2),
+        _evaluation("hk-c", 700, block=3),
+    ).scores
+    paid = allocate_model_pool(
+        tuple(reversed(scores)),
+        total_units=TOTAL,
+        rank_shares_bp=SHARES,
+        min_scored_items=DEFAULTS.model_min_scored_items,
     )
 
-    shuffled = allocate_model_pool(
-        list(reversed(ranking.scores)), total_units=TOTAL, rank_shares_bp=V3_SHARES
+    assert paid == {"hk-a": 250_000, "hk-b": 40_000, "hk-c": 10_000}
+
+
+def test_a_zero_share_place_pays_nothing() -> None:
+    paid = _pool(
+        _evaluation("hk-a", 900, block=1),
+        _evaluation("hk-b", 800, block=2),
+        shares=(3000, 0, 0),
     )
 
-    assert shuffled == {"hk-1": 250_000, "hk-2": 50_000}
+    assert paid == {"hk-a": 300_000}
 
 
-def test_a_zero_share_rank_pays_nothing() -> None:
-    """A measured model with a positive score in a rank whose share is zero.
-
-    `scored=1000` clears the default floor of 100, so the model really is ranked
-    and only the zero share keeps it unpaid.
-    """
-    ranking = score_models([_evaluation("hk-1", 900, 1000, mean_tokens=10)], scoring=DEFAULTS)
-    assert ranking.scores
-
-    assert allocate_model_pool(ranking.scores, total_units=TOTAL, rank_shares_bp=(0, 0)) == {}
-
-
-def test_empty_rank_shares_are_refused() -> None:
-    with pytest.raises(ScoringError, match="rank shares are empty"):
-        allocate_model_pool([], total_units=TOTAL, rank_shares_bp=())
-
-
-def test_negative_rank_shares_are_refused() -> None:
-    with pytest.raises(ScoringError, match="must not be negative"):
-        allocate_model_pool([], total_units=TOTAL, rank_shares_bp=(3000, -1))
+@pytest.mark.parametrize("shares", [(), (2500, -1)])
+def test_unpayable_rank_shares_are_refused(shares: tuple[int, ...]) -> None:
+    with pytest.raises(ScoringError):
+        allocate_model_pool((), total_units=TOTAL, rank_shares_bp=shares, min_scored_items=1)
 
 
 def test_a_negative_weight_pool_is_refused() -> None:
-    with pytest.raises(ScoringError, match="must not be negative"):
-        allocate_model_pool([], total_units=-1, rank_shares_bp=(3000,))
+    with pytest.raises(ScoringError, match="negative"):
+        allocate_model_pool((), total_units=-1, rank_shares_bp=SHARES, min_scored_items=1)
 
 
 class TestAZeroScoreIsNeverPaid:
-    """Ranking top-3 is not the same as having earned anything.
-
-    Without this filter the model half could never burn, contradicting both
-    ``docs/scoring.md`` and the dataset half, which has always filtered.
-    """
+    """A model that answered nothing all day scores exactly zero."""
 
     def test_a_model_that_answered_nothing_earns_nothing(self) -> None:
-        """A model that fails every batch scores exactly zero."""
-        dead = [ModelEvaluation(hotkey="hk-broken", correct_count=0, scored_count=1000)]
-        allocation = allocate_model_pool(
-            score_models(dead, scoring=DEFAULTS).scores,
-            total_units=TOTAL,
-            rank_shares_bp=V3_SHARES,
-        )
-        assert allocation == {}
+        assert _pool(_evaluation("hk-dead", 0)) == {}
 
     def test_a_dead_model_does_not_take_emission_off_the_honest_field(self) -> None:
-        """Third place would otherwise collect 100bp of total emission for doing nothing."""
-        field = [
-            ModelEvaluation("hk-a", 850, 1000, 100_000, 1000),
-            ModelEvaluation("hk-b", 851, 1000, 102_000, 1000),
-            ModelEvaluation("hk-grief", 0, 1000),
-        ]
-        allocation = allocate_model_pool(
-            score_models(field, scoring=DEFAULTS).scores,
-            total_units=TOTAL,
-            rank_shares_bp=V3_SHARES,
-        )
-        assert "hk-grief" not in allocation
-        assert set(allocation) == {"hk-a", "hk-b"}
+        paid = _pool(_evaluation("hk-dead", 0, block=1), _evaluation("hk-a", 900, block=2))
+
+        assert paid == {"hk-a": 300_000}
 
     def test_an_all_zero_field_burns_rather_than_paying_alphabetically(self) -> None:
-        """The worst version of the bug.
-
-        With every score zero, ranking falls through to the hotkey tie-break,
-        so model emission would be handed out in lexicographic order,
-        identically on every validator, so consensus cannot correct it.
-        """
-        field = [
-            ModelEvaluation(hotkey, 0, 1000)
-            for hotkey in ("hk-zulu", "hk-alpha", "hk-mike", "hk-bravo")
-        ]
-        allocation = allocate_model_pool(
-            score_models(field, scoring=DEFAULTS).scores,
-            total_units=TOTAL,
-            rank_shares_bp=V3_SHARES,
-        )
-        assert allocation == {}
-
-
-class TestUnmeasuredModelsDoNotSteerTheField:
-    """A model with no token reading must not vote on the token scale.
-
-    A mean of zero says nothing about cost, because there was no measurement.
-    One such entry could drag the P90 down and inflate the spread past the CV
-    guard, switching lambda back on across a field the guard had correctly
-    called noise. That is enough to swap rank 1 and rank 2 and move 1500bp of
-    total emission.
-    """
-
-    HONEST = (
-        ModelEvaluation("hk-a", 850, 1000, 1_000_000, 1000),
-        ModelEvaluation("hk-b", 851, 1000, 1_020_000, 1000),
-        ModelEvaluation("hk-c", 840, 1000, 1_010_000, 1000),
-    )
-
-    def test_a_griefer_does_not_reorder_the_honest_field(self) -> None:
-        alone = score_models(self.HONEST, scoring=DEFAULTS)
-        with_griefer = score_models(
-            [*self.HONEST, ModelEvaluation("hk-grief", 0, 1000)], scoring=DEFAULTS
+        paid = _pool(
+            _evaluation("hk-a", 0, block=1),
+            _evaluation("hk-b", 0, block=2),
+            _evaluation("hk-c", 0, block=3),
         )
 
-        assert [entry.hotkey for entry in alone.scores] == [
-            entry.hotkey for entry in with_griefer.scores if entry.hotkey != "hk-grief"
-        ]
+        assert paid == {}
 
-    def test_a_griefer_does_not_switch_the_spread_guard_back_on(self) -> None:
-        alone = score_models(self.HONEST, scoring=DEFAULTS)
-        with_griefer = score_models(
-            [*self.HONEST, ModelEvaluation("hk-grief", 0, 1000)], scoring=DEFAULTS
-        )
-        assert alone.applied_lambda_bp == 0
-        assert with_griefer.applied_lambda_bp == alone.applied_lambda_bp
-
-    def test_a_griefer_does_not_collapse_the_p90(self) -> None:
-        """A dragged-down P90 clamps every honest model to the full discount."""
-        alone = score_models(self.HONEST, scoring=NO_GUARD)
-        with_griefer = score_models(
-            [*self.HONEST, ModelEvaluation("hk-grief", 0, 1000)], scoring=NO_GUARD
-        )
-        assert alone.p90_mean_tokens == with_griefer.p90_mean_tokens
-
-    def test_no_reading_is_the_worst_efficiency_not_the_best(self) -> None:
-        """Otherwise omitting usage figures is a strategy.
-
-        Reporting nothing must never be cheaper than reporting honestly, or
-        every model has an incentive to stop reporting.
-        """
-        ranking = score_models(
-            [*self.HONEST, ModelEvaluation("hk-silent", 900, 1000)], scoring=NO_GUARD
-        )
-        silent = next(entry for entry in ranking.scores if entry.hotkey == "hk-silent")
-        assert silent.mean_total_tokens is None
-        assert silent.efficiency_t == 1
-        assert all(
-            entry.efficiency_t <= silent.efficiency_t
-            for entry in ranking.scores
-            if entry.hotkey != "hk-silent"
+    def test_a_zero_scorer_does_not_hold_a_place_that_rolls_down(self) -> None:
+        """Two real models and a dead one: the dead one is not third, so the
+        empty third place rolls down to the second, 4% + 1%."""
+        paid = _pool(
+            _evaluation("hk-a", 900, block=1),
+            _evaluation("hk-b", 800, block=2),
+            _evaluation("hk-dead", 0, block=0),
         )
 
-
-class TestAModelMustBeMeasuredBeforeItIsPaid:
-    """Accuracy over one item is 1 or 0, and neither means anything.
-
-    A miner can arrange this. Its own test content is excluded from the corpus
-    it is scored on, so a miner supplying most of a day's test content is
-    scored on very little of it.
-    """
-
-    def test_a_one_item_measurement_cannot_outrank_a_five_thousand_item_one(self) -> None:
-        field = [
-            ModelEvaluation("hk-flood", 1, 1),
-            ModelEvaluation("hk-careful", 4999, 5000, 500_000, 5000),
-        ]
-        allocation = allocate_model_pool(
-            score_models(field, scoring=DEFAULTS).scores,
-            total_units=TOTAL,
-            rank_shares_bp=V3_SHARES,
-        )
-        assert allocation == {"hk-careful": 300_000}
-
-    def test_the_floor_is_configurable(self) -> None:
-        field = [ModelEvaluation("hk-small", 40, 50, 5_000, 50)]
-        assert score_models(field, scoring=ScoringConfig(model_min_scored_items=10)).scores
-        assert not score_models(field, scoring=ScoringConfig(model_min_scored_items=51)).scores
-
-    def test_an_under_measured_model_does_not_vote_on_the_token_scale(self) -> None:
-        """Excluded means excluded, field statistics included."""
-        honest = [
-            ModelEvaluation("hk-a", 850, 1000, 1_000_000, 1000),
-            ModelEvaluation("hk-b", 851, 1000, 1_020_000, 1000),
-        ]
-        alone = score_models(honest, scoring=NO_GUARD)
-        with_tiny = score_models(
-            [*honest, ModelEvaluation("hk-tiny", 1, 1, 999_999, 1)], scoring=NO_GUARD
-        )
-        assert alone.p90_mean_tokens == with_tiny.p90_mean_tokens
+        assert paid == {"hk-a": 250_000, "hk-b": 50_000}
 
 
-def test_a_zero_scorer_does_not_hold_a_place_that_rolls_down() -> None:
-    """Only winners above zero hold places, so the roll-down skips the dead model."""
-    field = [
-        ModelEvaluation("hk-a", 900, 1000, 100_000, 1000),
-        ModelEvaluation("hk-dead", 0, 1000),
-    ]
-    allocation = allocate_model_pool(
-        score_models(field, scoring=DEFAULTS).scores, total_units=TOTAL, rank_shares_bp=V3_SHARES
-    )
-    assert allocation == {"hk-a": 300_000}
+def test_rank_models_ranks_only_what_qualifies() -> None:
+    scores = _ranking(
+        _evaluation("hk-a", 900),
+        _evaluation("hk-zero", 0, block=1),
+        _evaluation("hk-few", 5, scored=5, block=2),
+    ).scores
+
+    assert [score.hotkey for score in rank_models(scores, min_scored_items=100)] == ["hk-a"]

@@ -108,8 +108,6 @@ def _weight_only_row(hotkey: str, *, uid: int, weight: int) -> MinerResult:
         model_items_scored=0,
         model_correct_count=0,
         raw_accuracy_bp=0,
-        mean_total_tokens_milli=0,
-        efficiency_penalty_bp=0,
         model_score_bp=0,
     )
 

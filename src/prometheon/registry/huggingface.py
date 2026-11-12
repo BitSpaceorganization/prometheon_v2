@@ -40,6 +40,7 @@ from prometheon.registry._http import (
     DEFAULT_TIMEOUT_SECONDS,
     RegistryHttpClient,
 )
+from prometheon.registry.safetensors import LENGTH_PREFIX_BYTES, count_parameters, header_length
 from prometheon.revision import require_valid_revision
 from prometheon.version import __version__
 
@@ -277,6 +278,33 @@ class HuggingFaceClient(RegistryHttpClient):
     def weight_bytes(self, repo: str, revision: str) -> int:
         """Total size of the weight files at ``revision``, in bytes."""
         return self.list_files(repo, revision).weight_bytes
+
+    def parameter_count(self, snapshot: RepoSnapshot) -> int:
+        """``P``: the element count of every tensor in every weight file at the revision.
+
+        Read from each file's safetensors header with two range requests, the
+        8-byte length and then the header itself, so no weights are fetched.
+        Files are read in name order. See :mod:`prometheon.registry.safetensors`
+        for the definition, which the hub shares.
+        """
+        total = 0
+        for entry in snapshot.weight_files:
+            where = f"{entry.name} in {snapshot.repo}@{snapshot.revision}"
+            if not _FILENAME_RE.match(entry.name):
+                # Only a top-level file can be fetched by name. A weight file in
+                # a subdirectory is the repository's shape, the miner's to fix.
+                raise ManifestViolationError(
+                    f"{where} is not at the top of the repository, so its parameters "
+                    "cannot be counted. Keep weight files at the top level"
+                )
+            if entry.size is None or entry.size < LENGTH_PREFIX_BYTES:
+                raise ManifestViolationError(f"{where} is too short to be a safetensors file")
+            url = f"/{snapshot.repo}/resolve/{snapshot.revision}/{entry.name}"
+            prefix = self.get_range(url, what=where, start=0, length=LENGTH_PREFIX_BYTES)
+            length = header_length(prefix, file_size=entry.size, where=where)
+            header = self.get_range(url, what=where, start=LENGTH_PREFIX_BYTES, length=length)
+            total += count_parameters(header, where=where)
+        return total
 
     def fetch_file(
         self, repo: str, revision: str, filename: str, *, max_bytes: int = MAX_FILE_BYTES

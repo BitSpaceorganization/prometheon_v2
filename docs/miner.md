@@ -62,7 +62,20 @@ What this means in practice:
 
 ### Build a model
 
-Any open causal language model **whose weights fit in 24 GiB**. Validators download your model and run it on their own machines, so its size decides what validating costs.
+Any open causal language model with **at most 4,000,000,000 parameters, and weights that fit in 16 GiB**. Validators download your model and run it on one 24 GB GPU, so its size decides what validating costs.
+
+- **The cap is hard.** A model with more parameters is invalid, as too large, and is never evaluated. The hub doesn't list it, so it's never charged.
+- **Size costs score.** Past 500 million parameters, your accuracy is reduced by one point for every doubling: `floor(100 × log2(P / 500,000,000))` basis points.
+
+| Parameters | Penalty |
+|---|---|
+| up to 500M | none |
+| 1B | 1 point (100 bp) |
+| 1.5B | 1.58 points (158 bp) |
+| 2B | 2 points (200 bp) |
+| 4B | 3 points (300 bp) |
+
+`P` counts every tensor in every `.safetensors` file you publish, read from the files' headers. If you publish the same weights twice, as one file and as shards, they're counted twice.
 
 **The evaluation runtime pins `transformers>=4.44,<4.47`, so your architecture has to be one that release recognises.** `Qwen2.5` (`model_type: qwen2`) loads. `Qwen3` doesn't, because it arrived in transformers 4.51. `model commit` and `model verify` both refuse an architecture the runtime can't load, checked against a list frozen from the runtime's own transformers.
 
@@ -110,7 +123,7 @@ uv run prometheon credits buy --config ~/prometheon.toml             # sends it,
 - **A credit is spent only when the model is evaluated:** at the first freeze where your coldkey has a free credit, your miner is eligible, and the model passes the model checks. After that, the same `(hotkey, weights fingerprint)` costs nothing again. **Re-committing the same weights costs nothing.** New weights are a new fingerprint and cost a new credit.
 - A model committed without a credit is listed as `unpaid` and isn't evaluated. It's picked up at the next freeze after a credit arrives.
 - A covered model whose miner isn't eligible that day isn't evaluated, and **its credit isn't spent**. The credit waits for a day the model is evaluated.
-- The hub lists only models that pass its own copy of the registry checks (manifest, at most 256 weight files, a known `model_type`, the size ceilings, and weights in LFS), so a model that fails them is never charged.
+- The hub lists only models that pass its own copy of the registry checks (manifest, at most 256 weight files, a known `model_type`, the 16 GiB and 64 MiB ceilings, weights in LFS, and at most 4,000,000,000 parameters), so a model that fails them is never charged.
 - **There are no refunds.** The ledger is public: `prometheon credits balance` shows each entry with its block number and extrinsic hash.
 
 ### Commit on chain
@@ -136,8 +149,11 @@ This runs the validator's own checks against your commitment on chain, or agains
 2. its revision is a 40-character commit SHA
 3. the repository exists, is public, and its files pass the manifest, including `config.json`
 4. the architecture is one the runtime can load
-5. the weights fit 24 GiB, and everything else fits 64 MiB
+5. the weights fit 16 GiB, and everything else fits 64 MiB
 6. every weight file is in Git LFS, so the weights can be fingerprinted
+7. the model has at most 4,000,000,000 parameters
+
+It prints the parameter count `P` and the size penalty your model will carry, so you see both before you pay for a credit.
 
 On a validator, two more checks run against the epoch. Your fingerprint must match the one the hub froze. And among models with the same fingerprint, only the earliest `(first commit block, hotkey)` is evaluated. The others are `duplicate`.
 
@@ -146,14 +162,15 @@ On a validator, two more checks run against the epoch. Your fingerprint must mat
 Each eligible paid model runs over the day's labelled corpus: everyone's test posts plus a sample of about 200 public BitFan posts. **Test posts from your own coldkey are excluded**, from every hotkey under it, so recognising your own posts buys nothing.
 
 ```text
-accuracy = correct / scored
-score    = accuracy × (1 − λ·t)       λ = 15%, switched off when token usage barely varies
+raw accuracy = correct / scored, in basis points
+score        = raw accuracy − size penalty, never below 0
 ```
 
 - A model scored on fewer than 100 items isn't ranked.
 - A score of zero is never paid.
-- Ranks go by score, then accuracy, then hotkey.
-- The first three places pay 25%, 4% and 1% of emission. A place nobody fills goes to the lowest-ranked winner present: two models get 25% and 5%, and one model gets 30%.
+- **The earlier model keeps its place unless it's beaten by more than a point.** For first place, the validator takes every model scoring within 100 bp of the best score, and the one committed first wins: the earliest first-commit block, then the lower hotkey. It then does the same for second and third among the models left. A copy or a small fine-tune of a ranked model has to beat it by a full point to take its place.
+- The first three places pay 25%, 4% and 1% of emission. A place nobody fills goes to the lowest-placed winner present: two models get 25% and 5%, and one model gets 30%.
+- **One time limit.** Your model has 30 minutes on each validator to load and judge its whole corpus. If it hasn't finished, it gets no score from that validator for the day, shown as `timed_out`. A model within the size cap needs minutes on a 24 GB card.
 
 ## 4. Released test content
 
@@ -166,4 +183,5 @@ A day's test posts become readable two days later on the hub's public viewer, 50
 - **Reposting.** BitFan refuses a near-copy of a post already written.
 - **Copying a model.** The same weights have the same fingerprint, and the earliest committer holds it. Renaming files or mirroring the repository changes nothing.
 - **Answering `YES` to everything.** Test content is balanced by construction and production content is mostly compliant, so a degenerate model is wrong on most items.
-- **Answering fast instead of well.** Efficiency is capped at 15% and applied multiplicatively, so it can't overturn a larger accuracy gap.
+- **A bigger model for a small gain.** Each doubling past 500M parameters costs a point of accuracy, so a larger model has to be that much better to rank level.
+- **Tuning someone's model by a hair.** A later model has to beat an earlier one by more than a point to take its place.

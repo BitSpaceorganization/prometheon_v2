@@ -137,8 +137,6 @@ class Verdict:
 @dataclass(frozen=True)
 class ModerationResult:
     verdicts: tuple[Verdict, ...]
-    prompt_tokens: int
-    completion_tokens: int
 
 
 def resolve_dtype(name: str) -> Any:
@@ -305,12 +303,7 @@ class ModerationEngine:
 
         prefix_cache, prefix_len = self._build_prefix_cache(policy_ids)
 
-        encoded: list[tuple[str, list[int]]] = []
-        content_tokens = 0
-        for item_id, content in items:
-            item_ids = encode_item(self._tokenizer, content)
-            content_tokens += len(item_ids)
-            encoded.append((item_id, item_ids))
+        encoded = [(item_id, encode_item(self._tokenizer, content)) for item_id, content in items]
 
         # Order is preserved exactly: items are packed into fixed-width windows
         # in the order they arrived, so the verdict sequence is the same one the
@@ -331,14 +324,7 @@ class ModerationEngine:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-        return ModerationResult(
-            verdicts=tuple(verdicts),
-            # The policy prefix is computed once and reused, so it is counted
-            # once: this reports what was actually computed, not what a naive
-            # implementation would have spent.
-            prompt_tokens=prefix_len + content_tokens,
-            completion_tokens=len(verdicts),
-        )
+        return ModerationResult(verdicts=tuple(verdicts))
 
     def _build_prefix_cache(self, policy_ids: list[int]) -> tuple[Any, int]:
         import torch
@@ -386,7 +372,7 @@ class ModerationEngine:
 
         Out of memory is not fatal and not a model failure. The window is halved
         and retried, down to a single item, because a checkpoint that fits the
-        protocol's 24 GiB ceiling can still leave too little room for 32 rows of
+        protocol's 16 GiB ceiling can still leave too little room for 32 rows of
         cache beside it. Only a genuine failure reaches the caller and scores.
         """
         import torch

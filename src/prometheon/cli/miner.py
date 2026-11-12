@@ -31,6 +31,7 @@ from prometheon.errors import CommitmentError, ConfigError
 from prometheon.registry.huggingface import HuggingFaceClient
 from prometheon.registry.validation import MinerEntry, ModelRegistry
 from prometheon.revision import require_valid_revision
+from prometheon.scoring.size import MAX_MODEL_PARAMETERS, exceeds_size_cap, size_penalty_bp
 
 
 def _commitment_from(args: argparse.Namespace) -> ModelCommitment:
@@ -212,6 +213,8 @@ def cmd_verify(args: argparse.Namespace) -> int:
                     else "-",
                 ),
                 ("fingerprint", result.fingerprint or "-"),
+                ("parameters", _parameters(result.parameters)),
+                ("size penalty", _penalty(result.parameters)),
                 ("passes checks", "yes" if result.valid else "no"),
             ]
         )
@@ -223,3 +226,20 @@ def cmd_verify(args: argparse.Namespace) -> int:
     note("")
     note(f"not eligible [{result.reason.value if result.reason else 'unknown'}]: {result.detail}")
     return EXIT_FAILED
+
+
+def _parameters(parameters: int | None) -> str:
+    """``P`` as validators read it, or ``-`` when the checks stopped before it."""
+    if parameters is None:
+        return "-"
+    return f"{parameters:,} ({parameters / 1e9:.2f}B)"
+
+
+def _penalty(parameters: int | None) -> str:
+    """What the size costs in score, so a miner sees it before paying for a credit."""
+    if parameters is None:
+        return "-"
+    if exceeds_size_cap(parameters):
+        return f"none: over the {MAX_MODEL_PARAMETERS:,} cap, so not evaluated"
+    penalty = size_penalty_bp(parameters)
+    return f"{penalty} bp ({penalty / 100:.2f} points off accuracy)"
